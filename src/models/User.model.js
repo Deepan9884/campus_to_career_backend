@@ -1,0 +1,126 @@
+const mongoose = require("mongoose");
+const bcryptjs = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+const env = require("../config/env");
+
+const userSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: [true, "Name is required"],
+      trim: true,
+      minlength: [2, "Name must be at least 2 characters"],
+      maxlength: [50, "Name must be at most 50 characters"],
+    },
+    email: {
+      type: String,
+      required: [true, "Email is required"],
+      unique: true,
+      lowercase: true,
+      trim: true,
+      match: [/^\S+@\S+\.\S+$/, "Please provide a valid email"],
+    },
+    password: {
+      type: String,
+      required: [true, "Password is required"],
+      minlength: [8, "Password must be at least 8 characters"],
+      select: false,
+    },
+    googleId: { type: String, unique: true, sparse: true },
+    authProvider: { type: String, enum: ["local", "google", "both"], default: "local" },
+    avatar: { type: String, default: "" },
+    targetRole: { type: String, default: "" },
+    githubUsername: { type: String, default: "" },
+    profile: {
+      targetRole: { type: String },
+      githubUsername: { type: String },
+      bio: { type: String },
+      location: { type: String }
+    },
+    linkedinUrl: { type: String, default: "" },
+    bio: { type: String, maxlength: 500, default: "" },
+    isEmailVerified: { type: Boolean, default: false },
+    is2FAEnabled: { type: Boolean, default: false },
+    twoFactorSecret: { type: String, select: false },
+    refreshToken: { type: String, select: false },
+    refreshTokenVersion: { type: Number, default: 0 },
+    preferences: {
+      theme: {
+        type: String,
+        enum: ["dark", "light", "system"],
+        default: "dark",
+      },
+      notifyOn: {
+        type: [String],
+        enum: ["resume", "interview", "github", "skill_gap", "roadmap", "quiz"],
+        default: ["resume", "interview", "github", "skill_gap", "roadmap", "quiz"],
+      },
+      emailDigest: {
+        type: String,
+        enum: ["off", "daily", "weekly"],
+        default: "off",
+      },
+      aiDifficulty: {
+        type: String,
+        enum: ["Beginner", "Intermediate", "Advanced"],
+        default: "Intermediate",
+      },
+      preferredLanguage: {
+        type: String,
+        default: "Python",
+      },
+      resumePrivacy: {
+        type: Boolean,
+        default: false,
+      },
+      dailyGoalProblems: {
+        type: Number,
+        default: 2,
+      },
+      hiddenModules: {
+        type: [String],
+        default: [],
+      },
+    },
+  },
+  {
+    timestamps: true,
+  },
+);
+
+// Pre-save hook: Hash password with bcryptjs (10 rounds) only if modified
+userSchema.pre("save", async function (next) {
+  if (!this.isModified("password")) return next();
+  const salt = await bcryptjs.genSalt(10);
+  this.password = await bcryptjs.hash(this.password, salt);
+  next();
+});
+
+// Instance method: Compare password
+userSchema.methods.comparePassword = async function (candidatePassword) {
+  return bcryptjs.compare(candidatePassword, this.password);
+};
+
+// Instance method: Generate access token
+userSchema.methods.generateAccessToken = function () {
+  const nonce = crypto.randomBytes(16).toString("hex");
+  return jwt.sign({ sub: this._id, email: this.email, name: this.name, nonce }, env.JWT_SECRET, {
+    expiresIn: env.JWT_EXPIRES_IN,
+  });
+};
+
+// Instance method: Generate refresh token
+userSchema.methods.generateRefreshToken = function () {
+  const nonce = crypto.randomBytes(16).toString("hex");
+  return jwt.sign({ sub: this._id, nonce }, env.JWT_REFRESH_SECRET, {
+    expiresIn: env.JWT_REFRESH_EXPIRES_IN,
+  });
+};
+
+// Static method: Find by email
+userSchema.statics.findByEmail = function (email) {
+  return this.findOne({ email: email.toLowerCase().trim() });
+};
+
+module.exports = mongoose.model("User", userSchema);

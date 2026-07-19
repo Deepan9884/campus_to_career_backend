@@ -1,0 +1,37 @@
+const dotenv = require("dotenv");
+const path = require("path");
+
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+
+const getVar = (key, required = false) => {
+  const value = process.env[key];
+  if (required && (!value || value.trim() === "")) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return (value || "").trim();
+};
+
+const env = {
+  NODE_ENV: getVar("NODE_ENV") || "development",
+  PORT: parseInt(getVar("PORT") || "5000", 10),
+  MONGODB_URI: getVar("MONGODB_URI", true),
+  JWT_SECRET: getVar("JWT_SECRET", true),
+  JWT_REFRESH_SECRET: getVar("JWT_REFRESH_SECRET", true),
+  JWT_EXPIRES_IN: getVar("JWT_EXPIRES_IN") || "15m",
+  JWT_REFRESH_EXPIRES_IN: getVar("JWT_REFRESH_EXPIRES_IN") || "7d",
+  CLIENT_URL: getVar("CLIENT_URL") || "http://localhost:5173",
+  GOOGLE_CLIENT_ID: getVar("GOOGLE_CLIENT_ID"),
+  GEMINI_API_KEY: getVar("GEMINI_API_KEY", true),
+  GEMINI_MODEL_DEFAULT: getVar("GEMINI_MODEL_DEFAULT") || "gemini-flash-lite-latest",
+  GEMINI_MODEL_FALLBACK: getVar("GEMINI_MODEL_FALLBACK") || "gemini-flash-lite-latest",
+  GEMINI_MAX_RPM: parseInt(getVar("GEMINI_MAX_RPM") || "12", 10),
+  GEMINI_MAX_RPD: parseInt(getVar("GEMINI_MAX_RPD") || "1400", 10),
+  RESET_TOKEN_SECRET: getVar("RESET_TOKEN_SECRET", true),
+  SMTP_HOST: getVar("SMTP_HOST"),
+  SMTP_PORT: getVar("SMTP_PORT"),
+  SMTP_USER: getVar("SMTP_USER"),
+  SMTP_PASS: getVar("SMTP_PASS"),
+  SMTP_FROM: getVar("SMTP_FROM"),
+};
+
+module.exports = env;
