@@ -110,20 +110,36 @@ const upsertProfile = async (req, res) => {
 
     const username = parseUsernameFromUrl(platform, profileUrl);
 
-    const existing = await CodingProfile.findOne({ userId: req.user._id, platform });
-    const doc = await CodingProfile.findOneAndUpdate(
-        { userId: req.user._id, platform },
-        {
-            $set: { profileUrl, username },
-            $setOnInsert: { cachedStats: null, lastFetchedAt: null },
-        },
-        { upsert: true, new: true, runValidators: true },
-    );
+    try {
+        const { profile, fresh } = await getOrFetch(
+            platform,
+            req.user._id,
+            profileUrl,
+            username,
+            true,
+        );
 
-    return ApiResponse.success({
-        profile: doc,
-        cached: Boolean(existing?.cachedStats),
-    }).send(res);
+        return ApiResponse.success({
+            profile,
+            fresh,
+            cached: false,
+        }).send(res);
+    } catch (err) {
+        const doc = await CodingProfile.findOneAndUpdate(
+            { userId: req.user._id, platform },
+            {
+                $set: { profileUrl, username },
+                $setOnInsert: { cachedStats: null, lastFetchedAt: null },
+            },
+            { upsert: true, new: true, runValidators: true },
+        );
+
+        return ApiResponse.success({
+            profile: doc,
+            cached: false,
+            error: err instanceof Error ? err.message : "Fetch failed",
+        }).send(res);
+    }
 };
 
 const refreshProfile = async (req, res) => {
@@ -193,53 +209,206 @@ const getProfile = async (req, res) => {
 const getRecommendations = async (req, res) => {
     const { platform } = req.params;
 
-    // Default to some medium/easy problems if no data available
-    let recommended = problemBank.slice(0, 5);
+    // Default fallback — first 10 problems
+    let recommended = problemBank.slice(0, 10);
 
     try {
-        const [profile, gapAnalysis] = await Promise.all([
-            CodingProfile.findOne({ userId: req.user._id, platform }),
-            SkillGapAnalysis.findOne({ user: req.user._id }).sort({ createdAt: -1 })
+        const InterviewSession = require("../models/InterviewSession.model");
+        const QuizAttempt = require("../models/QuizAttempt.model");
+        const UserSkill = require("../models/UserSkill.model");
+        const Resume = require("../models/Resume.model");
+
+        // ── Fetch ALL available performance signals in parallel ──
+        const [
+            allProfiles,
+            gapAnalysis,
+            recentInterviews,
+            quizAttempts,
+            userSkills,
+            latestResume,
+        ] = await Promise.all([
+            CodingProfile.find({ userId: req.user._id }).lean(),
+            SkillGapAnalysis.findOne({ user: req.user._id }).sort({ createdAt: -1 }).lean(),
+            InterviewSession.find({ user: req.user._id, status: "completed" })
+                .sort({ createdAt: -1 }).limit(5).lean(),
+            QuizAttempt.find({ userId: req.user._id })
+                .sort({ createdAt: -1 }).limit(20).lean(),
+            UserSkill.find({ user: req.user._id }).lean(),
+            Resume.findOne({ user: req.user._id, status: "completed" })
+                .sort({ createdAt: -1 }).lean(),
         ]);
 
+        // ── 1. Aggregate difficulty stats across ALL platforms ──
+        let totalEasy = 0, totalMedium = 0, totalHard = 0, totalSolved = 0;
+        for (const p of allProfiles) {
+            if (p.cachedStats?.byDifficulty) {
+                totalEasy += p.cachedStats.byDifficulty.Easy || 0;
+                totalMedium += p.cachedStats.byDifficulty.Medium || 0;
+                totalHard += p.cachedStats.byDifficulty.Hard || 0;
+            }
+            totalSolved += p.cachedStats?.solved || 0;
+        }
+
+        // Dynamic difficulty ladder based on aggregate performance
         let targetDifficulty = "Easy";
-        if (profile?.cachedStats?.byDifficulty) {
-            const easy = profile.cachedStats.byDifficulty.Easy || 0;
-            const medium = profile.cachedStats.byDifficulty.Medium || 0;
-            const hard = profile.cachedStats.byDifficulty.Hard || 0;
-            
-            if (easy > 30 && medium < 20) targetDifficulty = "Medium";
-            else if (medium > 40) targetDifficulty = "Hard";
-            else if (easy > 10) targetDifficulty = "Medium";
+        let secondaryDifficulty = "Medium";
+        if (totalSolved >= 200 || (totalMedium >= 50 && totalHard >= 10)) {
+            targetDifficulty = "Hard";
+            secondaryDifficulty = "Medium";
+        } else if (totalSolved >= 50 || totalEasy >= 30) {
+            targetDifficulty = "Medium";
+            secondaryDifficulty = totalMedium >= 30 ? "Hard" : "Easy";
         }
 
-        let targetTopics = [];
-        if (gapAnalysis && gapAnalysis.gaps && gapAnalysis.gaps.length > 0) {
-            // Pick topics from gaps
-            targetTopics = gapAnalysis.gaps.map(g => g.skillName.toLowerCase());
+        // ── 2. Collect weak topics from skill gap analysis ──
+        const weakTopics = new Map(); // topic -> weight (higher = more important)
+        if (gapAnalysis?.gaps?.length) {
+            for (const gap of gapAnalysis.gaps) {
+                const name = gap.skillName.toLowerCase();
+                const weight = gap.importance === "core" ? 20 : 12;
+                const gapMult = 1 + (gap.gapPercent || 50) / 100; // higher gap = more weight
+                weakTopics.set(name, (weakTopics.get(name) || 0) + weight * gapMult);
+            }
         }
 
-        // Score problems
+        // ── 3. Extract weak areas from interview performance ──
+        if (recentInterviews.length > 0) {
+            const roundTypeToTopics = {
+                quiz: ["arrays", "hashing", "strings", "math", "bit manipulation"],
+                aptitude: ["math", "sorting", "greedy"],
+                core: ["dynamic programming", "graphs", "trees", "linked list"],
+                technical: ["stack", "binary search", "two pointers", "sliding window", "backtracking"],
+            };
+
+            for (const session of recentInterviews) {
+                for (const round of session.rounds || []) {
+                    if (round.status !== "completed") continue;
+                    const roundScore = round.roundScore ?? 100;
+                    // Weak round (score < 60) → boost those topic areas
+                    if (roundScore < 60) {
+                        const topics = roundTypeToTopics[round.roundType] || [];
+                        for (const t of topics) {
+                            const boost = Math.max(5, Math.round((60 - roundScore) / 5));
+                            weakTopics.set(t, (weakTopics.get(t) || 0) + boost);
+                        }
+                    }
+                }
+            }
+
+            // Check overall dimension scores — if problemSolving is low, boost algorithmic topics
+            const latestSession = recentInterviews[0];
+            const dims = latestSession.skillDimensionScores;
+            if (dims?.problemSolving != null && dims.problemSolving < 60) {
+                for (const t of ["dynamic programming", "greedy", "backtracking", "divide and conquer", "recursion"]) {
+                    weakTopics.set(t, (weakTopics.get(t) || 0) + 10);
+                }
+            }
+            if (dims?.technicalKnowledge != null && dims.technicalKnowledge < 60) {
+                for (const t of ["trees", "graphs", "heap", "segment trees", "tries", "union-find"]) {
+                    weakTopics.set(t, (weakTopics.get(t) || 0) + 8);
+                }
+            }
+        }
+
+        // ── 4. Learn from quiz attempt history ──
+        if (quizAttempts.length > 0) {
+            for (const attempt of quizAttempts) {
+                const skillName = (attempt.skillName || "").toLowerCase();
+                if (!attempt.passed || (attempt.score != null && attempt.score < 60)) {
+                    weakTopics.set(skillName, (weakTopics.get(skillName) || 0) + 8);
+                }
+            }
+        }
+
+        // ── 5. Factor in user's self-reported skill levels ──
+        const strongTopics = new Set();
+        if (userSkills.length > 0) {
+            for (const skill of userSkills) {
+                const name = skill.name.toLowerCase();
+                if (skill.level === "beginner") {
+                    weakTopics.set(name, (weakTopics.get(name) || 0) + 6);
+                } else if (skill.level === "expert" || skill.level === "advanced") {
+                    strongTopics.add(name);
+                }
+            }
+        }
+
+        // ── 6. Resume keyword gaps ──
+        if (latestResume?.keywordBreakdown?.missing?.length) {
+            for (const keyword of latestResume.keywordBreakdown.missing) {
+                const kw = keyword.toLowerCase();
+                weakTopics.set(kw, (weakTopics.get(kw) || 0) + 5);
+            }
+        }
+
+        // ── Score every problem ──
         const scored = problemBank.map(problem => {
             let score = 0;
-            
-            // Topic match
-            if (targetTopics.some(t => t.includes(problem.topic.toLowerCase()) || problem.topic.toLowerCase().includes(t))) {
-                score += 10;
+            const topicLower = problem.topic.toLowerCase();
+
+            // Weak topic match — use accumulated weight
+            for (const [weakTopic, weight] of weakTopics) {
+                if (topicLower.includes(weakTopic) || weakTopic.includes(topicLower)) {
+                    score += weight;
+                    break; // one match is enough
+                }
             }
-            
+
+            // Penalize topics the user is already strong in
+            for (const strong of strongTopics) {
+                if (topicLower.includes(strong) || strong.includes(topicLower)) {
+                    score -= 8;
+                    break;
+                }
+            }
+
             // Difficulty match
             if (problem.difficulty === targetDifficulty) {
-                score += 5;
+                score += 6;
+            } else if (problem.difficulty === secondaryDifficulty) {
+                score += 3;
             }
-            
+
+            // Platform preference: boost problems from the user's active platform tab
+            if (problem.platform === platform) {
+                score += 7;
+            }
+
+            // Random jitter for freshness
+            score += Math.random() * 3;
+
             return { ...problem, score };
         });
 
-        // Sort by score desc, fallback to random to keep it fresh
-        scored.sort((a, b) => b.score - a.score || Math.random() - 0.5);
-        
-        recommended = scored.slice(0, 5).map(({ score, ...rest }) => rest);
+        // Sort by score descending
+        scored.sort((a, b) => b.score - a.score);
+
+        // ── Diversity-aware selection ──
+        const picked = [];
+        const topicCount = {};
+        const TARGET_COUNT = 10;
+
+        for (const p of scored) {
+            if (picked.length >= TARGET_COUNT) break;
+            const tc = topicCount[p.topic] || 0;
+            if (tc >= 2) continue; // max 2 per topic
+            topicCount[p.topic] = tc + 1;
+            picked.push(p);
+        }
+
+        // Fill remaining if needed
+        if (picked.length < TARGET_COUNT) {
+            const pickedUrls = new Set(picked.map(p => p.url));
+            for (const p of scored) {
+                if (picked.length >= TARGET_COUNT) break;
+                if (!pickedUrls.has(p.url)) {
+                    picked.push(p);
+                    pickedUrls.add(p.url);
+                }
+            }
+        }
+
+        recommended = picked.map(({ score, ...rest }) => rest);
     } catch (err) {
         console.error("Failed to generate coding recommendations:", err);
     }

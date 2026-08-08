@@ -8,6 +8,7 @@ const aiService = require("../services/ai.service");
 const notificationService = require("../services/notification.service");
 const activityLogService = require("../services/activityLog.service");
 const badgeService = require("../services/badge.service");
+const queueService = require("../services/queue.service");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
@@ -132,99 +133,18 @@ const uploadResume = asyncHandler(async (req, res) => {
       status: "processing",
     });
 
-    const prompt = buildAnalysisPrompt(extractedText, targetRole);
+    const jobData = {
+      resumeId: resume._id.toString(),
+      extractedText,
+      targetRole,
+      userId: req.user._id.toString(),
+    };
 
-    const result = await aiService.generateContent({
-      prompt,
-      responseSchema: {
-        type: "object",
-        properties: {
-          atsScore: { type: "number", minimum: 0, maximum: 100 },
-          keywordBreakdown: {
-            type: "object",
-            properties: {
-              matched: { type: "array", items: { type: "string" } },
-              missing: { type: "array", items: { type: "string" } },
-            },
-            required: ["matched", "missing"],
-          },
-          strengths: { type: "array", items: { type: "string" } },
-          improvements: { type: "array", items: { type: "string" } },
-          summary: { type: "string" },
-          inferredTargetRole: { type: ["string", "null"] },
-        },
-        required: [
-          "atsScore",
-          "keywordBreakdown",
-          "strengths",
-          "improvements",
-          "summary",
-          "inferredTargetRole",
-        ],
-      },
-      feature: "resume-analysis",
-      userId: req.user._id,
-    });
+    const { processResumeAnalysis } = require("../workers/resume.worker");
+    await processResumeAnalysis(jobData);
 
-    if (!result.success) {
-      resume.status = "failed";
-      resume.errorMessage = result.message;
-      await resume.save();
-
-      if (result.errorType === "QUOTA_EXCEEDED") {
-        throw ApiError.internal("AI service at capacity, please try again shortly.");
-      }
-      throw ApiError.internal(result.message);
-    }
-
-    const analysis = result.data;
-
-    resume.atsScore = Math.round(analysis.atsScore);
-    resume.keywordBreakdown = analysis.keywordBreakdown;
-    resume.strengths = analysis.strengths;
-    resume.improvements = analysis.improvements;
-    resume.summary = analysis.summary;
-    resume.inferredTargetRole = analysis.inferredTargetRole || null;
-    resume.status = "completed";
-    await resume.save();
-
-    const notificationPromise = notificationService.createNotification({
-      userId: req.user._id,
-      module: "resume",
-      type: "resume_analysis_complete",
-      title: "Resume analysis complete",
-      message: `Your resume scored ${Math.round(analysis.atsScore)}%${resume.inferredTargetRole ? ` for ${resume.inferredTargetRole}` : ""}`,
-      relatedResourceId: resume._id,
-      relatedResourceType: "Resume",
-    });
-
-    const activityLogPromise = activityLogService.logActivity({
-      userId: req.user._id,
-      module: "resume",
-      action: "analysis_completed",
-      summary: `Scored ${Math.round(analysis.atsScore)}% on Resume Analysis${resume.inferredTargetRole ? ` for ${resume.inferredTargetRole}` : ""}`,
-      relatedResourceId: resume._id,
-      relatedResourceType: "Resume",
-      metadata: { score: Math.round(analysis.atsScore), targetRole: resume.inferredTargetRole || targetRole },
-    });
-
-    const badgesPromise = badgeService.checkBadges(req.user._id);
-
-    await Promise.allSettled([notificationPromise, activityLogPromise, badgesPromise]).then((results) => {
-      results.forEach((result, idx) => {
-        if (result.status === "rejected") {
-          const serviceName =
-            idx === 0
-              ? "NotificationService"
-              : idx === 1
-                ? "ActivityLogService"
-                : "BadgeService";
-          console.error(`[Background Task] ${serviceName} promise rejected in uploadResume:`, result.reason);
-        }
-      });
-    });
-
-    return ApiResponse.success(resume).send(res);
+    const updatedResume = await Resume.findById(resume._id);
+    return ApiResponse.success(updatedResume).send(res);
   } catch (error) {
     if (error.statusCode) throw error;
 
@@ -333,9 +253,54 @@ const deleteResume = asyncHandler(async (req, res) => {
   return ApiResponse.success(null, "Resume analysis deleted").send(res);
 });
 
+/**
+ * POST /api/resume/improve-bullet
+ * Improve a specific bullet point using AI.
+ */
+const improveBulletPoint = asyncHandler(async (req, res) => {
+  const { bulletPoint, role } = req.body;
+  if (!bulletPoint) {
+    throw ApiError.badRequest("Bullet point text is required");
+  }
+
+  const prompt = `You are an expert resume writer and career coach. The user wants to improve a bullet point on their resume.
+${role ? `Their target role is: ${role}` : ""}
+
+Original bullet point:
+"${bulletPoint}"
+
+Please rewrite this bullet point to be more impactful, using strong action verbs, quantifiable metrics where possible, and focusing on the value delivered. Make it sound professional and ATS-friendly.
+Return your response as a JSON object exactly matching this schema:
+{
+  "improved": "The single best rewritten version of the bullet point"
+}`;
+
+  const result = await aiService.generateContent({
+    prompt,
+    responseSchema: {
+      type: "object",
+      properties: {
+        improved: { type: "string" },
+      },
+      required: ["improved"],
+    },
+    feature: "resume_improve_bullet",
+    userId: req.user._id,
+  });
+
+  if (!result.success || !result.data) {
+    throw ApiError.internal(result.message || "Failed to generate improved bullet point");
+  }
+
+  const parsed = typeof result.data === "object" ? result.data : { improved: result.data };
+
+  return ApiResponse.success(parsed, "Bullet point improved").send(res);
+});
+
 module.exports = {
   uploadResume,
   getResumeHistory,
   getResumeById,
   deleteResume,
+  improveBulletPoint,
 };

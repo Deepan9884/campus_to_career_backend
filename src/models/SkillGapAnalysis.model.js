@@ -56,6 +56,15 @@ const skillGapAnalysisSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    matchedSkillsDetail: {
+      type: [{
+        name: String,
+        source: { type: String, enum: ["self-reported", "resume", "github", "event"] },
+        level: { type: String, enum: ["beginner", "intermediate", "advanced", "expert"] },
+      }],
+      default: [],
+    },
+    eventVerifiedSkillCount: { type: Number, default: 0 },
     gaps: {
       type: [gapSchema],
       default: [],

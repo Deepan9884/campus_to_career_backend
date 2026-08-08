@@ -63,6 +63,8 @@ router.post(
 
 router.get("/history", verifyJWT, skillsController.getGapHistory);
 
+router.get("/latest", verifyJWT, skillsController.getLatestAnalysis);
+
 router.get("/:id", verifyJWT, skillsController.getGapById);
 
 router.delete("/:id", verifyJWT, skillsController.deleteGapAnalysis);

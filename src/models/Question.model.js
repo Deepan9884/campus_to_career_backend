@@ -2,12 +2,26 @@ const mongoose = require("mongoose");
 
 const questionSchema = new mongoose.Schema(
   {
-    domain: {
+    roundType: {
       type: String,
-      enum: ["behavioral", "technical"],
-      required: [true, "Domain is required"],
+      enum: ["quiz", "aptitude", "core", "technical", "hr"],
+      required: [true, "Round type is required"],
       index: true,
     },
+    itemType: {
+      type: String,
+      enum: ["mcq", "open_ended"],
+      required: [true, "Item type is required"],
+    },
+    options: {
+      type: [String],
+      default: undefined, // optional; populated for mcq only
+    },
+    correctOptionIndex: {
+      type: Number,
+      default: null, // optional; populated for mcq only
+    },
+
     category: {
       type: String,
     },
@@ -34,6 +48,6 @@ const questionSchema = new mongoose.Schema(
   },
 );
 
-questionSchema.index({ domain: 1, targetRoles: 1 });
+questionSchema.index({ roundType: 1, targetRoles: 1 });
 
 module.exports = mongoose.model("Question", questionSchema);

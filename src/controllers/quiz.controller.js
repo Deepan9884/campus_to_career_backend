@@ -1,4 +1,5 @@
 const LearningRoadmap = require("../models/LearningRoadmap.model");
+const UserSkill = require("../models/UserSkill.model");
 const SkillGapAnalysis = require("../models/SkillGapAnalysis.model");
 const QuizAttempt = require("../models/QuizAttempt.model");
 const aiService = require("../services/ai.service");
@@ -10,9 +11,7 @@ const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 
 function buildQuizPrompt(subTopicName, skillName, resources) {
-  const resourceList = resources
-    .map((r) => `- ${r.name} (${r.platform}, ${r.type})`)
-    .join("\n");
+  const resourceList = resources.map((r) => `- ${r.name} (${r.platform}, ${r.type})`).join("\n");
 
   return `You are an expert technical instructor creating a focused quiz for a specific learning sub-topic.
 
@@ -47,36 +46,53 @@ Do NOT include any explanation or extra fields. The response must be valid JSON 
 const generateQuiz = asyncHandler(async (req, res) => {
   const { roadmapItemId } = req.body;
 
-  // roadmapItemId is the milestone ID; find the roadmap that contains it
-  const roadmap = await LearningRoadmap.findOne({
+  let roadmap = null;
+  let milestone = null;
+  let subTopic = null;
+  let skillName = "";
+  let subTopicId = "";
+  let resources = [];
+  let isStandaloneSkill = false;
+  let basedOnGapAnalysis = null;
+
+  // 1. Try to find as roadmap milestone
+  roadmap = await LearningRoadmap.findOne({
     "milestones._id": roadmapItemId,
     user: req.user._id,
   });
-  if (!roadmap) {
-    throw ApiError.notFound("Roadmap not found");
-  }
 
-  if (roadmap.status !== "completed") {
-    throw ApiError.badRequest("Roadmap generation is not complete");
-  }
+  if (roadmap) {
+    if (roadmap.status !== "completed") {
+      throw ApiError.badRequest("Roadmap generation is not complete");
+    }
+    if (!roadmap.milestones || roadmap.milestones.length === 0) {
+      throw ApiError.badRequest("Roadmap has no milestones");
+    }
+    milestone = roadmap.milestones.find((m) => m._id.toString() === roadmapItemId);
+    subTopic = roadmap.subTopics?.find((st) => st.subTopicId === milestone.subTopicId);
 
-  if (!roadmap.milestones || roadmap.milestones.length === 0) {
-    throw ApiError.badRequest("Roadmap has no milestones");
-  }
+    if (!subTopic) throw ApiError.notFound("Sub-topic not found for this milestone");
 
-  const milestone = roadmap.milestones.find((m) => m._id.toString() === roadmapItemId);
-  if (!milestone) {
-    throw ApiError.notFound("Roadmap item (milestone) not found");
-  }
-
-  const subTopic = roadmap.subTopics?.find((st) => st.subTopicId === milestone.subTopicId);
-  if (!subTopic) {
-    throw ApiError.notFound("Sub-topic not found for this milestone");
+    skillName = milestone.skillName;
+    subTopicId = subTopic.subTopicId;
+    resources = milestone.resources || [];
+    basedOnGapAnalysis = roadmap.basedOnGapAnalysis;
+  } else {
+    // 2. Try as standalone skill
+    const skill = await UserSkill.findOne({ _id: roadmapItemId, user: req.user._id });
+    if (!skill) {
+      throw ApiError.notFound("Roadmap item or Skill not found");
+    }
+    skillName = skill.name;
+    subTopicId = `standalone_${skill._id.toString()}`;
+    subTopic = { subTopicId, name: skill.name };
+    resources = [];
+    isStandaloneSkill = true;
   }
 
   const existingAttempt = await QuizAttempt.findOne({
     userId: req.user._id,
-    subTopicId: subTopic.subTopicId,
+    subTopicId: subTopicId,
     score: { $ne: null },
     passed: true,
   });
@@ -104,7 +120,7 @@ const generateQuiz = asyncHandler(async (req, res) => {
     required: ["questions"],
   };
 
-  const prompt = buildQuizPrompt(subTopic.name, milestone.skillName, milestone.resources);
+  const prompt = buildQuizPrompt(subTopic.name, skillName, resources);
 
   const aiResult = await aiService.generateContent({
     prompt,
@@ -124,28 +140,33 @@ const generateQuiz = asyncHandler(async (req, res) => {
   }
 
   for (const q of aiData.questions) {
-    if (!q.questionId || !q.questionText || !Array.isArray(q.keyPoints) || q.keyPoints.length === 0) {
+    if (
+      !q.questionId ||
+      !q.questionText ||
+      !Array.isArray(q.keyPoints) ||
+      q.keyPoints.length === 0
+    ) {
       throw ApiError.internal("AI returned malformed question");
     }
   }
 
   const attempt = await QuizAttempt.create({
     userId: req.user._id,
-    roadmapItemId: roadmap._id,
-    skillName: milestone.skillName,
-    subTopicId: subTopic.subTopicId,
+    roadmapItemId: isStandaloneSkill ? roadmapItemId : roadmap._id, // if standalone, just store the skill ID
+    skillName: skillName,
+    subTopicId: subTopicId,
     questions: aiData.questions,
     userAnswers: [],
     score: null,
     passed: false,
   });
 
-  if (isFirstAttempt) {
-    const gapAnalysis = await SkillGapAnalysis.findById(roadmap.basedOnGapAnalysis);
+  if (isFirstAttempt && !isStandaloneSkill) {
+    const gapAnalysis = await SkillGapAnalysis.findById(basedOnGapAnalysis);
     if (gapAnalysis) {
-      const gap = gapAnalysis.gaps.find((g) => g.skillName === milestone.skillName);
+      const gap = gapAnalysis.gaps.find((g) => g.skillName === skillName);
       if (gap) {
-        const st = gap.subTopics.find((s) => s.subTopicId === subTopic.subTopicId);
+        const st = gap.subTopics.find((s) => s.subTopicId === subTopicId);
         if (st && st.status === "not_started") {
           st.status = "in_progress";
           await gapAnalysis.save();
@@ -161,9 +182,9 @@ const generateQuiz = asyncHandler(async (req, res) => {
 
   return ApiResponse.success({
     attemptId: attempt._id,
-    subTopicId: subTopic.subTopicId,
+    subTopicId: subTopicId,
     subTopicName: subTopic.name,
-    skillName: milestone.skillName,
+    skillName: skillName,
     questions: responseQuestions,
     isFirstAttempt,
   }).send(res);
@@ -243,7 +264,12 @@ const submitQuiz = asyncHandler(async (req, res) => {
     required: ["perQuestionFeedback"],
   };
 
-  const prompt = buildGradingPrompt(attempt.questions, answers, attempt.skillName, attempt.subTopicId);
+  const prompt = buildGradingPrompt(
+    attempt.questions,
+    answers,
+    attempt.skillName,
+    attempt.subTopicId,
+  );
 
   const gradingResult = await aiService.generateContent({
     prompt,
@@ -258,7 +284,10 @@ const submitQuiz = asyncHandler(async (req, res) => {
 
   const gradingData = gradingResult.data;
 
-  if (!gradingData.perQuestionFeedback || gradingData.perQuestionFeedback.length !== attempt.questions.length) {
+  if (
+    !gradingData.perQuestionFeedback ||
+    gradingData.perQuestionFeedback.length !== attempt.questions.length
+  ) {
     throw ApiError.internal("AI returned invalid grading feedback count");
   }
 
@@ -297,6 +326,28 @@ const submitQuiz = asyncHandler(async (req, res) => {
   await attempt.save();
 
   if (passed) {
+    // Auto-upgrade user skill level in UserSkill model
+    try {
+      const userSkill = await UserSkill.findOne({
+        user: req.user._id,
+        name: new RegExp(`^${attempt.skillName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+      });
+      if (userSkill) {
+        if (userSkill.level === "beginner") userSkill.level = "intermediate";
+        else if (userSkill.level === "intermediate") userSkill.level = "advanced";
+        await userSkill.save();
+      } else {
+        await UserSkill.create({
+          user: req.user._id,
+          name: attempt.skillName,
+          level: "intermediate",
+          source: "quiz",
+        });
+      }
+    } catch (err) {
+      console.error("Failed to auto-upgrade user skill level:", err);
+    }
+
     const roadmap = await LearningRoadmap.findById(attempt.roadmapItemId);
     if (roadmap) {
       const st = roadmap.subTopics.find((s) => s.subTopicId === attempt.subTopicId);
@@ -342,20 +393,29 @@ const submitQuiz = asyncHandler(async (req, res) => {
       summary: `Passed quiz for ${attempt.skillName} — ${attempt.subTopicId} with ${overallScore}%`,
       relatedResourceId: attempt._id,
       relatedResourceType: "QuizAttempt",
-      metadata: { skillName: attempt.skillName, subTopicId: attempt.subTopicId, score: overallScore },
+      metadata: {
+        skillName: attempt.skillName,
+        subTopicId: attempt.subTopicId,
+        score: overallScore,
+      },
     });
 
     const badgesPromise = badgeService.checkBadges(req.user._id);
 
-    await Promise.allSettled([notificationPromise, activityLogPromise, badgesPromise]).then((results) => {
-      results.forEach((result, idx) => {
-        if (result.status === "rejected") {
-          const serviceName =
-            idx === 0 ? "NotificationService" : idx === 1 ? "ActivityLogService" : "BadgeService";
-          console.error(`[Background Task] ${serviceName} promise rejected in submitQuiz:`, result.reason);
-        }
-      });
-    });
+    await Promise.allSettled([notificationPromise, activityLogPromise, badgesPromise]).then(
+      (results) => {
+        results.forEach((result, idx) => {
+          if (result.status === "rejected") {
+            const serviceName =
+              idx === 0 ? "NotificationService" : idx === 1 ? "ActivityLogService" : "BadgeService";
+            console.error(
+              `[Background Task] ${serviceName} promise rejected in submitQuiz:`,
+              result.reason,
+            );
+          }
+        });
+      },
+    );
   }
 
   return ApiResponse.success({

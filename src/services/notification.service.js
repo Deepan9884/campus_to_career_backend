@@ -1,13 +1,45 @@
 const Notification = require("../models/Notification.model");
 const User = require("../models/User.model");
+const IORedis = require("ioredis");
 
-/**
- * In-memory map of userId.toString() -> Set<Express response>.
- * SSE connections register themselves here on connect and remove themselves on close.
- * Module-level state is fine for single-process Node.js deployments;
- * for horizontal scaling swap this with Redis pub/sub.
- */
+const redisUrl = process.env.REDIS_URL || "redis://127.0.0.1:6379";
+const redisOptions = {
+  maxRetriesPerRequest: 1,
+  enableOfflineQueue: false,
+  retryStrategy(times) {
+    if (times > 3) return null;
+    return Math.min(times * 200, 1000);
+  },
+};
+const pub = new IORedis(redisUrl, redisOptions);
+const sub = new IORedis(redisUrl, redisOptions);
+
+pub.on("error", (err) => {
+  // Suppress uncaught Redis connection error logs when Redis is not running
+});
+sub.on("error", (err) => {
+  // Suppress uncaught Redis connection error logs when Redis is not running
+});
+
 const sseConnections = new Map();
+
+// Listen for notifications from other instances when Redis is connected
+sub.on("connect", () => {
+  sub.subscribe("sse-notifications", (err) => {
+    if (err) console.warn("[notifications] Redis subscribe error:", err.message);
+  });
+});
+
+sub.on("message", (channel, message) => {
+  if (channel === "sse-notifications") {
+    try {
+      const payload = JSON.parse(message);
+      pushToOpenConnections(payload.userId, payload.data);
+    } catch (err) {
+      console.warn("[notifications] Failed to process Redis message:", err);
+    }
+  }
+});
 
 /**
  * Register an open SSE response for a user.
@@ -118,7 +150,7 @@ async function createNotification({
   }
 
   try {
-    pushToOpenConnections(userId, {
+    const payload = {
       _id: saved._id,
       user: saved.user,
       type: saved.type,
@@ -128,7 +160,13 @@ async function createNotification({
       relatedResourceType: saved.relatedResourceType,
       read: saved.read,
       createdAt: saved.createdAt,
-    });
+    };
+    
+    // Push locally and to other instances via Redis
+    pushToOpenConnections(userId, payload);
+    if (pub.status === "ready") {
+      pub.publish("sse-notifications", JSON.stringify({ userId: userId.toString(), data: payload })).catch(() => {});
+    }
   } catch (err) {
     console.warn("[notifications] SSE push failed:", err.message);
   }

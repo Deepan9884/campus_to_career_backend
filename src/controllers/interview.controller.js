@@ -1,5 +1,5 @@
 const Question = require("../models/Question.model");
-const Interview = require("../models/Interview.model");
+const InterviewSession = require("../models/InterviewSession.model");
 const aiService = require("../services/ai.service");
 const notificationService = require("../services/notification.service");
 const activityLogService = require("../services/activityLog.service");
@@ -26,11 +26,8 @@ function getAdjacentDifficulties(difficulty) {
   return ["easy", "hard"];
 }
 
-/**
- * Build the prompt sent to Gemini for question selection and adaptation.
- */
-function buildSelectionPrompt(candidates, domain, targetRole, questionCount) {
-  let prompt = `You are an expert technical interviewer. You will select ${questionCount} questions from the provided question bank for a ${domain} interview.`;
+function buildSelectionPrompt(candidates, roundType, targetRole, questionCount) {
+  let prompt = `You are an expert technical interviewer. You will select ${questionCount} questions from the provided question bank for a ${roundType} round interview.`;
 
   if (targetRole) {
     prompt += ` The candidate is applying for the target role:
@@ -63,11 +60,8 @@ IMPORTANT: Each originalQuestionId must exactly match one of the IDs in the bank
   return prompt;
 }
 
-/**
- * Build the prompt sent to Gemini for batch scoring.
- */
-function buildScoringPrompt(questions, domain, targetRole) {
-  let prompt = `You are an expert ${domain} interviewer. Evaluate the following interview transcript and provide a structured assessment.`;
+function buildScoringPrompt(questions, roundType, targetRole) {
+  let prompt = `You are an expert ${roundType} interviewer. Evaluate the following interview transcript and provide a structured assessment.`;
 
   if (targetRole) {
     prompt += `\nThe candidate is interviewing for the target role:
@@ -75,11 +69,10 @@ function buildScoringPrompt(questions, domain, targetRole) {
   }
 
   prompt += `
-
 For each question, the candidate's answer is provided. Score each answer individually (0-100) and provide brief feedback.
 
 Then provide:
-- overallScore: A number 0-100 representing the overall interview performance
+- roundScore: A number 0-100 representing the overall round performance
 - strengths: 2-4 specific strengths demonstrated in the answers
 - improvements: 3-5 specific, actionable areas for improvement
 - summary: A 1-2 sentence overall assessment
@@ -91,51 +84,86 @@ Transcript:
     prompt += `\n--- Question ${i + 1} ---\nQ: ${q.questionText}\nA: ${q.answer}\n`;
   });
 
-  prompt += `\nReturn evaluations in a "perQuestionFeedback" array in the EXACT SAME ORDER as the questions above. Each element must have: questionIndex (0-based: 0 for the first question, 1 for the second, 2 for the third, etc.), score (0-100), and feedback (string). The array order must match the question order exactly. Be honest and constructive — highlight genuine strengths but also identify specific gaps.`;
+  prompt += `\nReturn evaluations in a "perQuestionFeedback" array in the EXACT SAME ORDER as the questions above. Each element must have: questionIndex (0-based), score (0-100), and feedback (string). Be honest and constructive.`;
 
   return prompt;
 }
 
-/**
- * POST /api/interview/start
- */
-const startInterview = asyncHandler(async (req, res) => {
-  const { domain, targetRole, questionCount = 5, difficulty } = req.body;
+function stripCorrectOptionIndex(sessionDoc) {
+  const obj = sessionDoc.toObject ? sessionDoc.toObject() : JSON.parse(JSON.stringify(sessionDoc));
+  const sessionCompleted = obj.status === "completed" || obj.status === "failed";
 
-  // Build base filter
-  const filter = { domain };
+  obj.rounds = (obj.rounds || []).map((r) => {
+    const roundCompleted = r.status === "completed" || r.status === "failed" || sessionCompleted;
+    return {
+      ...r,
+      items: (r.items || []).map((it) => {
+        if (roundCompleted) {
+          return it;
+        }
+        const { correctOptionIndex, ...rest } = it;
+        return rest;
+      }),
+    };
+  });
+  return obj;
+}
+
+function computeAutoRoundScore(round) {
+  const items = round.items || [];
+  if (items.length === 0) return null;
+  const correctCount = items.reduce((acc, it) => acc + (it.isCorrect ? 1 : 0), 0);
+  return Math.round((correctCount / items.length) * 100);
+}
+
+async function buildRoundBankItems({ roundType, targetRole, difficulty, questionCount, gradingMethod, userId }) {
+  // Query: roundType + targetRole with fallback to empty array (same pattern as old controller)
+  const filter = { roundType };
   if (targetRole) {
     filter.$or = [{ targetRoles: { $in: [targetRole] } }, { targetRoles: { $size: 0 } }];
   }
 
   let candidates = await Question.find(filter).lean();
 
-  if (candidates.length === 0) {
-    throw ApiError.badRequest(
-      `No questions found for domain "${domain}"${targetRole ? ` and target role "${targetRole}"` : ""}`,
-    );
-  }
+  if (!candidates || candidates.length === 0) return { items: [], bankEmpty: true };
 
-  // Difficulty filtering
-  const actualCount = Math.min(questionCount, candidates.length);
   if (difficulty) {
     const exact = candidates.filter((q) => q.difficulty === difficulty);
-    if (exact.length >= actualCount) {
+    if (exact.length >= Math.min(questionCount, candidates.length)) {
       candidates = shuffle(exact);
     } else {
-      const adjacent = candidates.filter((q) =>
-        getAdjacentDifficulties(difficulty).includes(q.difficulty),
-      );
+      const adjacent = candidates.filter((q) => getAdjacentDifficulties(difficulty).includes(q.difficulty));
       candidates = shuffle([...exact, ...adjacent]);
     }
   } else {
     candidates = shuffle(candidates);
   }
 
+  const actualCount = Math.min(questionCount, candidates.length);
   candidates = candidates.slice(0, actualCount);
 
-  // Gemini selection / adaptation
-  const selectionPrompt = buildSelectionPrompt(candidates, domain, targetRole, actualCount);
+  const sampleItemsFromBank = (bankQs) =>
+    bankQs.map((q) => ({
+      questionId: q._id,
+      questionText: q.questionText,
+      itemType: q.itemType,
+      options: q.options,
+      correctOptionIndex: q.correctOptionIndex,
+      idealAnswerPoints: q.idealAnswerPoints,
+      selectedOptionIndex: null,
+      answer: null,
+      isCorrect: null,
+      score: null,
+      feedback: null,
+      answeredAt: null,
+    }));
+
+  if (gradingMethod === "auto") {
+    return { items: sampleItemsFromBank(candidates), bankEmpty: false };
+  }
+
+  // Gemini selection/adaptation
+  const selectionPrompt = buildSelectionPrompt(candidates, roundType, targetRole, actualCount);
   const selectionResponseSchema = {
     type: "array",
     items: {
@@ -151,110 +179,69 @@ const startInterview = asyncHandler(async (req, res) => {
   const selectionResult = await aiService.generateContent({
     prompt: selectionPrompt,
     responseSchema: selectionResponseSchema,
-    feature: "interview-question-selection",
-    userId: req.user._id,
+    feature: `interview-${roundType}-selection`,
+    userId,
   });
 
-  let questions;
-  if (selectionResult.success) {
-    const adapted = selectionResult.data;
-    if (Array.isArray(adapted) && adapted.length > 0) {
-      questions = adapted.map((item) => {
-        const original = candidates.find((c) => c._id.toString() === item.originalQuestionId);
-        return {
-          questionId: original ? original._id : null,
-          questionText:
-            item.adaptedText || (original ? original.questionText : "Error loading question"),
-        };
-      });
-    } else {
-      // Gemini returned success but empty or invalid — fall back
-      questions = candidates.map((c) => ({
-        questionId: c._id,
-        questionText: c.questionText,
-      }));
+  if (!selectionResult?.success) {
+    return { items: sampleItemsFromBank(candidates), bankEmpty: false };
+  }
+
+  const adapted = selectionResult.data;
+  if (!Array.isArray(adapted) || adapted.length === 0) {
+    return { items: sampleItemsFromBank(candidates), bankEmpty: false };
+  }
+
+  const items = adapted.map((item) => {
+    const original = candidates.find((c) => c._id.toString() === item.originalQuestionId);
+    if (!original) {
+      // shouldn't happen if Gemini respects IDs, but keep session resilient
+      return {
+        questionId: null,
+        questionText: item.adaptedText || "Error loading question",
+        itemType: "open_ended",
+        options: undefined,
+        correctOptionIndex: null,
+        idealAnswerPoints: undefined,
+        selectedOptionIndex: null,
+        answer: null,
+        isCorrect: null,
+        score: null,
+        feedback: null,
+        answeredAt: null,
+      };
     }
-  } else {
-    // Gemini failed — fall back to raw bank questions
-    questions = candidates.map((c) => ({
-      questionId: c._id,
-      questionText: c.questionText,
-    }));
-  }
 
-  const interview = await Interview.create({
-    user: req.user._id,
-    domain,
-    targetRole: targetRole || null,
-    difficulty: difficulty || null,
-    questions,
-    status: "in-progress",
-    startedAt: new Date(),
+    return {
+      questionId: original._id,
+      questionText: item.adaptedText || original.questionText,
+      itemType: original.itemType,
+      options: original.options,
+      correctOptionIndex: original.correctOptionIndex,
+      idealAnswerPoints: original.idealAnswerPoints,
+      selectedOptionIndex: null,
+      answer: null,
+      isCorrect: null,
+      score: null,
+      feedback: null,
+      answeredAt: null,
+    };
   });
 
-  return ApiResponse.success(interview).send(res);
-});
+  return { items, bankEmpty: items.length === 0 };
+}
 
-/**
- * POST /api/interview/:id/answer
- */
-const answerQuestion = asyncHandler(async (req, res) => {
-  const interview = await Interview.findById(req.params.id);
-
-  if (!interview || interview.user.toString() !== req.user._id.toString()) {
-    throw ApiError.notFound("Interview not found");
-  }
-
-  if (interview.status !== "in-progress") {
-    throw ApiError.badRequest("Interview is not in progress");
-  }
-
-  const { questionIndex, answer } = req.body;
-
-  if (questionIndex < 0 || questionIndex >= interview.questions.length) {
-    throw ApiError.badRequest("Invalid question index");
-  }
-
-  interview.questions[questionIndex].answer = answer;
-  interview.questions[questionIndex].answeredAt = new Date();
-
-  await interview.save();
-
-  return ApiResponse.success(interview).send(res);
-});
-
-/**
- * POST /api/interview/:id/finish
- */
-const finishInterview = asyncHandler(async (req, res) => {
-  const interview = await Interview.findById(req.params.id);
-
-  if (!interview || interview.user.toString() !== req.user._id.toString()) {
-    throw ApiError.notFound("Interview not found");
-  }
-
-  if (interview.status !== "in-progress") {
-    throw ApiError.badRequest("Interview is not in progress");
-  }
-
-  // Check all questions answered
-  const unanswered = interview.questions.findIndex((q) => !q.answer || !q.answer.trim());
-  if (unanswered !== -1) {
-    throw ApiError.badRequest(
-      `Question at index ${unanswered} has not been answered yet. Answer all questions before finishing.`,
-    );
-  }
-
-  const transcript = interview.questions.map((q) => ({
-    questionText: q.questionText,
-    answer: q.answer,
+async function scoreGeminiRound(round, { roundType, targetRole, userId }) {
+  const transcript = (round.items || []).map((it) => ({
+    questionText: it.questionText,
+    answer: it.itemType === "mcq" ? "" : it.answer || "",
   }));
 
-  const scoringPrompt = buildScoringPrompt(transcript, interview.domain, interview.targetRole);
+  const scoringPrompt = buildScoringPrompt(transcript, roundType, targetRole);
   const scoringResponseSchema = {
     type: "object",
     properties: {
-      overallScore: { type: "number", minimum: 0, maximum: 100 },
+      roundScore: { type: "number", minimum: 0, maximum: 100 },
       perQuestionFeedback: {
         type: "array",
         items: {
@@ -271,129 +258,393 @@ const finishInterview = asyncHandler(async (req, res) => {
       improvements: { type: "array", items: { type: "string" } },
       summary: { type: "string" },
     },
-    required: ["overallScore", "perQuestionFeedback", "strengths", "improvements", "summary"],
+    required: ["roundScore", "perQuestionFeedback", "strengths", "improvements", "summary"],
   };
 
   const scoringResult = await aiService.generateContent({
     prompt: scoringPrompt,
     responseSchema: scoringResponseSchema,
-    feature: "interview-scoring",
-    userId: req.user._id,
+    feature: `interview-${roundType}-scoring`,
+    userId,
   });
 
-  if (!scoringResult.success) {
-    interview.status = "failed";
-    interview.errorMessage = scoringResult.message;
-    await interview.save();
-
-    if (scoringResult.errorType === "QUOTA_EXCEEDED") {
+  if (!scoringResult?.success) {
+    if (scoringResult?.errorType === "QUOTA_EXCEEDED") {
       throw ApiError.internal("AI service at capacity, please try again shortly.");
     }
-    throw ApiError.internal(scoringResult.message);
+    throw ApiError.internal(scoringResult?.message || "Failed to score round via AI");
   }
 
   const scores = scoringResult.data;
 
-  // Apply per-question scores.
-  // Primary strategy: match by array position (Gemini returns feedback in the same
-  // order as the transcript). Fallback: match by questionIndex if positions don't align.
-  if (scores.perQuestionFeedback && Array.isArray(scores.perQuestionFeedback)) {
-    const feedbacks = scores.perQuestionFeedback;
-    const qLen = interview.questions.length;
+  // Position-based first, then questionIndex fallback
+  const feedbacks = scores.perQuestionFeedback || [];
+  const items = round.items || [];
+  const itemCount = items.length;
 
-    // Position-based: assign feedback[i] → question[i] (matches transcript order)
-    for (let i = 0; i < qLen && i < feedbacks.length; i++) {
-      const fb = feedbacks[i];
-      if (fb && typeof fb.score === "number") {
-        interview.questions[i].score = Math.round(fb.score);
-        interview.questions[i].feedback = fb.feedback || "";
-      }
-    }
-
-    // Fallback: any still-unscored questions get matched by questionIndex
-    for (let i = 0; i < qLen; i++) {
-      if (interview.questions[i].score != null) continue;
-      const fb = feedbacks.find((f) => {
-        if (!f || typeof f.score !== "number") return false;
-        let idx = f.questionIndex;
-        if (typeof idx === "number" && idx >= 1 && idx <= qLen) idx -= 1;
-        return idx === i;
-      });
-      if (fb) {
-        interview.questions[i].score = Math.round(fb.score);
-        interview.questions[i].feedback = fb.feedback || "";
-      }
+  for (let i = 0; i < itemCount && i < feedbacks.length; i++) {
+    const fb = feedbacks[i];
+    if (fb && typeof fb.score === "number") {
+      items[i].score = Math.round(fb.score);
+      items[i].feedback = fb.feedback || "";
     }
   }
 
-  interview.overallScore = Math.round(scores.overallScore);
-  interview.strengths = scores.strengths || [];
-  interview.improvements = scores.improvements || [];
-  interview.summary = scores.summary || "";
-  interview.status = "completed";
-  interview.completedAt = new Date();
-
-  await interview.save();
-
-  const notificationPromise = notificationService.createNotification({
-    userId: req.user._id,
-    module: "interview",
-    type: "interview_complete",
-    title: "Interview complete",
-    message: `You scored ${Math.round(scores.overallScore)}% overall in your ${interview.domain} interview${interview.targetRole ? ` for ${interview.targetRole}` : ""}`,
-    relatedResourceId: interview._id,
-    relatedResourceType: "Interview",
-  });
-
-  const activityLogPromise = activityLogService.logActivity({
-    userId: req.user._id,
-    module: "interview",
-    action: "interview_finished",
-    summary: `Scored ${Math.round(scores.overallScore)}% on ${interview.domain} Interview${interview.targetRole ? ` for ${interview.targetRole}` : ""}`,
-    relatedResourceId: interview._id,
-    relatedResourceType: "Interview",
-    metadata: { score: Math.round(scores.overallScore), domain: interview.domain, targetRole: interview.targetRole },
-  });
-
-  const badgesPromise = activityLogPromise.then(() => badgeService.checkBadges(req.user._id));
-
-  await Promise.allSettled([notificationPromise, activityLogPromise, badgesPromise]).then((results) => {
-    results.forEach((result, idx) => {
-      if (result.status === "rejected") {
-        const serviceName =
-          idx === 0
-            ? "NotificationService"
-            : idx === 1
-              ? "ActivityLogService"
-              : "BadgeService";
-        console.error(`[Background Task] ${serviceName} promise rejected in finishInterview:`, result.reason);
-      }
+  for (let i = 0; i < itemCount; i++) {
+    if (items[i].score != null) continue;
+    const fb = feedbacks.find((f) => {
+      if (!f || typeof f.score !== "number") return false;
+      let idx = f.questionIndex;
+      if (typeof idx === "number" && idx >= 1 && idx <= itemCount) idx -= 1; // fallback alignment
+      return idx === i;
     });
+    if (fb) {
+      items[i].score = Math.round(fb.score);
+      items[i].feedback = fb.feedback || "";
+    }
+  }
+
+  return {
+    roundScore: Math.round(scores.roundScore),
+    strengths: scores.strengths || [],
+    improvements: scores.improvements || [],
+    summary: scores.summary || "",
+  };
+}
+
+/**
+ * POST /api/interview/start
+ */
+const startSession = asyncHandler(async (req, res) => {
+  const { targetRole, questionCount = 5, difficulty } = req.body;
+
+  const roundOrder = ["quiz", "aptitude", "core", "technical", "hr"];
+  const autoRounds = new Set(["quiz", "aptitude"]);
+  const geminiRounds = new Set(["core", "technical", "hr"]);
+
+  const rounds = [];
+  let anyRoundHadBank = false;
+
+  for (let i = 0; i < roundOrder.length; i++) {
+    const roundType = roundOrder[i];
+    const gradingMethod = autoRounds.has(roundType) ? "auto" : geminiRounds.has(roundType) ? "gemini" : "auto";
+
+    const { items, bankEmpty } = await buildRoundBankItems({
+      roundType,
+      targetRole,
+      difficulty,
+      questionCount,
+      gradingMethod,
+      userId: req.user._id,
+    });
+
+    if (!bankEmpty && items.length > 0) anyRoundHadBank = true;
+
+    rounds.push({
+      roundType,
+      status: "pending",
+      gradingMethod,
+      items: items.length > 0 ? items : [],
+      roundScore: null,
+      strengths: null,
+      improvements: null,
+      summary: null,
+      startedAt: null,
+      completedAt: null,
+      errorMessage: items.length === 0 ? `No questions found for ${roundType}` : null,
+    });
+  }
+
+  if (!anyRoundHadBank) {
+    throw ApiError.badRequest("No questions found for the requested target role / difficulty");
+  }
+
+  let firstValidIndex = -1;
+  for (let i = 0; i < rounds.length; i++) {
+    if (rounds[i].items.length > 0) {
+      firstValidIndex = i;
+      rounds[i].status = "in-progress";
+      rounds[i].startedAt = new Date();
+      break;
+    } else {
+      rounds[i].status = "failed";
+      rounds[i].completedAt = new Date();
+    }
+  }
+
+  const session = await InterviewSession.create({
+    user: req.user._id,
+    targetRole: targetRole || null,
+    status: "in-progress",
+    currentRoundIndex: firstValidIndex !== -1 ? firstValidIndex : 0,
+    rounds,
+    overallScore: null,
+    skillDimensionScores: {
+      technicalKnowledge: null,
+      problemSolving: null,
+      handsOnTechnical: null,
+      communication: null,
+    },
+    startedAt: new Date(),
+    completedAt: null,
   });
 
-  return ApiResponse.success(interview).send(res);
+  // IMPORTANT: strip correctOptionIndex from response before sending to client
+  return ApiResponse.success(stripCorrectOptionIndex(session)).send(res);
+});
+
+/**
+ * POST /api/interview/:id/rounds/:roundType/answer
+ */
+const submitAnswer = asyncHandler(async (req, res) => {
+  const { roundType } = req.params;
+  const { itemIndex, selectedOptionIndex, answer } = req.body;
+
+  const session = await InterviewSession.findById(req.params.id);
+  if (!session || session.user.toString() !== req.user._id.toString()) {
+    throw ApiError.notFound("Interview session not found");
+  }
+  if (session.status !== "in-progress") {
+    throw ApiError.badRequest("Interview session is not in progress");
+  }
+
+  const roundIndex = session.rounds.findIndex((r) => r.roundType === roundType);
+  if (roundIndex === -1) throw ApiError.badRequest("Invalid roundType");
+  if (roundIndex !== session.currentRoundIndex) {
+    throw ApiError.badRequest("This round is not currently in progress");
+  }
+
+  const round = session.rounds[roundIndex];
+  if (round.status !== "in-progress") throw ApiError.badRequest("This round is not currently in progress");
+
+  const item = round.items?.[itemIndex];
+  if (!item) throw ApiError.badRequest("Invalid itemIndex");
+
+  if (item.itemType === "mcq") {
+    if (typeof selectedOptionIndex !== "number") {
+      throw ApiError.badRequest("selectedOptionIndex is required for mcq items");
+    }
+    item.selectedOptionIndex = selectedOptionIndex;
+    item.answeredAt = new Date();
+    item.isCorrect = typeof item.correctOptionIndex === "number"
+      ? item.selectedOptionIndex === item.correctOptionIndex
+      : null;
+    item.answer = null;
+  } else {
+    if (typeof answer !== "string" || !answer.trim()) {
+      throw ApiError.badRequest("answer is required for open_ended items");
+    }
+    item.answer = answer;
+    item.answeredAt = new Date();
+    item.selectedOptionIndex = null;
+    item.isCorrect = null;
+  }
+
+  await session.save();
+  return ApiResponse.success(stripCorrectOptionIndex(session)).send(res);
+});
+
+/**
+ * POST /api/interview/:id/rounds/:roundType/finish
+ */
+const finishRound = asyncHandler(async (req, res) => {
+  const { roundType } = req.params;
+
+  const session = await InterviewSession.findById(req.params.id);
+  if (!session || session.user.toString() !== req.user._id.toString()) {
+    throw ApiError.notFound("Interview session not found");
+  }
+  if (session.status !== "in-progress") {
+    throw ApiError.badRequest("Interview session is not in progress");
+  }
+
+  const roundIndex = session.rounds.findIndex((r) => r.roundType === roundType);
+  if (roundIndex === -1) throw ApiError.badRequest("Invalid roundType");
+  if (roundIndex !== session.currentRoundIndex) throw ApiError.badRequest("This round is not currently in progress");
+
+  const round = session.rounds[roundIndex];
+  if (round.status !== "in-progress") throw ApiError.badRequest("This round is not currently in progress");
+
+  const unansweredIdx = (round.items || []).findIndex((it) => {
+    if (it.itemType === "mcq") return it.selectedOptionIndex == null;
+    return !it.answer || !it.answer.trim();
+  });
+
+  if (unansweredIdx !== -1) {
+    throw ApiError.badRequest(`Item at index ${unansweredIdx} has not been answered yet`);
+  }
+
+  // If round has no items (should be 'failed' already), allow finish to mark failed
+  if (!round.items || round.items.length === 0) {
+    round.status = "failed";
+    round.errorMessage = round.errorMessage || `No questions found for ${roundType}`;
+    round.completedAt = new Date();
+    await session.save();
+  } else if (round.gradingMethod === "auto") {
+    for (const item of round.items || []) {
+      if (item.itemType === "mcq" && (item.correctOptionIndex == null || item.isCorrect == null)) {
+        let q = null;
+        if (item.questionId) {
+          q = await Question.findById(item.questionId).select("correctOptionIndex").lean();
+        }
+        if (!q && item.questionText) {
+          q = await Question.findOne({ questionText: item.questionText }).select("correctOptionIndex").lean();
+        }
+        if (q && typeof q.correctOptionIndex === "number") {
+          item.correctOptionIndex = q.correctOptionIndex;
+        }
+        if (item.selectedOptionIndex != null && item.correctOptionIndex != null) {
+          item.isCorrect = item.selectedOptionIndex === item.correctOptionIndex;
+          item.score = item.isCorrect ? 100 : 0;
+        }
+      }
+    }
+    round.roundScore = computeAutoRoundScore(round);
+    round.status = "completed";
+    round.completedAt = new Date();
+  } else if (round.gradingMethod === "gemini") {
+    try {
+      const scored = await scoreGeminiRound(round, {
+        roundType,
+        targetRole: session.targetRole || null,
+        userId: req.user._id,
+      });
+
+      round.roundScore = scored.roundScore;
+      round.strengths = scored.strengths;
+      round.improvements = scored.improvements;
+      round.summary = scored.summary;
+      round.status = "completed";
+      round.completedAt = new Date();
+    } catch (err) {
+      round.status = "failed";
+      round.errorMessage = err?.message || "Gemini scoring failed";
+      round.completedAt = new Date();
+    }
+  }
+
+  round.status = round.status || "completed";
+
+  // Advance to next valid round or complete session
+  let nextValidIndex = -1;
+  for (let i = roundIndex + 1; i < session.rounds.length; i++) {
+    const nextRound = session.rounds[i];
+    if (nextRound.items && nextRound.items.length > 0) {
+      nextValidIndex = i;
+      nextRound.status = "in-progress";
+      nextRound.startedAt = new Date();
+      break;
+    } else {
+      nextRound.status = "failed";
+      nextRound.errorMessage = nextRound.errorMessage || `No questions found for ${nextRound.roundType}`;
+      nextRound.completedAt = new Date();
+    }
+  }
+
+  if (nextValidIndex === -1) {
+    // Task 1b computeSessionResults
+    const completedRounds = session.rounds.filter((r) => r.status === "completed" && typeof r.roundScore === "number");
+    const failedOrSkipped = session.rounds.filter((r) => r.status !== "completed");
+
+    const overallScore = completedRounds.length > 0
+      ? Math.round(completedRounds.reduce((sum, r) => sum + (r.roundScore || 0), 0) / completedRounds.length)
+      : null;
+
+    const avgByType = (types) => {
+      const rs = session.rounds.filter((r) => types.includes(r.roundType) && r.status === "completed" && typeof r.roundScore === "number");
+      if (rs.length === 0) return null;
+      return Math.round(rs.reduce((sum, r) => sum + (r.roundScore || 0), 0) / rs.length);
+    };
+
+    const technicalKnowledge = avgByType(["quiz", "core"]);
+    const problemSolving = avgByType(["aptitude"]);
+    const handsOnTechnical = avgByType(["technical"]);
+    const communication = avgByType(["hr"]);
+
+    session.overallScore = overallScore;
+    session.skillDimensionScores = {
+      technicalKnowledge,
+      problemSolving,
+      handsOnTechnical,
+      communication,
+    };
+    session.status = "completed";
+    session.completedAt = new Date();
+    // Update currentRoundIndex to point to the end to signify completion
+    session.currentRoundIndex = session.rounds.length - 1;
+
+    const targetRoleText = session.targetRole ? ` for ${session.targetRole}` : "";
+    const notifMessage =
+      typeof session.overallScore === "number"
+        ? `You scored ${Math.round(session.overallScore)}% overall${targetRoleText}`
+        : `Your interview has been completed${targetRoleText}`;
+
+    const notificationPromise = notificationService.createNotification({
+      userId: req.user._id,
+      module: "interview",
+      type: "interview_complete",
+      title: "Interview complete",
+      message: notifMessage,
+      relatedResourceId: session._id,
+      relatedResourceType: "InterviewSession",
+    });
+
+    const activityLogPromise = activityLogService.logActivity({
+      userId: req.user._id,
+      module: "interview",
+      action: "interview_finished",
+      summary: `Interview completed${session.targetRole ? ` for ${session.targetRole}` : ""} — overall ${typeof session.overallScore === "number" ? `${Math.round(session.overallScore)}%` : "N/A"
+        }`,
+      relatedResourceId: session._id,
+      relatedResourceType: "InterviewSession",
+      metadata: {
+        score: typeof session.overallScore === "number" ? Math.round(session.overallScore) : null,
+        targetRole: session.targetRole,
+      },
+    });
+
+    const badgesPromise = activityLogPromise.then(() => badgeService.checkBadges(req.user._id));
+
+    await Promise.allSettled([notificationPromise, activityLogPromise, badgesPromise]).then((results) => {
+      results.forEach((result, idx) => {
+        if (result.status === "rejected") {
+          const serviceName = idx === 0 ? "NotificationService" : idx === 1 ? "ActivityLogService" : "BadgeService";
+          console.error(`[Background Task] ${serviceName} promise rejected in finishRound:`, result.reason);
+        }
+      });
+    });
+
+    await session.save();
+    return ApiResponse.success(stripCorrectOptionIndex(session)).send(res);
+  }
+
+  // Not last, advanced to nextValidIndex
+  session.currentRoundIndex = nextValidIndex;
+
+  await session.save();
+  return ApiResponse.success(stripCorrectOptionIndex(session)).send(res);
 });
 
 /**
  * GET /api/interview/history
  */
-const getInterviewHistory = asyncHandler(async (req, res) => {
+const getSessionHistory = asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
   const skip = (page - 1) * limit;
 
-  const [interviews, total] = await Promise.all([
-    Interview.find({ user: req.user._id })
-      .select("domain targetRole overallScore status createdAt")
+  const [sessions, total] = await Promise.all([
+    InterviewSession.find({ user: req.user._id })
+      .select("targetRole overallScore status createdAt rounds.roundType rounds.roundScore")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
-    Interview.countDocuments({ user: req.user._id }),
+    InterviewSession.countDocuments({ user: req.user._id }),
   ]);
 
   return ApiResponse.success({
-    interviews,
+    sessions,
     pagination: {
       page,
       limit,
@@ -406,36 +657,60 @@ const getInterviewHistory = asyncHandler(async (req, res) => {
 /**
  * GET /api/interview/:id
  */
-const getInterviewById = asyncHandler(async (req, res) => {
-  const interview = await Interview.findById(req.params.id);
-
-  if (!interview || interview.user.toString() !== req.user._id.toString()) {
-    throw ApiError.notFound("Interview not found");
+const getSessionById = asyncHandler(async (req, res) => {
+  const session = await InterviewSession.findById(req.params.id);
+  if (!session || session.user.toString() !== req.user._id.toString()) {
+    throw ApiError.notFound("Interview session not found");
   }
 
-  return ApiResponse.success(interview).send(res);
+  // Populate missing correctOptionIndex or idealAnswerPoints from Question bank for older documents
+  for (const round of session.rounds || []) {
+    for (const item of round.items || []) {
+      if (item.correctOptionIndex == null || !item.idealAnswerPoints) {
+        let q = null;
+        if (item.questionId) {
+          q = await Question.findById(item.questionId).select("correctOptionIndex idealAnswerPoints").lean();
+        }
+        if (!q && item.questionText) {
+          q = await Question.findOne({ questionText: item.questionText }).select("correctOptionIndex idealAnswerPoints").lean();
+        }
+        if (q) {
+          if (item.correctOptionIndex == null && typeof q.correctOptionIndex === "number") {
+            item.correctOptionIndex = q.correctOptionIndex;
+            if (item.itemType === "mcq" && item.selectedOptionIndex != null) {
+              item.isCorrect = item.selectedOptionIndex === item.correctOptionIndex;
+              if (item.score == null) item.score = item.isCorrect ? 100 : 0;
+            }
+          }
+          if (!item.idealAnswerPoints && Array.isArray(q.idealAnswerPoints)) {
+            item.idealAnswerPoints = q.idealAnswerPoints;
+          }
+        }
+      }
+    }
+  }
+
+  return ApiResponse.success(stripCorrectOptionIndex(session)).send(res);
 });
 
 /**
  * DELETE /api/interview/:id
  */
-const deleteInterview = asyncHandler(async (req, res) => {
-  const interview = await Interview.findById(req.params.id);
-
-  if (!interview || interview.user.toString() !== req.user._id.toString()) {
-    throw ApiError.notFound("Interview not found");
+const deleteSession = asyncHandler(async (req, res) => {
+  const session = await InterviewSession.findById(req.params.id);
+  if (!session || session.user.toString() !== req.user._id.toString()) {
+    throw ApiError.notFound("Interview session not found");
   }
 
-  await Interview.findByIdAndDelete(req.params.id);
-
-  return ApiResponse.success(null, "Interview deleted").send(res);
+  await InterviewSession.findByIdAndDelete(req.params.id);
+  return ApiResponse.success(null, "Interview session deleted").send(res);
 });
 
 module.exports = {
-  startInterview,
-  answerQuestion,
-  finishInterview,
-  getInterviewHistory,
-  getInterviewById,
-  deleteInterview,
+  startSession,
+  submitAnswer,
+  finishRound,
+  getSessionHistory,
+  getSessionById,
+  deleteSession,
 };

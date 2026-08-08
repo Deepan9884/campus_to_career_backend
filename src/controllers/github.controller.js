@@ -7,6 +7,7 @@ const aiService = require("../services/ai.service");
 const notificationService = require("../services/notification.service");
 const activityLogService = require("../services/activityLog.service");
 const badgeService = require("../services/badge.service");
+const queueService = require("../services/queue.service");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
@@ -158,108 +159,19 @@ const analyzeRepo = asyncHandler(async (req, res) => {
   });
 
   try {
-    const repoMeta = await githubService.getRepoMeta(owner, repo);
+    const jobData = {
+      analysisId: analysis._id.toString(),
+      repoFullName,
+      owner,
+      repo,
+      userId: req.user._id.toString(),
+    };
 
-    let readme = "";
-    try {
-      readme = await githubService.getReadme(owner, repo);
-    } catch {
-      readme = "(No README found)";
-    }
+    const { processGithubAnalysis } = require("../workers/github.worker");
+    await processGithubAnalysis(jobData);
 
-    let tree = [];
-    try {
-      tree = await githubService.getRepoTree(owner, repo, repoMeta.default_branch);
-    } catch {
-      tree = [];
-    }
-
-    const selectedPaths = selectFiles(tree, 5);
-    const fileContents = [];
-
-    for (const filePath of selectedPaths) {
-      if (filePath.toLowerCase() === "readme" || filePath.toLowerCase().startsWith("readme.")) {
-        continue;
-      }
-      try {
-        const content = await githubService.getFileContent(owner, repo, filePath);
-        const lines = content.split("\n");
-        const truncated = lines.length > MAX_FILE_LINES;
-        const truncatedContent = truncated ? lines.slice(0, MAX_FILE_LINES).join("\n") : content;
-        fileContents.push({
-          path: filePath,
-          content: truncatedContent,
-          lines: lines.length,
-          truncated,
-        });
-      } catch {
-        // Skip files that fail to fetch
-      }
-    }
-
-    analysis.filesAnalyzed = ["README.md", ...fileContents.map((f) => f.path)];
-    await analysis.save();
-
-    const prompt = buildAnalysisPrompt(repoMeta, readme, fileContents);
-    const aiResult = await aiService.generateContent({
-      prompt,
-      responseSchema: analysisResponseSchema,
-      feature: "github-repo-analysis",
-      userId: req.user._id,
-    });
-
-    if (!aiResult.success) {
-      analysis.status = "failed";
-      analysis.errorMessage = aiResult.message;
-      await analysis.save();
-      throw ApiError.internal(aiResult.message);
-    }
-
-    const scores = aiResult.data;
-    analysis.overview = scores.overview || null;
-    analysis.quality = scores.quality || null;
-    analysis.security = scores.security || null;
-    analysis.resumeImpact = scores.resumeImpact || [];
-    analysis.status = "completed";
-    await analysis.save();
-
-const notificationPromise = notificationService.createNotification({
-      userId: req.user._id,
-      module: "github",
-      type: "github_analysis_complete",
-      title: "GitHub analysis complete",
-      message: `Analysis of ${repoFullName} is ready — ${analysis.filesAnalyzed?.length || 0} files reviewed`,
-      relatedResourceId: analysis._id,
-      relatedResourceType: "RepoAnalysis",
-    });
-
-    const activityLogPromise = activityLogService.logActivity({
-      userId: req.user._id,
-      module: "github",
-      action: "repo_analyzed",
-      summary: `Analyzed ${repoFullName} — ${analysis.filesAnalyzed?.length || 0} files reviewed`,
-      relatedResourceId: analysis._id,
-      relatedResourceType: "RepoAnalysis",
-      metadata: { repoFullName, filesAnalyzedCount: analysis.filesAnalyzed?.length || 0 },
-    });
-
-    const badgesPromise = badgeService.checkBadges(req.user._id);
-
-    await Promise.allSettled([notificationPromise, activityLogPromise, badgesPromise]).then((results) => {
-      results.forEach((result, idx) => {
-        if (result.status === "rejected") {
-          const serviceName =
-            idx === 0
-              ? "NotificationService"
-              : idx === 1
-                ? "ActivityLogService"
-                : "BadgeService";
-          console.error(`[Background Task] ${serviceName} promise rejected in analyzeRepo:`, result.reason);
-        }
-      });
-    });
-
-    return ApiResponse.success(analysis).send(res);
+    const updatedAnalysis = await RepoAnalysis.findById(analysis._id);
+    return ApiResponse.success(updatedAnalysis).send(res);
   } catch (err) {
     if (err instanceof ApiError) throw err;
 
@@ -350,6 +262,43 @@ const generateLinkedInPost = asyncHandler(async (req, res) => {
   return ApiResponse.success({ draft }).send(res);
 });
 
+const getPortfolio = asyncHandler(async (req, res) => {
+  const { username } = req.params;
+  
+  // Find user by githubUsername (case insensitive)
+  const user = await User.findOne({ 
+    githubUsername: { $regex: new RegExp(`^${username}$`, "i") } 
+  }).select("name githubUsername profile.targetRole profile.skills");
+
+  if (!user) {
+    throw ApiError.notFound("Portfolio not found for this GitHub user");
+  }
+
+  // Get completed repo analyses for this user
+  const analyses = await RepoAnalysis.find({
+    user: user._id,
+    status: "completed"
+  }).sort({ createdAt: -1 });
+
+  return ApiResponse.success({
+    user: {
+      name: user.name,
+      githubUsername: user.githubUsername,
+      targetRole: user.profile?.targetRole || "Software Engineer",
+      skills: user.profile?.skills || []
+    },
+    projects: analyses.map(a => ({
+      _id: a._id,
+      repoFullName: a.repoFullName,
+      repoUrl: a.repoUrl,
+      overview: a.overview,
+      quality: typeof a.quality === "string" ? a.quality : JSON.stringify(a.quality),
+      resumeImpact: a.resumeImpact,
+      filesAnalyzed: a.filesAnalyzed
+    }))
+  }).send(res);
+});
+
 module.exports = {
   connectGithub,
   listRepos,
@@ -358,4 +307,5 @@ module.exports = {
   getAnalysisById,
   deleteAnalysis,
   generateLinkedInPost,
+  getPortfolio,
 };

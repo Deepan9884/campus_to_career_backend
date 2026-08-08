@@ -5,7 +5,8 @@ const verifyJWT = require("../middleware/auth.middleware");
 const validate = require("../middleware/validate.middleware");
 const {
   startInterviewValidators,
-  answerValidators,
+  submitAnswerValidators,
+  finishRoundValidators,
 } = require("../validators/interview.validators");
 const interviewController = require("../controllers/interview.controller");
 
@@ -34,23 +35,29 @@ router.post(
   startLimiter,
   startInterviewValidators,
   validate,
-  interviewController.startInterview,
+  interviewController.startSession,
 );
 
 router.post(
-  "/:id/answer",
+  "/:id/rounds/:roundType/answer",
   verifyJWT,
-  answerValidators,
+  submitAnswerValidators,
   validate,
-  interviewController.answerQuestion,
+  interviewController.submitAnswer,
 );
 
-router.post("/:id/finish", verifyJWT, interviewController.finishInterview);
+router.post(
+  "/:id/rounds/:roundType/finish",
+  verifyJWT,
+  finishRoundValidators,
+  validate,
+  interviewController.finishRound,
+);
 
-router.get("/history", verifyJWT, interviewController.getInterviewHistory);
+router.get("/history", verifyJWT, interviewController.getSessionHistory);
 
-router.get("/:id", verifyJWT, interviewController.getInterviewById);
+router.get("/:id", verifyJWT, interviewController.getSessionById);
 
-router.delete("/:id", verifyJWT, interviewController.deleteInterview);
+router.delete("/:id", verifyJWT, interviewController.deleteSession);
 
 module.exports = router;

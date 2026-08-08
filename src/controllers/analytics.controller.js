@@ -1,12 +1,14 @@
 const Resume = require("../models/Resume.model");
-const Interview = require("../models/Interview.model");
+const InterviewSession = require("../models/InterviewSession.model");
 const RepoAnalysis = require("../models/RepoAnalysis.model");
 const UserSkill = require("../models/UserSkill.model");
 const RoleSkill = require("../models/RoleSkill.model");
 const SkillGapAnalysis = require("../models/SkillGapAnalysis.model");
 const LearningRoadmap = require("../models/LearningRoadmap.model");
+const aiService = require("../services/ai.service");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/ApiResponse");
+const ApiError = require("../utils/ApiError");
 
 const getAnalyticsOverview = asyncHandler(async (req, res) => {
   const userId = req.user._id;
@@ -23,8 +25,8 @@ const getAnalyticsOverview = asyncHandler(async (req, res) => {
       .select("atsScore createdAt")
       .sort({ createdAt: 1 })
       .lean(),
-    Interview.find({ user: userId, status: "completed" })
-      .select("overallScore domain createdAt")
+    InterviewSession.find({ user: userId, status: "completed" })
+      .select("overallScore targetRole createdAt rounds.roundType")
       .sort({ createdAt: 1 })
       .lean(),
     RepoAnalysis.countDocuments({ user: userId, status: "completed" }),
@@ -45,7 +47,7 @@ const getAnalyticsOverview = asyncHandler(async (req, res) => {
   const interviewTrend = interviews.map((i, idx) => ({
     name: `Int ${idx + 1}`,
     score: i.overallScore,
-    type: i.domain || "General",
+    type: i.targetRole || "General",
   }));
 
   // Skill radar: from role skill bank + user skills
@@ -179,8 +181,8 @@ async function buildActivityTimeline(userId) {
       .sort({ createdAt: -1 })
       .limit(3)
       .lean(),
-    Interview.find({ user: userId, status: "completed" })
-      .select("overallScore domain createdAt")
+    InterviewSession.find({ user: userId, status: "completed" })
+      .select("overallScore targetRole createdAt")
       .sort({ createdAt: -1 })
       .limit(3)
       .lean(),
@@ -210,7 +212,7 @@ async function buildActivityTimeline(userId) {
   for (const i of interviews) {
     items.push({
       type: "interview",
-      title: `${i.domain || "Interview"} session`,
+      title: `${i.targetRole || "Interview"} session`,
       desc: `Scored ${i.overallScore}/100`,
       date: i.createdAt,
     });
@@ -262,4 +264,55 @@ function formatRelativeTime(date) {
   return d.toLocaleDateString();
 }
 
-module.exports = { getAnalyticsOverview };
+const generateWeeklyReport = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+  const oneWeekAgo = new Date();
+  oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+
+  const [resumes, interviews, repos] = await Promise.all([
+    Resume.find({ user: userId, status: "completed", createdAt: { $gte: oneWeekAgo } }).select("atsScore").lean(),
+    InterviewSession.find({ user: userId, status: "completed", createdAt: { $gte: oneWeekAgo } }).select("overallScore").lean(),
+    RepoAnalysis.find({ user: userId, status: "completed", createdAt: { $gte: oneWeekAgo } }).select("repoFullName").lean(),
+  ]);
+
+  const prompt = `You are an expert AI Career Coach. Generate a highly personalized and motivating weekly report for the user.
+  
+Here is the user's activity in the past 7 days:
+- Resumes uploaded: ${resumes.length} (Average score: ${resumes.length ? Math.round(resumes.reduce((a, b) => a + b.atsScore, 0) / resumes.length) : 0})
+- Mock interviews completed: ${interviews.length} (Average score: ${interviews.length ? Math.round(interviews.reduce((a, b) => a + (b.overallScore || 0), 0) / interviews.length) : 0})
+- GitHub Repositories analyzed: ${repos.length} (${repos.map(r => r.repoFullName).join(", ")})
+
+Based on this data, provide:
+1. A short, encouraging summary of their week (2-3 sentences).
+2. 3 actionable recommendations for what they should focus on next week to improve their job readiness.
+
+Return your response as a JSON object matching this schema exactly:
+{
+  "summary": "string",
+  "recommendations": ["string", "string", "string"]
+}`;
+
+  const result = await aiService.generateContent({
+    prompt,
+    responseSchema: {
+      type: "object",
+      properties: {
+        summary: { type: "string" },
+        recommendations: { type: "array", items: { type: "string" } },
+      },
+      required: ["summary", "recommendations"],
+    },
+    feature: "analytics_weekly_report",
+    userId,
+  });
+
+  if (!result.success || !result.data) {
+    throw ApiError.internal(result.message || "Failed to generate Weekly Report");
+  }
+
+  const parsed = typeof result.data === "object" ? result.data : { summary: "", recommendations: [] };
+
+  return ApiResponse.success(parsed).send(res);
+});
+
+module.exports = { getAnalyticsOverview, generateWeeklyReport };

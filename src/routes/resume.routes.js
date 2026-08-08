@@ -56,6 +56,8 @@ router.get("/history", verifyJWT, resumeController.getResumeHistory);
 
 router.get("/:id", verifyJWT, resumeController.getResumeById);
 
+router.post("/improve-bullet", verifyJWT, resumeController.improveBulletPoint);
+
 router.delete("/:id", verifyJWT, resumeController.deleteResume);
 
 module.exports = router;

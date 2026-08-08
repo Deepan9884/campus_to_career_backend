@@ -30,6 +30,23 @@ const userSchema = new mongoose.Schema(
     googleId: { type: String, unique: true, sparse: true },
     authProvider: { type: String, enum: ["local", "google", "both"], default: "local" },
     avatar: { type: String, default: "" },
+    role: {
+      type: String,
+      enum: ["student", "mentor", "admin"],
+      default: "student",
+    },
+    assignedMentor: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+    mentees: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
     targetRole: { type: String, default: "" },
     githubUsername: { type: String, default: "" },
     profile: {
@@ -53,8 +70,7 @@ const userSchema = new mongoose.Schema(
       },
       notifyOn: {
         type: [String],
-        enum: ["resume", "interview", "github", "skill_gap", "roadmap", "quiz"],
-        default: ["resume", "interview", "github", "skill_gap", "roadmap", "quiz"],
+        default: ["/resume", "/interview", "/github", "/skills", "/roadmap"],
       },
       emailDigest: {
         type: String,

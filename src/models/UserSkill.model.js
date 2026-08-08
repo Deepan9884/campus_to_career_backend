@@ -25,8 +25,8 @@ const userSkillSchema = new mongoose.Schema(
     source: {
       type: String,
       enum: {
-        values: ["self-reported", "resume", "github"],
-        message: "Source must be self-reported, resume, or github",
+        values: ["self-reported", "resume", "github", "event"],
+        message: "Source must be self-reported, resume, github, or event",
       },
       default: "self-reported",
     },

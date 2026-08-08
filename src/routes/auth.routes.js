@@ -2,16 +2,16 @@ const { Router } = require("express");
 const rateLimit = require("express-rate-limit");
 
 const verifyJWT = require("../middleware/auth.middleware");
-const validate = require("../middleware/validate.middleware");
+const validateZod = require("../middleware/validateZod.middleware");
 const authController = require("../controllers/auth.controller");
 const {
-  registerValidators,
-  loginValidators,
-  updateProfileValidators,
-  updatePreferencesValidators,
-  forgotPasswordValidators,
-  resetPasswordValidators,
-} = require("../validators/auth.validators");
+  registerSchema,
+  loginSchema,
+  updateProfileSchema,
+  updatePreferencesSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+} = require("../validators/auth.zod");
 
 const router = Router();
 
@@ -60,9 +60,9 @@ const verifyResetTokenLimiter = rateLimit({
 
 // --- Public routes ---
 
-router.post("/register", registerLimiter, registerValidators, validate, authController.register);
+router.post("/register", registerLimiter, validateZod(registerSchema), authController.register);
 
-router.post("/login", loginLimiter, loginValidators, validate, authController.login);
+router.post("/login", loginLimiter, validateZod(loginSchema), authController.login);
 
 router.post("/google", loginLimiter, authController.googleLogin);
 
@@ -71,12 +71,11 @@ router.post("/refresh", refreshLimiter, authController.refreshToken);
 router.post(
   "/forgot-password",
   forgotPasswordLimiter,
-  forgotPasswordValidators,
-  validate,
+  validateZod(forgotPasswordSchema),
   authController.forgotPassword,
 );
 
-router.post("/reset-password", resetPasswordValidators, validate, authController.resetPassword);
+router.post("/reset-password", validateZod(resetPasswordSchema), authController.resetPassword);
 
 router.get("/verify-reset-token", verifyResetTokenLimiter, authController.verifyResetTokenHandler);
 
@@ -86,13 +85,12 @@ router.post("/logout", verifyJWT, authController.logout);
 
 router.get("/me", verifyJWT, authController.getMe);
 
-router.patch("/me", verifyJWT, updateProfileValidators, validate, authController.updateProfile);
+router.patch("/me", verifyJWT, validateZod(updateProfileSchema), authController.updateProfile);
 
 router.patch(
   "/me/preferences",
   verifyJWT,
-  updatePreferencesValidators,
-  validate,
+  validateZod(updatePreferencesSchema),
   authController.updatePreferences,
 );
 

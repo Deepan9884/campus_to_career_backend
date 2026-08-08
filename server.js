@@ -2,6 +2,10 @@ const connectDB = require("./src/config/db");
 const env = require("./src/config/env");
 const app = require("./src/app");
 
+// Initialize workers
+require("./src/workers/resume.worker");
+require("./src/workers/github.worker");
+
 process.on("uncaughtException", (err) => {
   console.error("[fatal] Uncaught Exception:", err);
   process.exit(1);

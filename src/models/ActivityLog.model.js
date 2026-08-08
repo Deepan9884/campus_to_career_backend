@@ -7,6 +7,7 @@ const VALID_MODULES = [
   "skill_gap",
   "roadmap",
   "quiz",
+  "events",
 ];
 
 const activityLogSchema = new mongoose.Schema(

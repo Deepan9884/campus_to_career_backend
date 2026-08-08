@@ -107,6 +107,8 @@ router.post(
 
 router.get("/history", verifyJWT, githubController.getAnalysisHistory);
 
+router.get("/portfolio/:username", githubController.getPortfolio);
+
 router.get("/:id", verifyJWT, githubController.getAnalysisById);
 
 router.delete("/:id", verifyJWT, githubController.deleteAnalysis);

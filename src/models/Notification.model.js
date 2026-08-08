@@ -17,6 +17,8 @@ const notificationSchema = new mongoose.Schema(
         "skill_gap_analysis_complete",
         "roadmap_generated",
         "quiz_passed",
+        "mentor_note",
+        "mentor_assigned",
       ],
       required: true,
     },

@@ -1,5 +1,5 @@
 const Resume = require("../models/Resume.model");
-const Interview = require("../models/Interview.model");
+const InterviewSession = require("../models/InterviewSession.model");
 const RepoAnalysis = require("../models/RepoAnalysis.model");
 const SkillGapAnalysis = require("../models/SkillGapAnalysis.model");
 const LearningRoadmap = require("../models/LearningRoadmap.model");
@@ -24,11 +24,11 @@ const getDashboardStats = asyncHandler(async (req, res) => {
       .sort({ createdAt: -1 })
       .lean(),
     Resume.countDocuments({ user: userId, status: "completed" }),
-    Interview.find({ user: userId, status: "completed" })
-      .select("overallScore domain createdAt")
+    InterviewSession.find({ user: userId, status: "completed" })
+      .select("overallScore createdAt")
       .sort({ createdAt: -1 })
       .lean(),
-    Interview.countDocuments({ user: userId, status: "completed" }),
+    InterviewSession.countDocuments({ user: userId, status: "completed" }),
     RepoAnalysis.countDocuments({ user: userId, status: "completed" }),
     SkillGapAnalysis.findOne({ user: userId, status: "completed" })
       .select("matchPercentage gaps createdAt")
@@ -41,9 +41,9 @@ const getDashboardStats = asyncHandler(async (req, res) => {
   const avgInterviewScore =
     completedInterviews.length > 0
       ? Math.round(
-          completedInterviews.reduce((sum, i) => sum + (i.overallScore || 0), 0) /
-            completedInterviews.length,
-        )
+        completedInterviews.reduce((sum, i) => sum + (i.overallScore || 0), 0) /
+        completedInterviews.length,
+      )
       : 0;
 
   const resumeScore = latestResume?.atsScore || 0;

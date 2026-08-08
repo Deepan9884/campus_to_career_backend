@@ -14,6 +14,8 @@ const notificationRoutes = require("./notification.routes");
 const activityRoutes = require("./activity.routes");
 const badgesRoutes = require("./badges.routes");
 const codingProfilesRoutes = require("./codingProfiles.routes");
+const eventRoutes = require("./event.routes");
+const adminRoutes = require("./admin.routes");
 
 const router = Router();
 
@@ -63,6 +65,12 @@ router.use("/coding", codingProfilesRoutes);
 
 // Analytics routes
 router.use("/analytics", analyticsRoutes);
+
+// Events routes
+router.use("/events", eventRoutes);
+
+// Admin / Mentor routes
+router.use("/admin", adminRoutes);
 
 
 module.exports = router;

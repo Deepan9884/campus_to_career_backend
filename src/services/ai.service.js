@@ -1,6 +1,23 @@
 const { genAI, defaultModel, fallbackModel } = require("../config/gemini");
 const rateLimiter = require("./aiRateLimiter.service");
 const AIUsageLog = require("../models/AIUsageLog.model");
+const crypto = require("crypto");
+const IORedis = require("ioredis");
+
+const redis = new IORedis(process.env.REDIS_URL || "redis://127.0.0.1:6379", {
+  maxRetriesPerRequest: 1,
+  enableOfflineQueue: false,
+  retryStrategy(times) {
+    if (times > 3) return null;
+    return Math.min(times * 200, 1000);
+  },
+});
+
+redis.on("error", (err) => {
+  // Suppress uncaught Redis connection error logs when Redis is not running
+});
+
+const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 const ERROR_TYPES = {
   QUOTA_EXCEEDED: "QUOTA_EXCEEDED",
@@ -170,7 +187,29 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
     return errorResult;
   }
 
-  // Step 2: Attempt the API call with retry
+  // Step 2: Check Cache
+  const promptHash = crypto.createHash("sha256").update(prompt).digest("hex");
+  const cacheKey = `ai_cache:${modelName}:${feature}:${promptHash}`;
+  
+  try {
+    const cachedResponse = await redis.get(cacheKey);
+    if (cachedResponse) {
+      console.log(`[AI] Cache HIT for feature: ${feature}`);
+      const parsed = JSON.parse(cachedResponse);
+      return {
+        success: true,
+        data: parsed.data,
+        raw: parsed.raw,
+        model: modelName,
+        tokensEstimate: 0,
+        cached: true
+      };
+    }
+  } catch (err) {
+    console.warn("[AI] Redis cache get error:", err.message);
+  }
+
+  // Step 3: Attempt the API call with retry
   let lastError = null;
   let lastClassification = null;
 
@@ -198,6 +237,20 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
       });
 
       const result = buildSuccessResult(response, modelName);
+      
+      // Save to cache
+      if (result.success && (result.data || result.raw)) {
+        try {
+          await redis.setex(
+            cacheKey,
+            CACHE_TTL_SECONDS,
+            JSON.stringify({ data: result.data, raw: result.raw })
+          );
+        } catch (err) {
+          console.warn("[AI] Redis cache set error:", err.message);
+        }
+      }
+
       await logUsage({ ...resultMeta, success: true, tokensEstimate: result.tokensEstimate });
       return result;
     } catch (error) {
@@ -229,8 +282,51 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
   return errorResult;
 }
 
+/**
+ * Streaming version of generateContent.
+ * Returns an async generator yielding text chunks.
+ */
+async function generateContentStream({ prompt, model, feature = "general", userId }) {
+  const modelName = model || defaultModel;
+  const resultMeta = { feature, model: modelName, userId };
+
+  // Check rate limiter
+  const throttle = await rateLimiter.process({ feature });
+  if (!throttle.allowed) {
+    throw new Error("QUOTA_EXCEEDED");
+  }
+
+  try {
+    const responseStream = await genAI.models.generateContentStream({
+      model: modelName,
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
+
+    let fullText = "";
+    
+    // Create an async generator to yield chunks to the caller
+    async function* streamGenerator() {
+      for await (const chunk of responseStream) {
+        if (chunk.text) {
+          fullText += chunk.text;
+          yield chunk.text;
+        }
+      }
+      
+      // Log usage after stream completes
+      await logUsage({ ...resultMeta, success: true });
+    }
+    
+    return streamGenerator();
+  } catch (error) {
+    await logUsage({ ...resultMeta, success: false, errorType: ERROR_TYPES.API_ERROR });
+    throw error;
+  }
+}
+
 module.exports = {
   generateContent,
+  generateContentStream,
   getQuotaStatus: rateLimiter.getQuotaStatus.bind(rateLimiter),
   getUsageSummary: rateLimiter.getUsageSummary.bind(rateLimiter),
   ERROR_TYPES,

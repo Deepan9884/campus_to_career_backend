@@ -1,13 +1,8 @@
 const { body, param } = require("express-validator");
+const InterviewSession = require("../models/InterviewSession.model");
+const { ROUND_TYPES, ITEM_TYPES } = require("../models/InterviewSession.model");
 
-const startInterviewValidators = [
-  body("domain")
-    .trim()
-    .notEmpty()
-    .withMessage("Domain is required")
-    .isIn(["behavioral", "technical"])
-    .withMessage("Domain must be 'behavioral' or 'technical'"),
-
+const startSessionValidators = [
   body("targetRole")
     .optional()
     .isString()
@@ -21,7 +16,7 @@ const startInterviewValidators = [
   body("difficulty")
     .optional()
     .isIn(["easy", "medium", "hard"])
-    .withMessage("Difficulty must be 'easy', 'medium', or 'hard'"),
+    .withMessage("difficulty must be 'easy', 'medium', or 'hard'"),
 
   body("questionCount")
     .optional()
@@ -29,23 +24,61 @@ const startInterviewValidators = [
     .withMessage("questionCount must be an integer between 3 and 10"),
 ];
 
-const answerValidators = [
-  body("questionIndex")
+const submitAnswerValidators = [
+  param("roundType")
     .exists()
-    .withMessage("questionIndex is required")
-    .isInt({ min: 0 })
-    .withMessage("questionIndex must be a non-negative integer"),
+    .withMessage("roundType is required")
+    .isIn(ROUND_TYPES)
+    .withMessage(`roundType must be one of: ${ROUND_TYPES.join(", ")}`),
 
-  body("answer")
+  body("itemIndex")
     .exists()
-    .withMessage("Answer is required")
-    .isString()
-    .trim()
-    .isLength({ min: 1, max: 3000 })
-    .withMessage("Answer must be between 1 and 3000 characters"),
+    .withMessage("itemIndex is required")
+    .isInt({ min: 0 })
+    .withMessage("itemIndex must be a non-negative integer"),
+
+  // Strict per-item type enforcement (MCQ requires selectedOptionIndex, open_ended requires answer)
+  body()
+    .custom(async (value, { req }) => {
+      const sessionId = req.params.id;
+      const roundType = req.params.roundType;
+
+      const session = await InterviewSession.findById(sessionId).lean();
+      if (!session) throw new Error("Interview session not found");
+      const round = (session.rounds || []).find((r) => r.roundType === roundType);
+      if (!round) throw new Error("Invalid roundType");
+
+      const itemIndex = req.body?.itemIndex;
+      const item = (round.items || [])[itemIndex];
+      if (!item) throw new Error("Invalid itemIndex");
+
+      if (item.itemType === "mcq") {
+        if (typeof req.body?.selectedOptionIndex !== "number") {
+          throw new Error("selectedOptionIndex is required for mcq items");
+        }
+      } else if (item.itemType === "open_ended") {
+        const ans = req.body?.answer;
+        if (typeof ans !== "string" || !ans.trim()) {
+          throw new Error("answer is required for open_ended items");
+        }
+      } else {
+        throw new Error(`Unknown itemType: ${item.itemType}`);
+      }
+
+      return true;
+    }),
+];
+
+const finishRoundValidators = [
+  param("roundType")
+    .exists()
+    .withMessage("roundType is required")
+    .isIn(ROUND_TYPES)
+    .withMessage(`roundType must be one of: ${ROUND_TYPES.join(", ")}`),
 ];
 
 module.exports = {
-  startInterviewValidators,
-  answerValidators,
+  startInterviewValidators: startSessionValidators, // keep name used by routes file's import
+  submitAnswerValidators,
+  finishRoundValidators,
 };
