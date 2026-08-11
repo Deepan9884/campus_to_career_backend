@@ -19,23 +19,23 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     gapCount,
     roadmapCount,
   ] = await Promise.all([
-    Resume.findOne({ user: userId, status: "completed" })
+    Resume.findOne({ user: userId, status: { $ne: "failed" }, atsScore: { $ne: null } })
       .select("atsScore createdAt")
       .sort({ createdAt: -1 })
       .lean(),
-    Resume.countDocuments({ user: userId, status: "completed" }),
-    InterviewSession.find({ user: userId, status: "completed" })
+    Resume.countDocuments({ user: userId, status: { $ne: "failed" }, atsScore: { $ne: null } }),
+    InterviewSession.find({ user: userId, status: { $ne: "failed" }, overallScore: { $ne: null } })
       .select("overallScore createdAt")
       .sort({ createdAt: -1 })
       .lean(),
-    InterviewSession.countDocuments({ user: userId, status: "completed" }),
-    RepoAnalysis.countDocuments({ user: userId, status: "completed" }),
-    SkillGapAnalysis.findOne({ user: userId, status: "completed" })
+    InterviewSession.countDocuments({ user: userId, status: { $ne: "failed" }, overallScore: { $ne: null } }),
+    RepoAnalysis.countDocuments({ user: userId, status: { $ne: "failed" } }),
+    SkillGapAnalysis.findOne({ user: userId, status: { $ne: "failed" } })
       .select("matchPercentage gaps createdAt")
       .sort({ createdAt: -1 })
       .lean(),
-    SkillGapAnalysis.countDocuments({ user: userId, status: "completed" }),
-    LearningRoadmap.countDocuments({ user: userId, status: "completed" }),
+    SkillGapAnalysis.countDocuments({ user: userId, status: { $ne: "failed" } }),
+    LearningRoadmap.countDocuments({ user: userId, status: { $ne: "failed" } }),
   ]);
 
   const avgInterviewScore =

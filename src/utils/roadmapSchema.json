@@ -1,0 +1,78 @@
+{
+  "type": "object",
+  "properties": {
+    "overallSummary": {
+      "type": "string",
+      "description": "Overall summary of the roadmap"
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "skillName": {
+            "type": "string",
+            "description": "Must match input skill name exactly"
+          },
+          "subTopics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "subTopicId": {
+                  "type": "string",
+                  "description": "kebab-case unique identifier"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Subtopic name"
+                },
+                "weightPercent": {
+                  "type": "integer",
+                  "description": "Relative weight percentage"
+                },
+                "estimatedTimeframe": {
+                  "type": "string",
+                  "description": "Timeframe estimate e.g. 1-2 weeks"
+                },
+                "difficulty": {
+                  "type": "string",
+                  "enum": ["beginner", "intermediate", "advanced"]
+                },
+                "resources": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "platform": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": ["course", "docs", "video", "article"]
+                      }
+                    },
+                    "required": ["name", "platform", "type"]
+                  }
+                }
+              },
+              "required": [
+                "subTopicId",
+                "name",
+                "weightPercent",
+                "estimatedTimeframe",
+                "difficulty",
+                "resources"
+              ]
+            }
+          }
+        },
+        "required": ["skillName", "subTopics"]
+      }
+    }
+  },
+  "required": ["overallSummary", "skills"]
+}

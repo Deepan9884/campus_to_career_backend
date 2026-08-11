@@ -21,17 +21,17 @@ const getAnalyticsOverview = asyncHandler(async (req, res) => {
     userSkills,
     latestGapAnalysis,
   ] = await Promise.all([
-    Resume.find({ user: userId, status: "completed" })
+    Resume.find({ user: userId, status: { $ne: "failed" }, atsScore: { $ne: null } })
       .select("atsScore createdAt")
       .sort({ createdAt: 1 })
       .lean(),
-    InterviewSession.find({ user: userId, status: "completed" })
+    InterviewSession.find({ user: userId, status: { $ne: "failed" }, overallScore: { $ne: null } })
       .select("overallScore targetRole createdAt rounds.roundType")
       .sort({ createdAt: 1 })
       .lean(),
-    RepoAnalysis.countDocuments({ user: userId, status: "completed" }),
+    RepoAnalysis.countDocuments({ user: userId, status: { $ne: "failed" } }),
     UserSkill.find({ user: userId }).select("name level").lean(),
-    SkillGapAnalysis.findOne({ user: userId, status: "completed" })
+    SkillGapAnalysis.findOne({ user: userId, status: { $ne: "failed" } })
       .select("targetRole matchedSkills gaps matchPercentage")
       .sort({ createdAt: -1 })
       .lean(),
