@@ -327,10 +327,24 @@ const getRoadmapByGapAnalysis = asyncHandler(async (req, res) => {
   return ApiResponse.success(roadmap).send(res);
 });
 
+const getLatestRoadmap = asyncHandler(async (req, res) => {
+  const roadmap = await LearningRoadmap.findOne({
+    user: req.user._id,
+    status: "completed",
+  }).sort({ createdAt: -1 });
+
+  if (!roadmap) {
+    return ApiResponse.success(null).send(res);
+  }
+
+  return ApiResponse.success(roadmap).send(res);
+});
+
 module.exports = {
   generateRoadmap,
   getRoadmapHistory,
   getRoadmapById,
   deleteRoadmap,
   getRoadmapByGapAnalysis,
+  getLatestRoadmap,
 };

@@ -1,7 +1,7 @@
 /**
  * ApiResponse
  * -----
- * Uniform success envelope for every JSON response in the CareerForge API.
+ * Uniform success envelope for every JSON response in the Campus to Career API.
  */
 
 class ApiResponse {

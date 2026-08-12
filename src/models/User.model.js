@@ -28,7 +28,8 @@ const userSchema = new mongoose.Schema(
       select: false,
     },
     googleId: { type: String, unique: true, sparse: true },
-    authProvider: { type: String, enum: ["local", "google", "both"], default: "local" },
+    githubId: { type: String, unique: true, sparse: true },
+    authProvider: { type: String, enum: ["local", "google", "github", "both"], default: "local" },
     avatar: { type: String, default: "" },
     role: {
       type: String,

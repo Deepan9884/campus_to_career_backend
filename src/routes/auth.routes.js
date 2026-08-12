@@ -66,6 +66,8 @@ router.post("/login", loginLimiter, validateZod(loginSchema), authController.log
 
 router.post("/google", loginLimiter, authController.googleLogin);
 
+router.post("/github", loginLimiter, authController.githubLogin);
+
 router.post("/refresh", refreshLimiter, authController.refreshToken);
 
 router.post(

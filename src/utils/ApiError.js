@@ -1,7 +1,7 @@
 /**
  * ApiError
  * -----
- * The single error abstraction used throughout the CareerForge API.
+ * The single error abstraction used throughout the Campus to Career API.
  * It carries an HTTP status code, a message, an optional array of
  * validation / business errors, and a stack trace. By forcing every
  * failure through this class we avoid leaking raw driver messages

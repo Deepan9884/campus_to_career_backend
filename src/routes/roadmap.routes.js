@@ -36,6 +36,8 @@ router.post(
 
 router.get("/history", verifyJWT, roadmapController.getRoadmapHistory);
 
+router.get("/latest", verifyJWT, roadmapController.getLatestRoadmap);
+
 router.get("/by-gap/:gapAnalysisId", verifyJWT, roadmapController.getRoadmapByGapAnalysis);
 
 router.get("/:id", verifyJWT, roadmapController.getRoadmapById);

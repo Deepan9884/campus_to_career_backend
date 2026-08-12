@@ -37,7 +37,7 @@ async function sendPasswordResetEmail(email, resetLink) {
   await transporter.sendMail({
     from: env.SMTP_FROM || env.SMTP_USER,
     to: email,
-    subject: "CareerForge AI — Password Reset",
+    subject: "Campus to Career AI — Password Reset",
     html: `
       <p>You requested a password reset.</p>
       <p>Click the link below to reset your password. This link expires in 15 minutes.</p>

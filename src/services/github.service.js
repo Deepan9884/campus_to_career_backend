@@ -1,7 +1,7 @@
 const budget = require("./githubBudget.service");
 
 const GITHUB_API = "https://api.github.com";
-const USER_AGENT = "CareerForge-AI/0.1";
+const USER_AGENT = "Campus-to-Career-AI/0.1";
 
 async function githubFetch(url) {
   const res = await fetch(url, {

@@ -22,7 +22,7 @@ const start = async () => {
   connectDB().catch(() => {});
 
   const server = app.listen(env.PORT, () => {
-    console.log(`[server] CareerForge AI API running — http://localhost:${env.PORT}`);
+    console.log(`[server] Campus to Career AI API running — http://localhost:${env.PORT}`);
     console.log(`[server] Environment — ${env.NODE_ENV}`);
     console.log(`[server] Client origin — ${env.CLIENT_URL}`);
   });
