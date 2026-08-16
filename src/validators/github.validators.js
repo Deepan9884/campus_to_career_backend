@@ -23,29 +23,21 @@ const analyzeValidators = [
 ];
 
 const linkedinPostValidators = [
+  body("postType")
+    .optional({ checkFalsy: true })
+    .isString(),
   body("repoFullName")
+    .optional({ checkFalsy: true })
     .trim()
-    .notEmpty()
-    .withMessage("Repository full name is required")
-    .matches(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/)
-    .withMessage("Repository full name must be in 'owner/repo' format"),
-  body("overview")
-    .trim()
-    .notEmpty()
-    .withMessage("Overview is required"),
-  body("quality")
-    .trim()
-    .notEmpty()
-    .withMessage("Quality assessment is required"),
-  body("resumeImpact")
-    .isArray({ min: 1 })
-    .withMessage("At least one resume impact item is required"),
+    .isString(),
   body("repoUrl")
+    .optional({ checkFalsy: true })
     .trim()
-    .notEmpty()
-    .withMessage("Repository URL is required")
-    .isURL()
-    .withMessage("Repository URL must be a valid URL"),
+    .isString(),
+  body("eventName")
+    .optional({ checkFalsy: true })
+    .trim()
+    .isString(),
 ];
 
 module.exports = { connectValidators, analyzeValidators, linkedinPostValidators };

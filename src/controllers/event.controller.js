@@ -556,7 +556,7 @@ const getEventBadges = asyncHandler(async (req, res) => {
       id: "first-event",
       name: "First Steps",
       description: "Log your first event",
-      icon: "Sparkles",
+      icon: "Award",
       earned: events.length >= 1,
       earnedAt: events.length >= 1 ? events[events.length - 1].createdAt : null,
     },

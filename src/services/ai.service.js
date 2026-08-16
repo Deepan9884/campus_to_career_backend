@@ -264,20 +264,22 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
     }
   }
 
-  // In development mode, if API key is not configured or invalid, fallback to realistic mock data
-  if (process.env.NODE_ENV !== "production" && isBadRequest(lastError || {})) {
-    console.warn(`[AI] Gemini API returned bad request / invalid key (${lastError?.message}). Using dev mock data for feature: ${feature}`);
+  // In development mode, if API key is not configured, quota is exhausted, or errors occur, fallback to realistic mock data
+  if (process.env.NODE_ENV !== "production") {
+    console.warn(`[AI] Gemini API error (${lastError?.message}). Using dev mock data fallback for feature: ${feature}`);
     const mockData = generateDevMockData(feature, prompt, responseSchema);
-    const mockResult = {
-      success: true,
-      data: mockData,
-      raw: JSON.stringify(mockData),
-      model: "dev-mock-model",
-      tokensEstimate: 150,
-      isDevMock: true,
-    };
-    await logUsage({ ...resultMeta, success: true, tokensEstimate: 150 });
-    return mockResult;
+    if (mockData) {
+      const mockResult = {
+        success: true,
+        data: mockData,
+        raw: JSON.stringify(mockData),
+        model: "dev-mock-model",
+        tokensEstimate: 150,
+        isDevMock: true,
+      };
+      await logUsage({ ...resultMeta, success: true, tokensEstimate: 150 });
+      return mockResult;
+    }
   }
 
   // All retries exhausted
@@ -342,6 +344,47 @@ function generateDevMockData(feature, prompt, responseSchema) {
       recommendations: [
         "Build a project integrating Docker containers and automated CI/CD workflows",
         "Deepen testing proficiency with Jest and React Testing Library"
+      ]
+    };
+  }
+
+  if (feature === "github-linkedin-post" || feature === "linkedin-post") {
+    let title = "Engineering Project";
+    let tech = "React, TypeScript, Node.js, MongoDB";
+
+    const titleMatch = prompt.match(/Project Title:\s*(.+)/i) || prompt.match(/Repository:\s*(.+)/i) || prompt.match(/Event Name:\s*(.+)/i);
+    if (titleMatch && titleMatch[1]) {
+      title = titleMatch[1].trim();
+    }
+    const techMatch = prompt.match(/Tech Stack:\s*(.+)/i);
+    if (techMatch && techMatch[1]) {
+      tech = techMatch[1].trim();
+    }
+
+    return {
+      headline: `🚀 Thrilled to showcase ${title} & our engineering journey!`,
+      draft: `🚀 Thrilled to share a major milestone with **${title}**!\n\nOver the past sprint, our team tackled complex architectural requirements and successfully designed, built, and shipped a high-performance solution using **${tech}**.\n\n💡 What we engineered:\n• Architected a responsive, intuitive interface with modular components and real-time state synchronization.\n• Engineered high-throughput REST APIs, robust backend data pipelines, and optimized database indexing.\n• Implemented secure authentication, granular input validation, and strict error handling middleware.\n\n🏆 Key Milestone & Impact:\nWe pushed beyond standard project constraints to eliminate latency bottlenecks, improve responsiveness by 45%, and deliver seamless multi-device workflows.\n\n🌟 Exhaustive Achievement Breakdown:\nBuilding ${title} demanded deep perseverance and technical clarity. Navigating concurrency hurdles, fine-tuning data serialization, and restructuring asynchronous operations during late-night debugging sessions tested our resilience. Overcoming each roadblock reinforced the value of modular system design, clean code practices, and thoughtful architectural trade-offs.\n\nHuge shoutout to my team and mentors for the continuous collaboration and support throughout this build! 🙌\n\nWhat are your favorite patterns when building with ${tech.split(",")[0] || "modern tech"}? Would love to connect and hear your thoughts!\n\n#SoftwareEngineering #WebDevelopment #FullStack #TechCommunity #Innovation #OpenSource`,
+      achievementParagraph: `Building ${title} demanded deep perseverance and technical clarity. Navigating concurrency hurdles, fine-tuning data serialization, and restructuring asynchronous operations during late-night debugging sessions tested our resilience. Overcoming each roadblock reinforced the value of modular system design, clean code practices, and thoughtful architectural trade-offs.`,
+      variations: [
+        {
+          style: "Storytelling & Journey",
+          content: `🌟 From an initial concept to a deployed product — here is the story behind **${title}**!\n\nWhen we started building with ${tech}, the central challenge was ensuring seamless performance and reliability under heavy loads. 36 hours of rapid iterations and architecture pivots later, we reached our milestone.\n\nKey Highlights:\n✨ Seamless, responsive frontend with immediate feedback\n⚡ Scalable backend services handling async tasks\n🛡️ Robust validation and automated error guards\n\nBuilding this reinforced that great software isn't just about code — it's about resilience, continuous learning, and teamwork.\n\n#TechJourney #WebDev #CodingMilestone #DeveloperLife #Innovation`
+        },
+        {
+          style: "Deep Technical & Architecture Breakdown",
+          content: `🛠️ Technical Deep-Dive: Architecture Breakdown of **${title}**\n\nHere is how we structured the system using ${tech}:\n\n1️⃣ Client Layer: Modular reactive components with strict typing and fast client-side state handling.\n2️⃣ Backend Services: Express / Node.js architecture with isolated controllers, data validation layers, and centralized error middleware.\n3️⃣ Performance & Reliability: Optimized query indexing, cached high-frequency responses, and enforced rate-limiting.\n\nCheck out the project and let me know your thoughts on our architectural choices!\n\n#SoftwareArchitecture #SystemDesign #TypeScript #BackendEngineering #Performance`
+        },
+        {
+          style: "Executive & Punchy Summary",
+          content: `🎉 Milestone Achieved! Excited to announce the launch of **${title}**.\n\n📊 Key Outcomes:\n• 100% production-ready full-stack architecture built with ${tech}\n• 45% faster query and response latency\n• Robust security & automated validation\n\nThankful for the team and excited for the next engineering challenge! 🚀\n\n#SoftwareEngineering #Milestone #OpenSource #Tech`
+        }
+      ],
+      suggestedHashtags: ["#SoftwareEngineering", "#WebDevelopment", "#FullStack", "#TechCommunity", "#Innovation"],
+      suggestedMentions: ["@Teammate", "@Organizer", "@Mentor"],
+      keyTakeaways: [
+        `Architected modular full-stack application for ${title}`,
+        "Conquered tough latency bottlenecks through database indexing and caching",
+        "Delivered under high-pressure timelines with clean code standards"
       ]
     };
   }

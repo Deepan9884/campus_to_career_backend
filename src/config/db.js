@@ -86,40 +86,51 @@ async function autoSeedIfEmpty() {
 }
 
 const connectDB = async () => {
+  if (!env.MONGODB_URI && env.NODE_ENV !== "production") {
+    try {
+      console.log("[db] No MONGODB_URI set. Starting In-Memory MongoDB server for development...");
+      const { MongoMemoryServer } = require("mongodb-memory-server");
+      mongodInstance = await MongoMemoryServer.create();
+      const uri = mongodInstance.getUri();
+      const conn = await mongoose.connect(uri, {
+        serverSelectionTimeoutMS: 10000,
+        connectTimeoutMS: 15000,
+      });
+      console.log(`[db] Connected to In-Memory MongoDB: ${conn.connection.host}/${conn.connection.name}`);
+      await autoSeedIfEmpty();
+      return;
+    } catch (memErr) {
+      console.error("[db] Failed to start In-Memory MongoDB:", memErr.message);
+      return;
+    }
+  }
+
   if (!env.MONGODB_URI) {
     console.error("[db] MONGODB_URI is not set — server will start without database connectivity");
     return;
   }
 
-  try {
-    const conn = await mongoose.connect(env.MONGODB_URI, {
-      serverSelectionTimeoutMS: 3000,
-      connectTimeoutMS: 5000,
-      maxPoolSize: 20,
-    });
-    console.log(`[db] Connected to MongoDB: ${conn.connection.host}/${conn.connection.name}`);
-    await autoSeedIfEmpty();
-    return;
-  } catch (err) {
-    console.warn("[db] Initial connection to MONGODB_URI failed:", err.message);
-    if (env.NODE_ENV !== "production") {
-      try {
-        console.log("[db] Starting In-Memory MongoDB server for development...");
-        const { MongoMemoryServer } = require("mongodb-memory-server");
-        mongodInstance = await MongoMemoryServer.create();
-        const uri = mongodInstance.getUri();
-        const conn = await mongoose.connect(uri, {
-          serverSelectionTimeoutMS: 5000,
-          connectTimeoutMS: 10000,
-        });
-        console.log(`[db] Connected to In-Memory MongoDB: ${conn.connection.host}/${conn.connection.name}`);
-        await autoSeedIfEmpty();
-        return;
-      } catch (memErr) {
-        console.error("[db] Failed to start In-Memory MongoDB:", memErr.message);
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[db] Connecting to MongoDB (attempt ${attempt}/${maxRetries})...`);
+      const conn = await mongoose.connect(env.MONGODB_URI, {
+        serverSelectionTimeoutMS: 15000,
+        connectTimeoutMS: 20000,
+        maxPoolSize: 20,
+      });
+      console.log(`[db] Connected to MongoDB: ${conn.connection.host}/${conn.connection.name}`);
+      await autoSeedIfEmpty();
+      return;
+    } catch (err) {
+      console.warn(`[db] Connection attempt ${attempt} failed:`, err.message);
+      if (attempt < maxRetries) {
+        console.log("[db] Retrying in 2 seconds...");
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      } else {
+        console.error("[db] Could not connect to MongoDB Atlas after retries. Will keep trying in background...");
       }
     }
-    console.error("[db] Will retry automatically — server is accepting HTTP requests in the meantime");
   }
 };
 

@@ -1,5 +1,6 @@
 const User = require("../models/User.model");
 const RepoAnalysis = require("../models/RepoAnalysis.model");
+const Event = require("../models/Event.model");
 const githubService = require("../services/github.service");
 const githubBudget = require("../services/githubBudget.service");
 const { selectFiles } = require("../services/fileSelection.service");
@@ -61,29 +62,131 @@ const linkedinPostResponseSchema = {
   type: "object",
   properties: {
     draft: { type: "string" },
+    headline: { type: "string" },
+    achievementParagraph: { type: "string" },
+    variations: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          style: { type: "string" },
+          content: { type: "string" },
+        },
+        required: ["style", "content"],
+      },
+    },
+    suggestedHashtags: {
+      type: "array",
+      items: { type: "string" },
+    },
+    suggestedMentions: {
+      type: "array",
+      items: { type: "string" },
+    },
+    keyTakeaways: {
+      type: "array",
+      items: { type: "string" },
+    },
   },
-  required: ["draft"],
+  required: ["draft", "achievementParagraph", "variations", "suggestedHashtags"],
 };
 
-function buildLinkedInPostPrompt(analysis) {
-  return `You are a professional tech content writer. Write a concise LinkedIn post draft (2-4 sentences) that highlights this GitHub project for a developer's network.
+function buildLinkedInPostPrompt(data) {
+  const postType = data.postType || (data.repoFullName ? "github" : data.eventName ? "event" : "custom");
+  const tone = data.tone || "exhaustive";
+  const length = data.length || "exhaustive";
+  const includeEmoji = data.includeEmoji !== false;
+  const includeHashtags = data.includeHashtags !== false;
+  const customHighlights = data.customHighlights || "";
+  const mentions = Array.isArray(data.mentions) ? data.mentions.join(", ") : data.mentions || "";
 
-Project: ${analysis.repoFullName}
-Description: ${analysis.overview || "No overview available"}
-Key technologies: ${analysis.filesAnalyzed?.slice(0, 5).join(", ") || "Not specified"}
-Resume highlights: ${analysis.resumeImpact?.join("; ") || "Not available"}
+  let contextDescription = "";
 
-Requirements:
-- 2-4 sentences max
-- Professional but engaging tone
-- Highlight what the project does and key tech/achievements
-- Include 1-2 relevant hashtags at the end
-- Do NOT include emojis
-- Do NOT mention "GitHub" explicitly (the platform is implied)
-- Do NOT use phrases like "Check out my project" or "I built"
-- Write in first person as if the developer is sharing their work
+  if (postType === "event") {
+    contextDescription = `
+Source Type: Event / Hackathon / Competition Achievement
+Event Name: ${data.eventName || "Hackathon / Competition"}
+Event Type: ${data.eventType || "Hackathon"}
+Organizer: ${data.organizer || "Not specified"}
+Result / Placement: ${data.result || "Participant / Winner"}
+Prize / Award: ${data.prize || "Recognition"}
+Project Title: ${data.projectTitle || "Project"}
+Problem Statement: ${data.problemStatement || "Real-world engineering challenge"}
+Role in Team: ${data.role || "Developer"}
+Team Name / Size: ${data.teamName || "Team"} (${data.teamSize || 1} members)
+Tech Stack: ${Array.isArray(data.techStack) ? data.techStack.join(", ") : data.techStack || "Modern Tech Stack"}
+What Was Built: ${data.whatDidYouBuild || data.description || "High impact software solution"}
+What Was Learned: ${data.whatDidYouLearn || "Advanced technical and collaborative skills"}
+Challenges Faced: ${data.challengesFaced || "Complex architecture and tight delivery timelines"}
+Key Takeaways: ${Array.isArray(data.keyTakeaways) ? data.keyTakeaways.join("; ") : data.keyTakeaways || ""}
+Project / Live Link: ${data.projectLink || ""}`;
+  } else if (postType === "github") {
+    contextDescription = `
+Source Type: GitHub Repository / Engineering Project Showcase
+Repository: ${data.repoFullName || "Software Project"}
+Project Overview: ${data.overview || data.description || "Production-grade repository"}
+Code Quality & Architecture Highlights: ${data.quality || "Modular, scalable architecture"}
+Resume Highlights & Impact Points: ${Array.isArray(data.resumeImpact) ? data.resumeImpact.join("; ") : data.resumeImpact || "High performance and reliability"}
+Tech Stack: ${Array.isArray(data.techStack) ? data.techStack.join(", ") : data.techStack || (Array.isArray(data.filesAnalyzed) ? data.filesAnalyzed.slice(0, 5).join(", ") : "")}
+Repository URL: ${data.repoUrl || ""}`;
+  } else if (postType === "milestone") {
+    contextDescription = `
+Source Type: Career Milestone / Certificate / Internship / Coding Streak
+Milestone Category: ${data.milestoneType || "Career Achievement"}
+Title / Program: ${data.title || data.eventName || "Milestone"}
+Organization / Company: ${data.organization || data.organizer || "Industry Organization"}
+Role / Topic: ${data.role || "Software Engineering"}
+Tech Stack & Tools: ${Array.isArray(data.techStack) ? data.techStack.join(", ") : data.techStack || ""}
+Key Achievements & Metrics: ${data.keyAchievements || data.description || "Reached major milestone with practical outcomes"}
+Key Learnings: ${data.whatDidYouLearn || data.overview || "Deep technical mastery and real-world execution"}`;
+  } else {
+    contextDescription = `
+Source Type: Custom Tech Post / Idea Spark / Thought Leadership
+Topic / Title: ${data.title || data.topic || data.eventName || "Tech Innovation & Learnings"}
+Key Highlights & Content Notes: ${data.customHighlights || data.overview || data.description || "Insights and technical breakthroughs"}
+Tech Stack / Topics: ${Array.isArray(data.techStack) ? data.techStack.join(", ") : data.techStack || "Software Engineering"}`;
+  }
 
-Return ONLY a JSON object with a "draft" field containing the post text.`;
+  return `You are an elite tech content strategist and viral LinkedIn post copywriter for top software engineers, hackathon winners, and ambitious student developers.
+
+Create a compelling, exhaustive, and authentic LinkedIn post that maximizes engagement, comments, and visibility in recruiters' and tech leaders' feeds.
+
+${contextDescription}
+
+Additional User Preferences:
+- Tone Style: ${tone} (e.g. exhaustive storytelling, deep technical, executive impact, celebratory)
+- Detail Level: ${length} (exhaustive multi-paragraph deep-dive with quantifiable impact)
+- Custom User Highlights to Emphasize: ${customHighlights || "None specified"}
+- Teammates / Mentors / Organizers to Tag: ${mentions || "None specified"}
+- Include Emojis: ${includeEmoji ? "Yes, use tasteful and punchy tech/celebratory emojis" : "No, strictly text only"}
+- Include Hashtags: ${includeHashtags ? "Yes, provide 4-7 trending tech and career hashtags" : "No"}
+
+Key Writing Guidelines:
+1. "draft" (Primary Post):
+   - Hook: Start with a strong 1-2 line hook that halts scrolling (e.g., sharing a big win, a high-stakes challenge, or a hard-earned milestone).
+   - The Story & Problem: Set the stage on what problem was being solved, why it was hard, or the competition context.
+   - The Solution & Tech Architecture: Explain what was built, naming the specific tech stack and architectural choices.
+   - The Win & Measurable Outcomes: Emphasize quantifiable metrics, rankings (e.g., 🥇 1st place out of 80+ teams, 40% latency reduction, 24-hour sprint).
+   - The Exhaustive Paragraph of Achievement: Include a rich, thorough paragraph dedicated to the sweat equity, obstacles tackled (debugging late at night, pivot decisions), and what this milestone represents.
+   - Gratitude & Shoutouts: Tag/mention teammates, mentors, organizers, or open-source tools if provided.
+   - CTA (Call to Action): Ask an engaging question or invite connections/feedback.
+   - Hashtags: End with relevant trending hashtags.
+   - First-person perspective ("I" or "We").
+
+2. "achievementParagraph":
+   - An isolated, exhaustive, and inspiring paragraph focusing deeply on the achievement, technical triumphs, and perseverance. Ideal for copying into portfolios or resumes.
+
+3. "variations":
+   - Provide exactly 3 distinct styles:
+     * Style 1: "Storytelling & Journey" (Emotional hook, struggle, breakthrough, victory, reflection)
+     * Style 2: "Deep Technical & Architecture Breakdown" (Focusing heavily on system design, tech stack nuances, API performance, trade-offs)
+     * Style 3: "Executive & Punchy Summary" (Clean bullet points, quick stats, high-impact summary)
+
+4. "suggestedHashtags": 5-8 relevant trending hashtags (e.g. #WebDevelopment #HackathonWinner #SoftwareEngineering #React #AI #OpenSource).
+5. "suggestedMentions": Relevant mention placeholders (e.g. @Organizer, @Teammate).
+6. "keyTakeaways": 3-4 bullet-point takeaways.
+
+Return ONLY a valid JSON object matching the requested schema.`;
 }
 
 const connectGithub = asyncHandler(async (req, res) => {
@@ -231,18 +334,59 @@ const deleteAnalysis = asyncHandler(async (req, res) => {
 });
 
 const generateLinkedInPost = asyncHandler(async (req, res) => {
-  const { repoFullName, overview, quality, resumeImpact, repoUrl } = req.body;
-
-  const analysis = {
+  const {
+    postType = "github",
+    eventId,
     repoFullName,
     overview,
     quality,
     resumeImpact,
     repoUrl,
-    filesAnalyzed: [],
-  };
+    tone = "exhaustive",
+    length = "exhaustive",
+    customHighlights,
+    mentions,
+    includeEmoji = true,
+    includeHashtags = true,
+    title,
+    topic,
+    organization,
+    milestoneType,
+  } = req.body;
 
-  const prompt = buildLinkedInPostPrompt(analysis);
+  let mergedData = { ...req.body };
+
+  // If eventId is provided, enrich from Event model
+  if (eventId) {
+    const eventDoc = await Event.findOne({ _id: eventId, user: req.user._id }).lean();
+    if (eventDoc) {
+      mergedData = {
+        postType: "event",
+        eventName: req.body.eventName || eventDoc.eventName,
+        eventType: req.body.eventType || eventDoc.eventType,
+        organizer: req.body.organizer || eventDoc.organizer,
+        role: req.body.role || eventDoc.role,
+        teamName: req.body.teamName || eventDoc.teamName,
+        teamSize: req.body.teamSize || eventDoc.teamSize,
+        teamMembers: req.body.teamMembers || eventDoc.teamMembers,
+        projectTitle: req.body.projectTitle || eventDoc.projectTitle,
+        problemStatement: req.body.problemStatement || eventDoc.problemStatement,
+        techStack: req.body.techStack || eventDoc.techStack,
+        description: req.body.description || eventDoc.description,
+        result: req.body.result || eventDoc.result,
+        prize: req.body.prize || eventDoc.prize,
+        whatDidYouBuild: req.body.whatDidYouBuild || eventDoc.reflection?.whatDidYouBuild,
+        whatDidYouLearn: req.body.whatDidYouLearn || eventDoc.reflection?.whatDidYouLearn,
+        challengesFaced: req.body.challengesFaced || eventDoc.reflection?.challengesFaced,
+        keyTakeaways: req.body.keyTakeaways || eventDoc.reflection?.keyTakeaways,
+        projectLink: req.body.projectLink || eventDoc.projectLink,
+        certificateUrl: eventDoc.certificateUrl,
+        ...req.body,
+      };
+    }
+  }
+
+  const prompt = buildLinkedInPostPrompt(mergedData);
   const aiResult = await aiService.generateContent({
     prompt,
     responseSchema: linkedinPostResponseSchema,
@@ -251,15 +395,56 @@ const generateLinkedInPost = asyncHandler(async (req, res) => {
   });
 
   if (!aiResult.success) {
-    throw ApiError.internal(aiResult.message);
+    throw ApiError.internal(aiResult.message || "Failed to generate LinkedIn post draft");
   }
 
-  const draft = aiResult.data?.draft || "";
+  const responseData = aiResult.data || {};
+  const draft = responseData.draft || "";
   if (!draft) {
     throw ApiError.internal("Failed to generate post draft");
   }
 
-  return ApiResponse.success({ draft }).send(res);
+  // Safe fallback if variations missing in edge case
+  const variations = Array.isArray(responseData.variations) && responseData.variations.length > 0
+    ? responseData.variations
+    : [
+        { style: "Storytelling & Journey", content: draft },
+        { style: "Deep Technical Breakdown", content: draft },
+        { style: "Executive Summary", content: draft },
+      ];
+
+  const achievementParagraph = responseData.achievementParagraph || draft.slice(0, 300);
+  const suggestedHashtags = Array.isArray(responseData.suggestedHashtags) ? responseData.suggestedHashtags : [];
+  const suggestedMentions = Array.isArray(responseData.suggestedMentions) ? responseData.suggestedMentions : [];
+  const keyTakeaways = Array.isArray(responseData.keyTakeaways) ? responseData.keyTakeaways : [];
+
+  // Log activity
+  try {
+    await activityLogService.logActivity({
+      user: req.user._id,
+      action: "generated_linkedin_post",
+      metadata: {
+        postType: mergedData.postType || "general",
+        title: mergedData.projectTitle || mergedData.eventName || mergedData.repoFullName || mergedData.title || "Post Draft",
+      },
+    });
+  } catch {
+    // Non-blocking log failure
+  }
+
+  return ApiResponse.success({
+    draft,
+    headline: responseData.headline || "🚀 Project & Achievement Showcase",
+    achievementParagraph,
+    variations,
+    suggestedHashtags,
+    suggestedMentions,
+    keyTakeaways,
+    sourceData: {
+      postType: mergedData.postType,
+      title: mergedData.projectTitle || mergedData.eventName || mergedData.repoFullName || mergedData.title,
+    },
+  }).send(res);
 });
 
 const getPortfolio = asyncHandler(async (req, res) => {
