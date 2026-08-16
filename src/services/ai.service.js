@@ -264,6 +264,22 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
     }
   }
 
+  // In development mode, if API key is not configured or invalid, fallback to realistic mock data
+  if (process.env.NODE_ENV !== "production" && isBadRequest(lastError || {})) {
+    console.warn(`[AI] Gemini API returned bad request / invalid key (${lastError?.message}). Using dev mock data for feature: ${feature}`);
+    const mockData = generateDevMockData(feature, prompt, responseSchema);
+    const mockResult = {
+      success: true,
+      data: mockData,
+      raw: JSON.stringify(mockData),
+      model: "dev-mock-model",
+      tokensEstimate: 150,
+      isDevMock: true,
+    };
+    await logUsage({ ...resultMeta, success: true, tokensEstimate: 150 });
+    return mockResult;
+  }
+
   // All retries exhausted
   const errorResult = buildErrorResult(
     lastClassification?.type || ERROR_TYPES.UNKNOWN,
@@ -280,6 +296,116 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
   });
 
   return errorResult;
+}
+
+function generateDevMockData(feature, prompt, responseSchema) {
+  if (feature === "resume-analysis") {
+    return {
+      atsScore: 84,
+      keywordBreakdown: {
+        matched: ["JavaScript", "TypeScript", "React", "Node.js", "Express", "REST APIs", "Git", "SQL"],
+        missing: ["Docker", "CI/CD", "Jest/Unit Testing", "Kubernetes", "AWS"]
+      },
+      strengths: [
+        "Strong full-stack foundations with clear modern JavaScript/TypeScript ecosystem experience",
+        "Demonstrated practical project delivery and component architecture",
+        "Clear, structured section layout with concise technical descriptions"
+      ],
+      improvements: [
+        "Include quantifiable metric outcomes (e.g. 'Improved render performance by 35%')",
+        "Highlight automated testing and continuous deployment pipeline experience",
+        "Detail system scalability and caching strategies utilized"
+      ],
+      summary: "High-potential technical resume showcasing solid modern web development skills and hands-on project accomplishments.",
+      inferredTargetRole: "Full Stack Engineer"
+    };
+  }
+
+  if (feature === "github-repo-analysis") {
+    return {
+      overview: "Well-structured repository implementing modern software patterns with clear separation of concerns.",
+      quality: "Clean modular architecture, consistent naming conventions, and intuitive project hierarchy.",
+      security: "No obvious vulnerabilities or hardcoded secrets found in reviewed files. Proper environment variable usage observed.",
+      resumeImpact: [
+        "Architected and deployed scalable full-stack web application with responsive UI and modular services",
+        "Implemented secure JWT authentication, rate limiting, and robust input validation workflows",
+        "Designed RESTful API endpoints optimizing database queries and data transfer latency"
+      ]
+    };
+  }
+
+  if (feature === "skills-gap" || feature === "skills") {
+    return {
+      readinessScore: 80,
+      matchedSkills: ["JavaScript", "React", "Node.js", "Git", "REST APIs"],
+      missingSkills: ["Docker", "TypeScript", "Unit Testing", "CI/CD"],
+      recommendations: [
+        "Build a project integrating Docker containers and automated CI/CD workflows",
+        "Deepen testing proficiency with Jest and React Testing Library"
+      ]
+    };
+  }
+
+  if (feature === "roadmap") {
+    return {
+      role: "Full Stack Developer",
+      summary: "Structured 12-week roadmap guiding from core fundamentals to production-ready engineering.",
+      milestones: [
+        {
+          title: "Phase 1: Advanced Frontend & TypeScript",
+          duration: "Weeks 1-4",
+          topics: ["TypeScript Types & Generics", "State Management & Performance", "Design Systems"],
+          projects: ["Real-time Analytics Dashboard"]
+        },
+        {
+          title: "Phase 2: Scalable Backend Architecture",
+          duration: "Weeks 5-8",
+          topics: ["Node.js Microservices", "Database Optimization & Caching", "API Security & Rate Limiting"],
+          projects: ["High-Throughput API Gateway"]
+        },
+        {
+          title: "Phase 3: DevOps, Testing & Production Readiness",
+          duration: "Weeks 9-12",
+          topics: ["Docker & Kubernetes", "CI/CD Automation", "Monitoring & Logging"],
+          projects: ["Production-Ready Monorepo Deployment"]
+        }
+      ]
+    };
+  }
+
+  if (feature === "interview-scoring" || feature === "interview") {
+    return {
+      score: 85,
+      strengths: [
+        "Structured thinking utilizing clear STAR method breakdown",
+        "Strong articulation of technical trade-offs and decision criteria",
+        "Clear communication and concise delivery"
+      ],
+      improvements: [
+        "Include more concrete metrics regarding performance benchmarks",
+        "Discuss edge cases and exception recovery mechanisms"
+      ],
+      feedback: "Excellent response displaying practical engineering maturity and confident communication.",
+      criteriaScores: {
+        technicalAccuracy: 86,
+        communication: 88,
+        problemSolving: 84
+      }
+    };
+  }
+
+  if (responseSchema?.properties) {
+    const mock = {};
+    for (const [key, val] of Object.entries(responseSchema.properties)) {
+      if (val.type === "string") mock[key] = `Sample ${key}`;
+      else if (val.type === "number") mock[key] = 80;
+      else if (val.type === "array") mock[key] = ["Sample point 1", "Sample point 2"];
+      else if (val.type === "object") mock[key] = {};
+    }
+    return mock;
+  }
+
+  return { message: "Mock development response" };
 }
 
 /**

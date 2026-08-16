@@ -107,11 +107,7 @@ const roleSkills = [
   { targetRole: "DevOps Engineer", skillName: "Git", category: "Tools", importance: "core" },
 ];
 
-async function main() {
-  await mongoose.connect(MONGODB_URI);
-  console.log("[seed] Connected to MongoDB");
-
-  const force = process.argv.includes("--force");
+async function seed(force = false) {
   if (force) {
     await RoleSkill.deleteMany({});
     console.log("[seed] Cleared all existing role skills (--force)");
@@ -132,14 +128,26 @@ async function main() {
   const total = await RoleSkill.countDocuments();
   const roles = await RoleSkill.distinct("targetRole");
 
-  console.log(`[seed] Done. Inserted ${inserted} new entries. Total in DB: ${total}`);
-  console.log(`[seed] Roles: ${roles.length} — ${roles.join(", ")}`);
+  console.log(`[seed] RoleSkills done. Inserted ${inserted} new entries. Total in DB: ${total}`);
+  return { inserted, total, roles };
+}
+
+async function main() {
+  await mongoose.connect(MONGODB_URI);
+  console.log("[seed] Connected to MongoDB");
+
+  const force = process.argv.includes("--force");
+  await seed(force);
 
   await mongoose.disconnect();
   console.log("[seed] Disconnected.");
 }
 
-main().catch((err) => {
-  console.error("[seed] Fatal error:", err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("[seed] Fatal error:", err);
+    process.exit(1);
+  });
+}
+
+module.exports = { seed, roleSkills };

@@ -56,6 +56,35 @@ function getDbStatus() {
   };
 }
 
+let mongodInstance = null;
+
+async function autoSeedIfEmpty() {
+  try {
+    const RoleSkill = require("../models/RoleSkill.model");
+    const Question = require("../models/Question.model");
+
+    const roleCount = await RoleSkill.countDocuments();
+    if (roleCount === 0) {
+      console.log("[db] Auto-seeding initial role skills...");
+      const { seed: seedRoleSkills } = require("../../scripts/seedRoleSkills");
+      if (typeof seedRoleSkills === "function") {
+        await seedRoleSkills();
+      }
+    }
+
+    const questionCount = await Question.countDocuments();
+    if (questionCount === 0) {
+      console.log("[db] Auto-seeding initial questions...");
+      const { seed: seedQuestions } = require("../../scripts/seedQuestions");
+      if (typeof seedQuestions === "function") {
+        await seedQuestions();
+      }
+    }
+  } catch (err) {
+    console.warn("[db] Auto-seed non-fatal note:", err.message);
+  }
+}
+
 const connectDB = async () => {
   if (!env.MONGODB_URI) {
     console.error("[db] MONGODB_URI is not set — server will start without database connectivity");
@@ -64,13 +93,32 @@ const connectDB = async () => {
 
   try {
     const conn = await mongoose.connect(env.MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
-      connectTimeoutMS: 10000,
+      serverSelectionTimeoutMS: 3000,
+      connectTimeoutMS: 5000,
       maxPoolSize: 20,
     });
     console.log(`[db] Connected to MongoDB: ${conn.connection.host}/${conn.connection.name}`);
+    await autoSeedIfEmpty();
+    return;
   } catch (err) {
-    console.error("[db] Initial connection failed:", err.message);
+    console.warn("[db] Initial connection to MONGODB_URI failed:", err.message);
+    if (env.NODE_ENV !== "production") {
+      try {
+        console.log("[db] Starting In-Memory MongoDB server for development...");
+        const { MongoMemoryServer } = require("mongodb-memory-server");
+        mongodInstance = await MongoMemoryServer.create();
+        const uri = mongodInstance.getUri();
+        const conn = await mongoose.connect(uri, {
+          serverSelectionTimeoutMS: 5000,
+          connectTimeoutMS: 10000,
+        });
+        console.log(`[db] Connected to In-Memory MongoDB: ${conn.connection.host}/${conn.connection.name}`);
+        await autoSeedIfEmpty();
+        return;
+      } catch (memErr) {
+        console.error("[db] Failed to start In-Memory MongoDB:", memErr.message);
+      }
+    }
     console.error("[db] Will retry automatically — server is accepting HTTP requests in the meantime");
   }
 };

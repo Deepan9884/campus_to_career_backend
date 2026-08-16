@@ -470,19 +470,15 @@ const technicalQuestions = [
   },
 ];
 
-async function main() {
-  await mongoose.connect(MONGODB_URI);
-  console.log(`[seed] Connected to MongoDB`);
-
-  const force = process.argv.includes("--force");
+async function seed(force = false) {
   if (force) {
     await Question.deleteMany({});
     console.log(`[seed] Cleared all existing questions (--force)`);
   }
 
   const allQuestions = [
-    ...behavioralQuestions.map((q) => ({ ...q, domain: "behavioral" })),
-    ...technicalQuestions.map((q) => ({ ...q, domain: "technical" })),
+    ...behavioralQuestions.map((q) => ({ ...q, roundType: "hr", itemType: "open_ended" })),
+    ...technicalQuestions.map((q) => ({ ...q, roundType: "technical", itemType: "open_ended" })),
   ];
 
   let inserted = 0;
@@ -495,17 +491,30 @@ async function main() {
   }
 
   const total = await Question.countDocuments();
-  const behavioralCount = await Question.countDocuments({ domain: "behavioral" });
-  const technicalCount = await Question.countDocuments({ domain: "technical" });
+  const hrCount = await Question.countDocuments({ roundType: "hr" });
+  const techCount = await Question.countDocuments({ roundType: "technical" });
 
-  console.log(`[seed] Done. Inserted ${inserted} new questions. Total in DB: ${total}`);
-  console.log(`[seed]   Behavioral: ${behavioralCount}, Technical: ${technicalCount}`);
+  console.log(`[seed] Questions done. Inserted ${inserted} new questions. Total in DB: ${total}`);
+  console.log(`[seed]   HR/Behavioral: ${hrCount}, Technical: ${techCount}`);
+  return { inserted, total, hrCount, techCount };
+}
+
+async function main() {
+  await mongoose.connect(MONGODB_URI);
+  console.log(`[seed] Connected to MongoDB`);
+
+  const force = process.argv.includes("--force");
+  await seed(force);
 
   await mongoose.disconnect();
   console.log(`[seed] Disconnected.`);
 }
 
-main().catch((err) => {
-  console.error("[seed] Fatal error:", err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("[seed] Fatal error:", err);
+    process.exit(1);
+  });
+}
+
+module.exports = { seed, behavioralQuestions, technicalQuestions };
