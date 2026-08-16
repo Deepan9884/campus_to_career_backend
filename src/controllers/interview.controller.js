@@ -316,9 +316,13 @@ async function scoreGeminiRound(round, { roundType, targetRole, userId }) {
  * POST /api/interview/start
  */
 const startSession = asyncHandler(async (req, res) => {
-  const { targetRole, questionCount = 5, difficulty } = req.body;
+  const { targetRole, questionCount = 5, difficulty, selectedRounds } = req.body;
 
-  const roundOrder = ["quiz", "aptitude", "core", "technical", "hr"];
+  const allRounds = ["quiz", "aptitude", "core", "technical", "hr"];
+  // If selectedRounds provided, filter to only those (preserving canonical order)
+  const roundOrder = Array.isArray(selectedRounds) && selectedRounds.length > 0
+    ? allRounds.filter((r) => selectedRounds.includes(r))
+    : allRounds;
   const autoRounds = new Set(["quiz", "aptitude"]);
   const geminiRounds = new Set(["core", "technical", "hr"]);
 

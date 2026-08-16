@@ -22,6 +22,24 @@ const startSessionValidators = [
     .optional()
     .isInt({ min: 3, max: 10 })
     .withMessage("questionCount must be an integer between 3 and 10"),
+
+  body("selectedRounds")
+    .optional()
+    .isArray({ min: 1, max: 5 })
+    .withMessage("selectedRounds must be an array with 1 to 5 round types")
+    .custom((value) => {
+      if (!Array.isArray(value)) return true;
+      const validTypes = new Set(ROUND_TYPES);
+      for (const rt of value) {
+        if (!validTypes.has(rt)) {
+          throw new Error(`Invalid round type: ${rt}. Must be one of: ${ROUND_TYPES.join(", ")}`);
+        }
+      }
+      if (new Set(value).size !== value.length) {
+        throw new Error("selectedRounds must not contain duplicate values");
+      }
+      return true;
+    }),
 ];
 
 const submitAnswerValidators = [
