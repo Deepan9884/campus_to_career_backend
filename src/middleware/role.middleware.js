@@ -13,14 +13,11 @@ const verifyRole = (allowedRoles = ["admin", "mentor"]) => {
 
     const userRole = req.user.role || "student";
 
-    // In development mode, allow users accessing mentor endpoints for seamless demo/testing
-    const isDev = process.env.NODE_ENV !== "production";
-
-    if (allowedRoles.includes(userRole) || isDev) {
+    if (allowedRoles.includes(userRole)) {
       return next();
     }
 
-    return next(ApiError.forbidden("Access denied: Mentor or Admin privileges required"));
+    return next(ApiError.forbidden("Access denied: Insufficient role permissions"));
   };
 };
 

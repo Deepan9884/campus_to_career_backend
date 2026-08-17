@@ -127,18 +127,11 @@ const register = asyncHandler(async (req, res) => {
 const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
-  let user = await User.findByEmail(email).select("+password");
-  if (!user && (email === "mentor@campustocareer.ai" || email === "admin@campustocareer.ai" || email === "mentor@careerforge.ai" || email === "admin@careerforge.ai")) {
-    user = await User.create({
-      name: email.startsWith("mentor") ? "Mentor Administrator" : "Platform Administrator",
-      email: email.toLowerCase(),
-      password: password || "MentorSecret123!",
-      role: email.startsWith("mentor") ? "mentor" : "admin",
-      targetRole: "Lead Placement Mentor",
-    });
-    user = await User.findById(user._id).select("+password");
+  if (!email || !password) {
+    throw ApiError.badRequest("Email and password are required");
   }
 
+  const user = await User.findByEmail(email).select("+password");
   if (!user) {
     throw ApiError.unauthorized("Invalid credentials");
   }
@@ -179,7 +172,9 @@ const googleLogin = asyncHandler(async (req, res) => {
     throw ApiError.badRequest("Google credential is required");
   }
 
-  let payload;
+  let payload = null;
+
+  // 1. Verify Google ID token cryptographically if client ID is configured
   if (env.GOOGLE_CLIENT_ID) {
     try {
       const ticket = await googleClient.verifyIdToken({
@@ -188,43 +183,27 @@ const googleLogin = asyncHandler(async (req, res) => {
       });
       payload = ticket.getPayload();
     } catch (error) {
-      // Continue to token/userinfo fallbacks below
+      // Continue to try Google userinfo if access token was supplied instead
     }
   }
 
+  // 2. If ID token verification was not applicable, verify as OAuth Access Token against Google UserInfo API
   if (!payload && typeof credential === "string" && credential.length > 10) {
-    if (credential.startsWith("ey")) {
-      try {
-        const decoded = jwt.decode(credential);
-        if (decoded && (decoded.email || decoded.sub)) {
-          payload = {
-            email: decoded.email || "google.user@campustocareer.ai",
-            name: decoded.name || "Google User",
-            sub: decoded.sub || "google-id-12345",
-            picture: decoded.picture || "",
-          };
-        }
-      } catch (e) {}
-    }
-    if (!payload) {
-      try {
-        const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-          headers: { Authorization: `Bearer ${credential}` },
-        });
-        if (userInfoRes.ok) {
-          payload = await userInfoRes.json();
-        }
-      } catch (e) {}
+    try {
+      const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: `Bearer ${credential}` },
+      });
+      if (userInfoRes.ok) {
+        payload = await userInfoRes.json();
+      }
+    } catch (e) {
+      // Verification failed
     }
   }
 
-  if (!payload) {
-    payload = {
-      email: "google.user@campustocareer.ai",
-      name: "Google Student",
-      sub: "google-demo-123456",
-      picture: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
-    };
+  // 3. Strict security check: Do not allow unverified tokens or fake accounts
+  if (!payload || !payload.email || !payload.sub) {
+    throw ApiError.unauthorized("Google authentication token verification failed. Please try logging in again.");
   }
 
   const { email, name, sub: googleId, picture } = payload;
@@ -281,8 +260,8 @@ const googleLogin = asyncHandler(async (req, res) => {
 });
 
 const githubLogin = asyncHandler(async (req, res) => {
-  const { code, accessToken: reqToken, username } = req.body;
-  let githubUser;
+  const { code, accessToken: reqToken } = req.body;
+  let githubUser = null;
 
   if (reqToken) {
     try {
@@ -327,15 +306,9 @@ const githubLogin = asyncHandler(async (req, res) => {
     } catch (e) {}
   }
 
-  if (!githubUser) {
-    const ghName = username || "octocat";
-    githubUser = {
-      id: "gh-demo-998877",
-      login: ghName,
-      name: username ? username : "GitHub Developer",
-      email: `${ghName.toLowerCase()}@github.campustocareer.ai`,
-      avatar_url: "https://avatars.githubusercontent.com/u/583231?v=4",
-    };
+  // Strict check: Require verified GitHub identity
+  if (!githubUser || !githubUser.id || (!githubUser.email && !githubUser.login)) {
+    throw ApiError.unauthorized("GitHub authentication verification failed. Please try signing in again.");
   }
 
   const email = githubUser.email || `${githubUser.login.toLowerCase()}@github.campustocareer.ai`;

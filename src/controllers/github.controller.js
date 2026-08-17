@@ -236,6 +236,12 @@ const listRepos = asyncHandler(async (req, res) => {
 const analyzeRepo = asyncHandler(async (req, res) => {
   const { repoFullName } = req.body;
 
+  if (!repoFullName || typeof repoFullName !== "string" || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repoFullName)) {
+    throw ApiError.badRequest(
+      "Invalid repository name format. Expected 'owner/repo'",
+    );
+  }
+
   if (!req.user.githubUsername) {
     throw ApiError.badRequest(
       "GitHub account not connected. Call POST /api/github/connect first.",
@@ -447,12 +453,17 @@ const generateLinkedInPost = asyncHandler(async (req, res) => {
   }).send(res);
 });
 
+function escapeRegex(str) {
+  return (str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 const getPortfolio = asyncHandler(async (req, res) => {
   const { username } = req.params;
   
+  const safeUsername = escapeRegex(username);
   // Find user by githubUsername (case insensitive)
   const user = await User.findOne({ 
-    githubUsername: { $regex: new RegExp(`^${username}$`, "i") } 
+    githubUsername: { $regex: new RegExp(`^${safeUsername}$`, "i") } 
   }).select("name githubUsername profile.targetRole profile.skills");
 
   if (!user) {

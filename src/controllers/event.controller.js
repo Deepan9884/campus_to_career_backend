@@ -544,14 +544,8 @@ const getEventAnalytics = asyncHandler(async (req, res) => {
   }).send(res);
 });
 
-/**
- * GET /api/events/badges
- */
-const getEventBadges = asyncHandler(async (req, res) => {
-  const events = await Event.find({ user: req.user._id }).lean();
-  const stats = await getEventStatsHelper(req.user._id);
-
-  const badges = [
+function calculateBadges(events, stats) {
+  return [
     {
       id: "first-event",
       name: "First Steps",
@@ -592,8 +586,8 @@ const getEventBadges = asyncHandler(async (req, res) => {
       name: "Tech Polyglot",
       description: "Use 10+ unique technologies across events",
       icon: "Cpu",
-      earned: stats.uniqueTechStack >= 10,
-      progress: Math.min(stats.uniqueTechStack * 10, 100),
+      earned: (stats.uniqueTechStack || 0) >= 10,
+      progress: Math.min((stats.uniqueTechStack || 0) * 10, 100),
       target: 10,
     },
     {
@@ -610,8 +604,8 @@ const getEventBadges = asyncHandler(async (req, res) => {
       name: "Team Player",
       description: "Collaborate with 10+ different team members",
       icon: "Users",
-      earned: new Set(events.flatMap((e) => e.teamMembers)).size >= 10,
-      progress: Math.min(new Set(events.flatMap((e) => e.teamMembers)).size * 10, 100),
+      earned: new Set(events.flatMap((e) => e.teamMembers || [])).size >= 10,
+      progress: Math.min(new Set(events.flatMap((e) => e.teamMembers || [])).size * 10, 100),
       target: 10,
     },
     {
@@ -637,8 +631,8 @@ const getEventBadges = asyncHandler(async (req, res) => {
       name: "Streak Keeper",
       description: "Maintain a 6+ month event streak",
       icon: "Flame",
-      earned: stats.currentStreak >= 6,
-      progress: Math.min(stats.currentStreak * 16, 100),
+      earned: (stats.currentStreak || 0) >= 6,
+      progress: Math.min((stats.currentStreak || 0) * 16, 100),
       target: 6,
     },
     {
@@ -660,7 +654,15 @@ const getEventBadges = asyncHandler(async (req, res) => {
       target: 1,
     },
   ];
+}
 
+/**
+ * GET /api/events/badges
+ */
+const getEventBadges = asyncHandler(async (req, res) => {
+  const events = await Event.find({ user: req.user._id }).lean();
+  const stats = await getEventStatsHelper(req.user._id);
+  const badges = calculateBadges(events, stats);
   return ApiResponse.success(badges).send(res);
 });
 
@@ -701,10 +703,8 @@ const getEventPortfolio = asyncHandler(async (req, res) => {
     totalTeamMembers: allEvents.reduce((sum, e) => sum + (e.teamSize - 1), 0),
   };
 
-  // Get badges
-  const badgesRes = await getEventBadges(req, res);
-  // We can't easily reuse the response, so return badges directly
-  const badges = badgesRes.data || [];
+  // Get badges safely without double sending HTTP response
+  const badges = calculateBadges(allEvents, stats);
 
   return ApiResponse.success({
     user: {

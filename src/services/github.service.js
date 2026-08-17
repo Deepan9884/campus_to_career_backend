@@ -1,15 +1,20 @@
 const budget = require("./githubBudget.service");
+const env = require("../config/env");
 
 const GITHUB_API = "https://api.github.com";
 const USER_AGENT = "Campus-to-Career-AI/0.1";
 
 async function githubFetch(url) {
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": USER_AGENT,
-      Accept: "application/vnd.github+json",
-    },
-  });
+  const headers = {
+    "User-Agent": USER_AGENT,
+    Accept: "application/vnd.github+json",
+  };
+
+  if (env.GITHUB_TOKEN) {
+    headers.Authorization = `token ${env.GITHUB_TOKEN}`;
+  }
+
+  const res = await fetch(url, { headers });
 
   budget.recordResponse(res.headers);
 
@@ -53,20 +58,26 @@ async function listPublicRepos(username) {
 }
 
 async function getRepoTree(owner, repo, branch = "main") {
+  const encOwner = encodeURIComponent(owner);
+  const encRepo = encodeURIComponent(repo);
+  const encBranch = encodeURIComponent(branch);
   try {
-    const data = await githubFetch(`${GITHUB_API}/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`);
+    const data = await githubFetch(`${GITHUB_API}/repos/${encOwner}/${encRepo}/git/trees/${encBranch}?recursive=1`);
     return data.tree || [];
   } catch (err) {
     if (err.status === 404) {
-      const data = await githubFetch(`${GITHUB_API}/repos/${owner}/${repo}/git/trees/master?recursive=1`);
+      const data = await githubFetch(`${GITHUB_API}/repos/${encOwner}/${encRepo}/git/trees/master?recursive=1`);
       return data.tree || [];
     }
     throw err;
   }
 }
 
-async function getFileContent(owner, repo, path) {
-  const data = await githubFetch(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`);
+async function getFileContent(owner, repo, filePath) {
+  const encOwner = encodeURIComponent(owner);
+  const encRepo = encodeURIComponent(repo);
+  const encPath = (filePath || "").split("/").map(encodeURIComponent).join("/");
+  const data = await githubFetch(`${GITHUB_API}/repos/${encOwner}/${encRepo}/contents/${encPath}`);
   if (data.encoding === "base64" && data.content) {
     return Buffer.from(data.content, "base64").toString("utf-8");
   }
@@ -74,7 +85,9 @@ async function getFileContent(owner, repo, path) {
 }
 
 async function getReadme(owner, repo) {
-  const data = await githubFetch(`${GITHUB_API}/repos/${owner}/${repo}/readme`);
+  const encOwner = encodeURIComponent(owner);
+  const encRepo = encodeURIComponent(repo);
+  const data = await githubFetch(`${GITHUB_API}/repos/${encOwner}/${encRepo}/readme`);
   if (data.encoding === "base64" && data.content) {
     return Buffer.from(data.content, "base64").toString("utf-8");
   }
@@ -82,7 +95,9 @@ async function getReadme(owner, repo) {
 }
 
 async function getRepoMeta(owner, repo) {
-  const data = await githubFetch(`${GITHUB_API}/repos/${owner}/${repo}`);
+  const encOwner = encodeURIComponent(owner);
+  const encRepo = encodeURIComponent(repo);
+  const data = await githubFetch(`${GITHUB_API}/repos/${encOwner}/${encRepo}`);
   return {
     name: data.name,
     full_name: data.full_name,

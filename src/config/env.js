@@ -21,11 +21,20 @@ const env = {
   JWT_REFRESH_EXPIRES_IN: getVar("JWT_REFRESH_EXPIRES_IN") || "7d",
   CLIENT_URL: getVar("CLIENT_URL") || "http://localhost:5173",
   GOOGLE_CLIENT_ID: getVar("GOOGLE_CLIENT_ID"),
-  GEMINI_API_KEY: getVar("GEMINI_API_KEY", true),
+  GEMINI_API_KEY: getVar("GEMINI_API_KEY", false) || getVar("GEMINI_API_KEYS", false),
+  GEMINI_API_KEYS: (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean),
   GEMINI_MODEL_DEFAULT: getVar("GEMINI_MODEL_DEFAULT") || "gemini-flash-lite-latest",
   GEMINI_MODEL_FALLBACK: getVar("GEMINI_MODEL_FALLBACK") || "gemini-flash-lite-latest",
-  GEMINI_MAX_RPM: parseInt(getVar("GEMINI_MAX_RPM") || "12", 10),
-  GEMINI_MAX_RPD: parseInt(getVar("GEMINI_MAX_RPD") || "1400", 10),
+  GEMINI_FALLBACK_MODELS: (process.env.GEMINI_FALLBACK_MODELS || "gemini-flash-lite-latest,gemini-2.5-flash,gemini-2.5-pro")
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean),
+  GEMINI_MAX_RPM: parseInt(getVar("GEMINI_MAX_RPM") || "60", 10),
+  GEMINI_MAX_RPD: parseInt(getVar("GEMINI_MAX_RPD") || "5000", 10),
+  GITHUB_TOKEN: getVar("GITHUB_TOKEN"),
   RESET_TOKEN_SECRET: getVar("RESET_TOKEN_SECRET", true),
   SMTP_HOST: getVar("SMTP_HOST"),
   SMTP_PORT: getVar("SMTP_PORT"),

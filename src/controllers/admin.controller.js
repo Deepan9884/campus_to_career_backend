@@ -15,6 +15,10 @@ const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 const notificationService = require("../services/notification.service");
 
+function escapeRegex(str) {
+  return (str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * GET /api/admin/students
  * Paginated student directory with calculated readiness scores and telemetry badges.
@@ -49,10 +53,11 @@ const getStudentsList = asyncHandler(async (req, res) => {
   }
 
   if (search) {
+    const safeSearch = escapeRegex(search);
     const searchCond = [
-      { name: new RegExp(search, "i") },
-      { email: new RegExp(search, "i") },
-      { targetRole: new RegExp(search, "i") },
+      { name: new RegExp(safeSearch, "i") },
+      { email: new RegExp(safeSearch, "i") },
+      { targetRole: new RegExp(safeSearch, "i") },
     ];
     if (query.$and) {
       query.$and.push({ $or: searchCond });
@@ -574,7 +579,7 @@ const searchRegisteredStudents = asyncHandler(async (req, res) => {
   const mentor = await User.findById(req.user._id).select("mentees").lean();
   const menteeIds = new Set((mentor?.mentees || []).map((id) => id.toString()));
 
-  const searchRegex = new RegExp(queryStr, "i");
+  const searchRegex = new RegExp(escapeRegex(queryStr), "i");
   const students = await User.find({
     role: { $nin: ["admin", "mentor"] },
     email: { $not: /example\.com$|@test\.com$|^test_|^dynrec_/i },
