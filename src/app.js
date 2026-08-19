@@ -10,12 +10,29 @@ const rateLimit = require("express-rate-limit");
 const env = require("./config/env");
 const routes = require("./routes");
 const { errorHandler, notFoundHandler } = require("./middleware/error.middleware");
+const { mongoSanitize } = require("./middleware/sanitize.middleware");
 const { getDbStatus } = require("./config/db");
 
 const app = express();
 
-// --- Security headers
-app.use(helmet());
+// --- Security headers & CSP
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "https://accounts.google.com"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        imgSrc: ["'self'", "data:", "blob:", "https:", "http:"],
+        connectSrc: ["'self'", "https://api.github.com", "https://generativelanguage.googleapis.com", "https://accounts.google.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        objectSrc: ["'none'"],
+        upgradeInsecureRequests: env.NODE_ENV === "production" ? [] : null,
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  }),
+);
 
 // --- CORS
 const corsOrigins = env.NODE_ENV === "production"
@@ -43,12 +60,15 @@ if (env.NODE_ENV !== "test") {
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// --- Global rate limit — 100 requests per 15 min per IP (skip in test)
-if (env.NODE_ENV === "production") {
+// --- NoSQL Injection & Prototype Pollution Sanitization
+app.use(mongoSanitize);
+
+// --- Global rate limit (skip in test)
+if (env.NODE_ENV !== "test") {
   app.use(
     rateLimit({
       windowMs: 15 * 60 * 1000,
-      max: 100,
+      max: env.NODE_ENV === "production" ? 100 : 500,
       standardHeaders: true,
       legacyHeaders: false,
       message: { success: false, message: "Too many requests, please try again later" },
@@ -56,7 +76,7 @@ if (env.NODE_ENV === "production") {
   );
 }
 
-// --- Health check (before API routes, no auth)
+// --- Health check (before API routes, no auth, no sensitive error leakage)
 app.get("/api/health", (_req, res) => {
   const db = getDbStatus();
   if (db.state === "connected") {
@@ -71,7 +91,6 @@ app.get("/api/health", (_req, res) => {
     success: false,
     status: "degraded",
     db: db.state,
-    lastError: db.lastError,
     timestamp: new Date().toISOString(),
   });
 });

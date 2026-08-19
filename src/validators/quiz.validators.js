@@ -4,9 +4,7 @@ const generateQuizValidators = [
   body("roadmapItemId")
     .trim()
     .notEmpty()
-    .withMessage("roadmapItemId is required")
-    .isMongoId()
-    .withMessage("roadmapItemId must be a valid MongoDB ObjectId"),
+    .withMessage("roadmapItemId is required"),
 ];
 
 const submitQuizValidators = [

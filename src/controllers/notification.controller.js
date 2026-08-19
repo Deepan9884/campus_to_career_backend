@@ -167,10 +167,24 @@ const streamNotifications = asyncHandler(async (req, res) => {
   req.on("aborted", cleanup);
 });
 
+/**
+ * POST /api/notifications/ticket
+ * Issues a 60-second, single-purpose ticket for opening an SSE stream.
+ */
+const createStreamTicket = asyncHandler(async (req, res) => {
+  const ticket = jwt.sign(
+    { sub: req.user._id, purpose: "sse_stream" },
+    env.JWT_SECRET,
+    { expiresIn: "60s" },
+  );
+  return ApiResponse.success({ ticket }).send(res);
+});
+
 module.exports = {
   listNotifications,
   getUnreadCount,
   markAsRead,
   markAllAsRead,
   streamNotifications,
+  createStreamTicket,
 };

@@ -141,6 +141,19 @@ const login = asyncHandler(async (req, res) => {
     throw ApiError.unauthorized("Invalid credentials");
   }
 
+  // Enforce 2FA if enabled on the user account
+  if (user.is2FAEnabled) {
+    const tempToken = jwt.sign(
+      { sub: user._id, purpose: "2fa_login" },
+      env.JWT_SECRET,
+      { expiresIn: "5m" },
+    );
+    return ApiResponse.success(
+      { requires2FA: true, tempToken },
+      "Two-factor authentication code required",
+    ).send(res);
+  }
+
   const accessToken = user.generateAccessToken();
   const refreshToken = user.generateRefreshToken();
   const refreshHash = await hashToken(refreshToken);
@@ -456,9 +469,21 @@ const updateProfile = asyncHandler(async (req, res) => {
   if (req.body.location !== undefined) {
     update["profile.location"] = req.body.location;
   }
-  if (req.body.preferences) {
-    for (const [k, v] of Object.entries(req.body.preferences)) {
-      update[`preferences.${k}`] = v;
+  if (req.body.preferences && typeof req.body.preferences === "object") {
+    const allowedPrefs = [
+      "theme",
+      "notifyOn",
+      "emailDigest",
+      "aiDifficulty",
+      "preferredLanguage",
+      "resumePrivacy",
+      "dailyGoalProblems",
+      "hiddenModules",
+    ];
+    for (const pref of allowedPrefs) {
+      if (req.body.preferences[pref] !== undefined) {
+        update[`preferences.${pref}`] = req.body.preferences[pref];
+      }
     }
   }
 
@@ -688,14 +713,102 @@ const verify2FA = asyncHandler(async (req, res) => {
   return ApiResponse.success({ is2FAEnabled: true }).send(res);
 });
 
+const login2FA = asyncHandler(async (req, res) => {
+  const { tempToken, code } = req.body;
+  if (!tempToken || !code) {
+    throw ApiError.badRequest("Temporary token and 2FA code are required");
+  }
+
+  let decoded;
+  try {
+    decoded = jwt.verify(tempToken, env.JWT_SECRET);
+  } catch (err) {
+    throw ApiError.unauthorized("Invalid or expired 2FA session token");
+  }
+
+  if (decoded.purpose !== "2fa_login" || !decoded.sub) {
+    throw ApiError.unauthorized("Invalid 2FA session token payload");
+  }
+
+  const user = await User.findById(decoded.sub).select("+twoFactorSecret");
+  if (!user || !user.is2FAEnabled || !user.twoFactorSecret) {
+    throw ApiError.unauthorized("2FA is not configured for this account");
+  }
+
+  const verified = speakeasy.totp.verify({
+    secret: user.twoFactorSecret,
+    encoding: "base32",
+    token: String(code).trim(),
+    window: 1,
+  });
+
+  if (!verified) {
+    throw ApiError.unauthorized("Invalid 2FA verification code");
+  }
+
+  const accessToken = user.generateAccessToken();
+  const refreshToken = user.generateRefreshToken();
+  const refreshHash = await hashToken(refreshToken);
+
+  user.refreshToken = refreshHash;
+  await user.save();
+
+  setRefreshTokenCookie(res, refreshToken);
+
+  return ApiResponse.success({
+    user: {
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      avatar: user.avatar,
+      targetRole: user.targetRole,
+      githubUsername: user.githubUsername,
+      profile: user.profile,
+      createdAt: user.createdAt,
+      authProvider: user.authProvider,
+    },
+    accessToken,
+  }).send(res);
+});
+
 const disable2FA = asyncHandler(async (req, res) => {
-  await User.findByIdAndUpdate(req.user._id, { is2FAEnabled: false, twoFactorSecret: "" });
-  return ApiResponse.success({ is2FAEnabled: false }).send(res);
+  const { code, password } = req.body;
+  const user = await User.findById(req.user._id).select("+password +twoFactorSecret");
+  if (!user) throw ApiError.notFound("User not found");
+
+  let authorized = false;
+
+  if (code && user.twoFactorSecret) {
+    const verified = speakeasy.totp.verify({
+      secret: user.twoFactorSecret,
+      encoding: "base32",
+      token: String(code).trim(),
+      window: 1,
+    });
+    if (verified) authorized = true;
+  }
+
+  if (!authorized && password && user.password) {
+    const passMatch = await user.comparePassword(password);
+    if (passMatch) authorized = true;
+  }
+
+  if (!authorized) {
+    throw ApiError.unauthorized("Valid 2FA verification code or account password is required to disable 2FA");
+  }
+
+  user.is2FAEnabled = false;
+  user.twoFactorSecret = "";
+  await user.save();
+
+  return ApiResponse.success({ is2FAEnabled: false }, "2FA has been disabled").send(res);
 });
 
 module.exports = {
   register,
   login,
+  login2FA,
   logout,
   refreshToken,
   getMe,
@@ -710,5 +823,5 @@ module.exports = {
   exportUserData,
   generate2FA,
   verify2FA,
-  disable2FA
+  disable2FA,
 };

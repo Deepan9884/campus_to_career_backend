@@ -9,6 +9,7 @@ const notificationService = require("../services/notification.service");
 const activityLogService = require("../services/activityLog.service");
 const badgeService = require("../services/badge.service");
 const queueService = require("../services/queue.service");
+const { validateFileMagicBytes } = require("../utils/fileValidation");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
@@ -121,6 +122,14 @@ const uploadResume = asyncHandler(async (req, res) => {
   const filePath = req.file.path;
   const ext = path.extname(req.file.originalname).toLowerCase();
   const targetRole = req.body.targetRole || null;
+
+  // Validate magic bytes to prevent spoofed/polyglot files
+  if (!validateFileMagicBytes(filePath, [ext])) {
+    try {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch {}
+    throw ApiError.badRequest("Invalid file signature. The file contents do not match a valid PDF or DOCX file.");
+  }
 
   try {
     const extractedText = await extractTextFromFile(filePath, ext);

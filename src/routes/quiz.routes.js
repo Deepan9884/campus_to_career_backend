@@ -2,6 +2,7 @@ const { Router } = require("express");
 const rateLimit = require("express-rate-limit");
 
 const verifyJWT = require("../middleware/auth.middleware");
+const checkProctoringBlock = require("../middleware/proctoringBlock.middleware");
 const validate = require("../middleware/validate.middleware");
 const { generateQuizValidators, submitQuizValidators } = require("../validators/quiz.validators");
 const quizController = require("../controllers/quiz.controller");
@@ -45,6 +46,7 @@ const quizSubmitLimiter = rateLimit({
 router.post(
   "/generate",
   verifyJWT,
+  checkProctoringBlock,
   quizGenerateLimiter,
   generateQuizValidators,
   validate,
@@ -54,6 +56,7 @@ router.post(
 router.post(
   "/submit",
   verifyJWT,
+  checkProctoringBlock,
   quizSubmitLimiter,
   submitQuizValidators,
   validate,

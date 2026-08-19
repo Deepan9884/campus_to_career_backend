@@ -55,11 +55,23 @@ const generateQuiz = asyncHandler(async (req, res) => {
   let isStandaloneSkill = false;
   let basedOnGapAnalysis = null;
 
-  // 1. Try to find as roadmap milestone
-  roadmap = await LearningRoadmap.findOne({
-    "milestones._id": roadmapItemId,
-    user: req.user._id,
-  });
+  // 1. Try to find as roadmap milestone (by _id or subTopicId)
+  const mongoose = require("mongoose");
+  const isValidObjectId = mongoose.Types.ObjectId.isValid(roadmapItemId);
+
+  if (isValidObjectId) {
+    roadmap = await LearningRoadmap.findOne({
+      "milestones._id": roadmapItemId,
+      user: req.user._id,
+    });
+  }
+
+  if (!roadmap) {
+    roadmap = await LearningRoadmap.findOne({
+      "milestones.subTopicId": roadmapItemId,
+      user: req.user._id,
+    });
+  }
 
   if (roadmap) {
     if (roadmap.status !== "completed") {
@@ -68,18 +80,30 @@ const generateQuiz = asyncHandler(async (req, res) => {
     if (!roadmap.milestones || roadmap.milestones.length === 0) {
       throw ApiError.badRequest("Roadmap has no milestones");
     }
-    milestone = roadmap.milestones.find((m) => m._id.toString() === roadmapItemId);
-    subTopic = roadmap.subTopics?.find((st) => st.subTopicId === milestone.subTopicId);
-
-    if (!subTopic) throw ApiError.notFound("Sub-topic not found for this milestone");
+    milestone = roadmap.milestones.find(
+      (m) => m._id?.toString() === roadmapItemId || m.subTopicId === roadmapItemId
+    );
+    if (!milestone) {
+      milestone = roadmap.milestones[0];
+    }
+    subTopic = roadmap.subTopics?.find((st) => st.subTopicId === milestone.subTopicId) || {
+      subTopicId: milestone.subTopicId,
+      name: milestone.skillName,
+    };
 
     skillName = milestone.skillName;
-    subTopicId = subTopic.subTopicId;
+    subTopicId = milestone.subTopicId || subTopic.subTopicId;
     resources = milestone.resources || [];
     basedOnGapAnalysis = roadmap.basedOnGapAnalysis;
   } else {
     // 2. Try as standalone skill
-    const skill = await UserSkill.findOne({ _id: roadmapItemId, user: req.user._id });
+    let skill = null;
+    if (isValidObjectId) {
+      skill = await UserSkill.findOne({ _id: roadmapItemId, user: req.user._id });
+    }
+    if (!skill) {
+      skill = await UserSkill.findOne({ name: roadmapItemId, user: req.user._id });
+    }
     if (!skill) {
       throw ApiError.notFound("Roadmap item or Skill not found");
     }
@@ -316,10 +340,15 @@ const submitQuiz = asyncHandler(async (req, res) => {
   const overallScore = Math.round(totalScore / attempt.questions.length);
   const passed = overallScore >= 80;
 
-  attempt.userAnswers = answers.map((a) => ({
-    questionId: a.questionId,
-    answerText: a.answerText,
-  }));
+  attempt.userAnswers = answers.map((a) => {
+    const qr = questionResults.find(q => q.questionId === a.questionId);
+    return {
+      questionId: a.questionId,
+      answerText: a.answerText,
+      score: qr ? qr.score : 0,
+      feedback: qr ? qr.feedback : "",
+    };
+  });
   attempt.score = overallScore;
   attempt.passed = passed;
   attempt.attemptedAt = new Date();

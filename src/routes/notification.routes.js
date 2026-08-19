@@ -9,6 +9,8 @@ const router = Router();
 // so it is intentionally NOT wrapped with verifyJWT.
 router.get("/stream", notificationController.streamNotifications);
 
+router.post("/ticket", verifyJWT, notificationController.createStreamTicket);
+
 router.get("/", verifyJWT, notificationController.listNotifications);
 
 router.get("/unread-count", verifyJWT, notificationController.getUnreadCount);

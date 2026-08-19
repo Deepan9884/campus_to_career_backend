@@ -2,6 +2,7 @@ const { Router } = require("express");
 const rateLimit = require("express-rate-limit");
 
 const verifyJWT = require("../middleware/auth.middleware");
+const checkProctoringBlock = require("../middleware/proctoringBlock.middleware");
 const validate = require("../middleware/validate.middleware");
 const {
   startInterviewValidators,
@@ -32,6 +33,7 @@ const startLimiter = rateLimit({
 router.post(
   "/start",
   verifyJWT,
+  checkProctoringBlock,
   startLimiter,
   startInterviewValidators,
   validate,
@@ -41,6 +43,7 @@ router.post(
 router.post(
   "/:id/rounds/:roundType/answer",
   verifyJWT,
+  checkProctoringBlock,
   submitAnswerValidators,
   validate,
   interviewController.submitAnswer,
@@ -49,6 +52,7 @@ router.post(
 router.post(
   "/:id/rounds/:roundType/finish",
   verifyJWT,
+  checkProctoringBlock,
   finishRoundValidators,
   validate,
   interviewController.finishRound,

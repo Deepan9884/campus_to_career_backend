@@ -16,6 +16,7 @@ const badgesRoutes = require("./badges.routes");
 const codingProfilesRoutes = require("./codingProfiles.routes");
 const eventRoutes = require("./event.routes");
 const adminRoutes = require("./admin.routes");
+const proctoringRoutes = require("./proctoring.routes");
 
 const router = Router();
 
@@ -71,6 +72,9 @@ router.use("/events", eventRoutes);
 
 // Admin / Mentor routes
 router.use("/admin", adminRoutes);
+
+// Proctoring routes
+router.use("/proctoring", proctoringRoutes);
 
 
 module.exports = router;

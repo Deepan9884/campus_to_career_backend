@@ -100,6 +100,8 @@ const userSchema = new mongoose.Schema(
         default: [],
       },
     },
+    isProctoringBlocked: { type: Boolean, default: false },
+    proctoringBlockedAt: { type: Date, default: null },
   },
   {
     timestamps: true,

@@ -10,6 +10,7 @@ const UserSkill = require("../models/UserSkill.model");
 const Notification = require("../models/Notification.model");
 const ActivityLog = require("../models/ActivityLog.model");
 const QuizAttempt = require("../models/QuizAttempt.model");
+const ProctoringViolation = require("../models/ProctoringViolation.model");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
@@ -20,147 +21,178 @@ function escapeRegex(str) {
 }
 
 /**
+ * Helper to compute computed telemetry and readiness scores for a student.
+ */
+async function calculateStudentMetrics(u, menteeSet, mentorId) {
+  const [
+    latestResume,
+    completedInterviews,
+    codingProfiles,
+    repoCount,
+    events,
+    latestGap,
+  ] = await Promise.all([
+    Resume.findOne({ user: u._id, status: "completed" }).select("atsScore").sort({ createdAt: -1 }).lean(),
+    InterviewSession.find({ user: u._id, status: "completed" }).select("overallScore").lean(),
+    CodingProfile.find({ userId: u._id }).select("platform cachedStats username").lean(),
+    RepoAnalysis.countDocuments({ user: u._id, status: "completed" }),
+    Event.find({ user: u._id }).select("verificationResult result").lean(),
+    SkillGapAnalysis.findOne({ user: u._id, status: "completed" }).select("matchPercentage").sort({ createdAt: -1 }).lean(),
+  ]);
+
+  const resumeScore = latestResume?.atsScore || 0;
+  const avgInterviewScore = completedInterviews.length > 0
+    ? Math.round(completedInterviews.reduce((acc, i) => acc + (i.overallScore || 0), 0) / completedInterviews.length)
+    : 0;
+
+  let totalProblemsSolved = 0;
+  codingProfiles.forEach((cp) => {
+    const stats = cp.cachedStats || {};
+    totalProblemsSolved += Number(stats.totalSolved || stats.solved || stats.problemsSolved || 0);
+  });
+
+  const verifiedEventsCount = events.filter(
+    (e) => e.verificationResult?.isVerified || e.result === "winner" || e.result === "runner-up" || e.result === "finalist"
+  ).length;
+
+  const skillGapMatchPct = latestGap?.matchPercentage || 0;
+  const codingScore = Math.min(100, Math.round(totalProblemsSolved * 1.0 + repoCount * 10));
+  const eventScore = Math.min(100, Math.round(verifiedEventsCount * 30 + events.length * 10));
+
+  const overallReadiness = Math.round(
+    skillGapMatchPct * 0.30 +
+    resumeScore * 0.20 +
+    avgInterviewScore * 0.20 +
+    codingScore * 0.15 +
+    eventScore * 0.15
+  );
+
+  let status = "On Track";
+  if (overallReadiness < 40) status = "At Risk";
+  else if (overallReadiness >= 75) status = "Top Performer";
+
+  return {
+    _id: u._id,
+    name: u.name,
+    email: u.email,
+    avatar: u.avatar || "",
+    targetRole: u.targetRole || u.profile?.targetRole || "Software Engineer",
+    githubUsername: u.githubUsername || u.profile?.githubUsername || "",
+    overallReadiness,
+    resumeScore,
+    avgInterviewScore,
+    totalProblemsSolved,
+    repoCount,
+    verifiedEventsCount,
+    linkedPlatformsCount: codingProfiles.length,
+    status,
+    isMyMentee: menteeSet.has(u._id.toString()) || u.assignedMentor?.toString() === mentorId.toString(),
+    lastActive: u.updatedAt || u.createdAt,
+  };
+}
+
+/**
  * GET /api/admin/students
  * Paginated student directory with calculated readiness scores and telemetry badges.
  */
 const getStudentsList = asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 20));
   const search = (req.query.search || "").trim();
   const filter = (req.query.filter || "my-mentees").trim();
 
-  const currentUser = await User.findById(req.user._id).select("mentees").lean();
+  const currentUser = await User.findById(req.user._id).select("mentees role").lean();
   const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
 
-  const excludeTestCondition = {
-    email: { $not: /example\.com$|@test\.com$|^test_|^dynrec_/i },
-  };
+  const baseConds = [
+    { _id: { $ne: req.user._id } },
+    {
+      $or: [
+        { role: "student" },
+        { role: { $nin: ["admin", "mentor", "ADMIN", "MENTOR"] } },
+        { role: { $exists: false } },
+        { role: null },
+      ],
+    },
+  ];
 
-  const query = { role: { $nin: ["admin", "mentor"] }, ...excludeTestCondition };
   if (filter === "my-mentees") {
-    query.$and = [
-      { role: { $nin: ["admin", "mentor"] } },
-      excludeTestCondition,
-      {
-        $or: [
-          { assignedMentor: req.user._id },
-          { _id: { $in: currentUser?.mentees || [] } },
-        ],
-      },
-    ];
-    delete query.role;
-    delete query.email;
+    const menteeIds = currentUser?.mentees || [];
+    baseConds.push({
+      $or: [
+        { assignedMentor: req.user._id },
+        { _id: { $in: menteeIds } },
+      ],
+    });
   }
 
   if (search) {
     const safeSearch = escapeRegex(search);
-    const searchCond = [
-      { name: new RegExp(safeSearch, "i") },
-      { email: new RegExp(safeSearch, "i") },
-      { targetRole: new RegExp(safeSearch, "i") },
-    ];
-    if (query.$and) {
-      query.$and.push({ $or: searchCond });
-    } else {
-      query.$and = [{ role: { $nin: ["admin", "mentor"] } }, excludeTestCondition, { $or: searchCond }];
-      delete query.role;
-      delete query.email;
-    }
+    baseConds.push({
+      $or: [
+        { name: new RegExp(safeSearch, "i") },
+        { email: new RegExp(safeSearch, "i") },
+        { targetRole: new RegExp(safeSearch, "i") },
+        { "profile.targetRole": new RegExp(safeSearch, "i") },
+        { githubUsername: new RegExp(safeSearch, "i") },
+        { "profile.githubUsername": new RegExp(safeSearch, "i") },
+      ],
+    });
   }
 
-  const total = await User.countDocuments(query);
-  const users = await User.find(query)
-    .select("name email avatar targetRole githubUsername createdAt updatedAt role assignedMentor")
-    .sort({ createdAt: -1 })
-    .skip((page - 1) * limit)
-    .limit(limit)
-    .lean();
+  const query = baseConds.length === 1 ? baseConds[0] : { $and: baseConds };
 
-  // Compute calculated readiness metrics for each student
-  const studentsWithMetrics = await Promise.all(
-    users.map(async (u) => {
-      const [
-        latestResume,
-        completedInterviews,
-        codingProfiles,
-        repoCount,
-        events,
-        latestGap,
-      ] = await Promise.all([
-        Resume.findOne({ user: u._id, status: "completed" }).select("atsScore").sort({ createdAt: -1 }).lean(),
-        InterviewSession.find({ user: u._id, status: "completed" }).select("overallScore").lean(),
-        CodingProfile.find({ userId: u._id }).select("platform cachedStats username").lean(),
-        RepoAnalysis.countDocuments({ user: u._id, status: "completed" }),
-        Event.find({ user: u._id }).select("verificationResult result").lean(),
-        SkillGapAnalysis.findOne({ user: u._id, status: "completed" }).select("matchPercentage").sort({ createdAt: -1 }).lean(),
-      ]);
+  if (filter === "top-performer" || filter === "at-risk") {
+    const allCandidates = await User.find(query)
+      .select("name email avatar targetRole profile githubUsername createdAt updatedAt role assignedMentor")
+      .sort({ createdAt: -1 })
+      .lean();
 
-      const resumeScore = latestResume?.atsScore || 0;
-      const avgInterviewScore = completedInterviews.length > 0
-        ? Math.round(completedInterviews.reduce((acc, i) => acc + (i.overallScore || 0), 0) / completedInterviews.length)
-        : 0;
+    const studentsWithMetrics = await Promise.all(
+      allCandidates.map((u) => calculateStudentMetrics(u, menteeSet, req.user._id))
+    );
 
-      let totalProblemsSolved = 0;
-      codingProfiles.forEach((cp) => {
-        const stats = cp.cachedStats || {};
-        totalProblemsSolved += Number(stats.totalSolved || stats.solved || stats.problemsSolved || 0);
-      });
+    const matchingStudents = studentsWithMetrics.filter((st) => {
+      if (filter === "at-risk") return st.status === "At Risk" || st.overallReadiness < 40;
+      if (filter === "top-performer") return st.status === "Top Performer" || st.overallReadiness >= 75;
+      return true;
+    });
 
-      const verifiedEventsCount = events.filter(
-        (e) => e.verificationResult?.isVerified || e.result === "winner" || e.result === "runner-up" || e.result === "finalist"
-      ).length;
+    const total = matchingStudents.length;
+    const paginated = matchingStudents.slice((page - 1) * limit, page * limit);
 
-      const skillGapMatchPct = latestGap?.matchPercentage || 0;
-      const codingScore = Math.min(100, Math.round(totalProblemsSolved * 1.0 + repoCount * 10));
-      const eventScore = Math.min(100, Math.round(verifiedEventsCount * 30 + events.length * 10));
+    return ApiResponse.success({
+      students: paginated,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    }).send(res);
+  } else {
+    const total = await User.countDocuments(query);
+    const users = await User.find(query)
+      .select("name email avatar targetRole profile githubUsername createdAt updatedAt role assignedMentor")
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
 
-      const overallReadiness = Math.round(
-        skillGapMatchPct * 0.30 +
-        resumeScore * 0.20 +
-        avgInterviewScore * 0.20 +
-        codingScore * 0.15 +
-        eventScore * 0.15
-      );
+    const studentsWithMetrics = await Promise.all(
+      users.map((u) => calculateStudentMetrics(u, menteeSet, req.user._id))
+    );
 
-      let status = "On Track";
-      if (overallReadiness < 40) status = "At Risk";
-      else if (overallReadiness >= 75) status = "Top Performer";
-
-      if (filter === "at-risk" && status !== "At Risk") return null;
-      if (filter === "top-performer" && status !== "Top Performer") return null;
-
-      return {
-        _id: u._id,
-        name: u.name,
-        email: u.email,
-        avatar: u.avatar,
-        targetRole: u.targetRole || "Software Engineer",
-        githubUsername: u.githubUsername,
-        overallReadiness,
-        resumeScore,
-        avgInterviewScore,
-        totalProblemsSolved,
-        repoCount,
-        verifiedEventsCount,
-        linkedPlatformsCount: codingProfiles.length,
-        status,
-        isMyMentee: menteeSet.has(u._id.toString()) || u.assignedMentor?.toString() === req.user._id.toString(),
-        lastActive: u.updatedAt,
-      };
-    })
-  );
-
-  const filteredStudents = studentsWithMetrics.filter(Boolean);
-
-  return ApiResponse.success({
-    students: filteredStudents,
-    pagination: {
-      page,
-      limit,
-      total: filteredStudents.length,
-      totalPages: Math.ceil(total / limit),
-    },
-  }).send(res);
+    return ApiResponse.success({
+      students: studentsWithMetrics,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    }).send(res);
+  }
 });
 
 /**
@@ -175,8 +207,11 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
     throw ApiError.notFound("Student not found");
   }
 
-  const currentUser = await User.findById(req.user._id).select("mentees").lean();
+  const currentUser = await User.findById(req.user._id).select("mentees role").lean();
   const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
+  const isMyMentee = menteeSet.has(student._id.toString()) || student.assignedMentor?.toString() === req.user._id.toString();
+
+
 
   const [
     resumes,
@@ -189,6 +224,7 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
     userSkills,
     activityLogs,
     quizAttempts,
+    proctoringViolations,
   ] = await Promise.all([
     Resume.find({ user: studentId }).sort({ createdAt: -1 }).lean(),
     InterviewSession.find({ user: studentId }).sort({ createdAt: -1 }).lean(),
@@ -200,6 +236,7 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
     UserSkill.find({ user: studentId }).lean(),
     ActivityLog.find({ user: studentId }).sort({ createdAt: -1 }).limit(50).lean(),
     QuizAttempt.find({ userId: studentId }).sort({ createdAt: -1 }).limit(30).lean(),
+    ProctoringViolation.find({ userId: studentId }).sort({ createdAt: -1 }).limit(20).lean(),
   ]);
 
   const latestResume = resumes.find((r) => r.status === "completed") || resumes[0] || null;
@@ -243,8 +280,6 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
     eventScore * 0.15
   );
 
-  const isMyMentee = menteeSet.has(student._id.toString()) || student.assignedMentor?.toString() === req.user._id.toString();
-
   return ApiResponse.success({
     student: {
       _id: student._id,
@@ -257,6 +292,8 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
       createdAt: student.createdAt,
       assignedMentor: student.assignedMentor,
       isMyMentee,
+      isProctoringBlocked: student.isProctoringBlocked || false,
+      proctoringBlockedAt: student.proctoringBlockedAt || null,
     },
     metrics: {
       overallReadinessPct,
@@ -279,6 +316,7 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
     userSkills,
     activityLogs,
     quizAttempts,
+    proctoringViolations,
   }).send(res);
 });
 
@@ -287,19 +325,27 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
  * Mentee-wide analytics & aggregated performance metrics for the mentor's assigned roster.
  */
 const getCohortAnalytics = asyncHandler(async (req, res) => {
-  const currentUser = await User.findById(req.user._id).select("mentees").lean();
-  const excludeTestCondition = {
-    email: { $not: /example\.com$|@test\.com$|^test_|^dynrec_/i },
-  };
+  const currentUser = await User.findById(req.user._id).select("mentees role").lean();
+  const scope = (req.query.scope || req.query.filter || "my-mentees").trim();
+  const menteeIds = currentUser?.mentees || [];
 
-  const menteeFilter = {
-    role: { $nin: ["admin", "mentor"] },
-    ...excludeTestCondition,
-    $or: [
-      { assignedMentor: req.user._id },
-      { _id: { $in: currentUser?.mentees || [] } },
-    ],
-  };
+  const menteeFilter = scope === "all"
+    ? {
+        _id: { $ne: req.user._id },
+        $or: [
+          { role: "student" },
+          { role: { $nin: ["admin", "mentor", "ADMIN", "MENTOR"] } },
+          { role: { $exists: false } },
+          { role: null },
+        ],
+      }
+    : {
+        _id: { $ne: req.user._id },
+        $or: [
+          { assignedMentor: req.user._id },
+          { _id: { $in: menteeIds } },
+        ],
+      };
 
   const users = await User.find(menteeFilter).select("_id").lean();
   const userIds = users.map((u) => u._id);
@@ -440,6 +486,14 @@ const sendStudentFeedback = asyncHandler(async (req, res) => {
     throw ApiError.notFound("Student not found");
   }
 
+  const currentUser = await User.findById(req.user._id).select("mentees role").lean();
+  const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
+  const isMyMentee = menteeSet.has(student._id.toString()) || student.assignedMentor?.toString() === req.user._id.toString();
+
+  if (req.user.role !== "admin" && !isMyMentee) {
+    throw ApiError.forbidden("Access denied: You can only send feedback to your assigned mentees");
+  }
+
   const notification = await Notification.create({
     user: studentId,
     type: "mentor_note",
@@ -541,6 +595,12 @@ const removeMentee = asyncHandler(async (req, res) => {
   const { studentId } = req.params;
 
   const mentor = await User.findById(req.user._id);
+  const isAssigned = (mentor?.mentees || []).some((id) => id.toString() === studentId);
+
+  if (req.user.role !== "admin" && !isAssigned) {
+    throw ApiError.forbidden("Access denied: This student is not in your mentees list");
+  }
+
   if (mentor && mentor.mentees) {
     mentor.mentees = mentor.mentees.filter((id) => id.toString() !== studentId);
     await mentor.save();
@@ -581,16 +641,39 @@ const searchRegisteredStudents = asyncHandler(async (req, res) => {
 
   const searchRegex = new RegExp(escapeRegex(queryStr), "i");
   const students = await User.find({
-    role: { $nin: ["admin", "mentor"] },
-    email: { $not: /example\.com$|@test\.com$|^test_|^dynrec_/i },
-    $or: [{ name: searchRegex }, { email: searchRegex }],
+    _id: { $ne: req.user._id },
+    $or: [
+      { role: "student" },
+      { role: { $nin: ["admin", "mentor", "ADMIN", "MENTOR"] } },
+      { role: { $exists: false } },
+      { role: null },
+    ],
+    $and: [
+      {
+        $or: [
+          { name: searchRegex },
+          { email: searchRegex },
+          { targetRole: searchRegex },
+          { "profile.targetRole": searchRegex },
+          { githubUsername: searchRegex },
+          { "profile.githubUsername": searchRegex },
+        ],
+      },
+    ],
   })
-    .select("name email avatar targetRole githubUsername createdAt assignedMentor")
-    .limit(10)
+    .select("name email avatar targetRole profile githubUsername createdAt assignedMentor")
+    .limit(20)
     .lean();
 
   const formatted = students.map((s) => ({
-    ...s,
+    _id: s._id,
+    name: s.name,
+    email: s.email,
+    avatar: s.avatar || "",
+    targetRole: s.targetRole || s.profile?.targetRole || "Software Engineer",
+    githubUsername: s.githubUsername || s.profile?.githubUsername || "",
+    createdAt: s.createdAt,
+    assignedMentor: s.assignedMentor,
     isMyMentee: menteeIds.has(s._id.toString()) || s.assignedMentor?.toString() === req.user._id.toString(),
   }));
 
@@ -682,6 +765,83 @@ const changeMentorPassword = asyncHandler(async (req, res) => {
   }).send(res);
 });
 
+/**
+ * POST /api/admin/students/:studentId/unblock-proctoring
+ * Mentor/Admin unblocks a student's exam access after a proctoring block.
+ * Resets violation counter and allows the student to resume exams.
+ */
+const unblockProctoring = asyncHandler(async (req, res) => {
+  const { studentId } = req.params;
+
+  const student = await User.findById(studentId);
+  if (!student) {
+    throw ApiError.notFound("Student not found");
+  }
+
+  // Verify the caller is a mentor of this student or an admin
+  const currentUser = await User.findById(req.user._id).select("mentees role").lean();
+  const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
+  const isMyMentee =
+    menteeSet.has(student._id.toString()) ||
+    student.assignedMentor?.toString() === req.user._id.toString();
+
+  if (req.user.role !== "admin" && !isMyMentee) {
+    throw ApiError.forbidden("Access denied: You can only unblock your assigned mentees");
+  }
+
+  if (!student.isProctoringBlocked) {
+    return ApiResponse.success({
+      message: "Student exam access is already active (not blocked)",
+    }).send(res);
+  }
+
+  // Unblock the student
+  student.isProctoringBlocked = false;
+  student.proctoringBlockedAt = null;
+  await student.save();
+
+  // Reset the student's violation records so they start fresh
+  await ProctoringViolation.updateMany(
+    { userId: studentId },
+    { $set: { isBlocked: false, violationCount: 0, events: [], blockedAt: null } }
+  );
+
+  // Notify the student their access is restored
+  try {
+    const notification = await Notification.create({
+      user: studentId,
+      type: "proctoring_unblocked",
+      title: "Exam Access Restored",
+      message: `Your exam access has been restored by ${req.user.name || "your mentor"}. You may now resume quizzes and interviews.`,
+      actionUrl: "/dashboard",
+      read: false,
+    });
+    notificationService.pushToOpenConnections(studentId, notification);
+  } catch (err) {
+    console.error("[Proctoring] Failed to send unblock notification:", err);
+  }
+
+  return ApiResponse.success({
+    message: `${student.name}'s exam access has been successfully restored`,
+  }).send(res);
+});
+
+/**
+ * GET /api/admin/students/:studentId/proctoring-violations
+ * Retrieve violation logs for a specific student.
+ */
+const getStudentProctoringViolations = asyncHandler(async (req, res) => {
+  const { studentId } = req.params;
+
+  const violations = await ProctoringViolation.find({ userId: studentId })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return ApiResponse.success({
+    violations,
+  }).send(res);
+});
+
 module.exports = {
   getStudentsList,
   getStudent360Detail,
@@ -694,4 +854,6 @@ module.exports = {
   getMentorProfile,
   updateMentorProfile,
   changeMentorPassword,
+  unblockProctoring,
+  getStudentProctoringViolations,
 };

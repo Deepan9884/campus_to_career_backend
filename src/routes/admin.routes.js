@@ -13,6 +13,8 @@ const {
   getMentorProfile,
   updateMentorProfile,
   changeMentorPassword,
+  unblockProctoring,
+  getStudentProctoringViolations,
 } = require("../controllers/admin.controller");
 
 const router = Router();
@@ -26,6 +28,8 @@ router.get("/students/search-registered", searchRegisteredStudents);
 router.get("/students/:studentId", getStudent360Detail);
 router.get("/analytics", getCohortAnalytics);
 router.post("/students/:studentId/feedback", sendStudentFeedback);
+router.post("/students/:studentId/unblock-proctoring", unblockProctoring);
+router.get("/students/:studentId/proctoring-violations", getStudentProctoringViolations);
 
 // Mentee management routes
 router.get("/mentees", getMyMentees);

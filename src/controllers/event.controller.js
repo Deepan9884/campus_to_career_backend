@@ -8,6 +8,7 @@ const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 const aiService = require("../services/ai.service");
+const { validateFileMagicBytes } = require("../utils/fileValidation");
 
 /**
  * Task 2 — techStack → UserSkill auto-upsert (silent)
@@ -127,6 +128,14 @@ function parseSkillImpact(field) {
 const createEvent = asyncHandler(async (req, res) => {
   if (!req.file) {
     throw ApiError.badRequest("Certificate proof file is required");
+  }
+
+  const ext = path.extname(req.file.originalname).toLowerCase();
+  if (!validateFileMagicBytes(req.file.path, [".pdf", ".jpg", ".jpeg", ".png"])) {
+    try {
+      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    } catch {}
+    throw ApiError.badRequest("Invalid file format. The file content does not match a valid PDF, JPG, or PNG document.");
   }
 
   const {
@@ -307,6 +316,14 @@ const updateEvent = asyncHandler(async (req, res) => {
 
   // Handle new certificate upload
   if (req.file) {
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    if (!validateFileMagicBytes(req.file.path, [".pdf", ".jpg", ".jpeg", ".png"])) {
+      try {
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      } catch {}
+      throw ApiError.badRequest("Invalid file format. The file content does not match a valid PDF, JPG, or PNG document.");
+    }
+
     const oldCertPath = event.certificateUrl;
     if (oldCertPath) {
       const fullOldPath = path.join(__dirname, "../../", oldCertPath);
