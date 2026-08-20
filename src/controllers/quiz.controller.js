@@ -44,26 +44,40 @@ function checkIfCodingTopic(skillName = "", subTopicName = "") {
   return true;
 }
 
-function buildQuizPrompt(subTopicName, skillName, resources, attemptSeed = Date.now()) {
+function buildQuizPrompt(subTopicName, skillName, resources, attemptSeed = Date.now(), userPreferences = {}) {
+  const { aiDifficulty = "Intermediate", preferredLanguage = "Python" } = userPreferences;
   const resourceList = resources.map((r) => `- ${r.name} (${r.platform}, ${r.type})`).join("\n");
   const requiresCoding = checkIfCodingTopic(skillName, subTopicName);
+
+  // Resolve target code language based on skill name and candidate's preferred language
+  const resolvedCodeLanguage = skillName.toLowerCase().includes("sql")
+    ? "SQL"
+    : skillName.toLowerCase().includes("java") && !skillName.toLowerCase().includes("javascript")
+    ? "Java"
+    : skillName.toLowerCase().includes("c++") || skillName.toLowerCase().includes("cpp")
+    ? "C++"
+    : skillName.toLowerCase().includes("javascript") || skillName.toLowerCase().includes("typescript") || skillName.toLowerCase().includes("react") || skillName.toLowerCase().includes("node")
+    ? "JavaScript"
+    : preferredLanguage || "Python";
 
   return `You are a Principal Software Engineer and Technical Evaluator designing a rigorous 3-section assessment test for a specific learning milestone.
 
 Assessment Context:
 - Target Skill: ${skillName}
 - Sub-topic / Milestone: ${subTopicName}
+- Candidate Experience Level: ${aiDifficulty}
+- Preferred Code Language: ${resolvedCodeLanguage}
 - Attempt Unique Seed: ${attemptSeed} (Ensure questions generated are completely fresh, unique, and distinctly varied from previous attempts)
 ${resourceList ? `- Reference Materials:\n${resourceList}` : ""}
 
-EXAM STRUCTURE REQUIREMENTS (YOU MUST GENERATE ALL 3 SECTIONS ACCORDING TO SPECIFICATIONS):
+EXAM STRUCTURE REQUIREMENTS (YOU MUST GENERATE ALL 3 SECTIONS CALIBRATED FOR ${aiDifficulty.toUpperCase()} LEVEL):
 
 ═══════════════════════════════════════════════════════════
 SECTION 1: CONCEPTUAL MCQs (Exactly 5 Questions)
 ═══════════════════════════════════════════════════════════
 - Generate exactly 5 multiple-choice questions testing fundamental principles, standard syntax, foundational concepts, and best practices for ${skillName} (${subTopicName}).
 - Each question MUST have exactly 4 clear options labeled "A) ...", "B) ...", "C) ...", "D) ...".
-- Mark section: 1, sectionTitle: "Section 1: Conceptual MCQs", type: "mcq", difficulty: "medium".
+- Mark section: 1, sectionTitle: "Section 1: Conceptual MCQs", type: "mcq", difficulty: "${aiDifficulty === "Beginner" ? "easy" : aiDifficulty === "Advanced" ? "hard" : "medium"}".
 - Provide the exact correct answer (e.g. "A) option text"), brief explanation, and key points.
 
 ═══════════════════════════════════════════════════════════
@@ -71,14 +85,18 @@ SECTION 2: HANDS-ON PRACTICAL / CODING CHALLENGE (1 Problem)
 ═══════════════════════════════════════════════════════════
 ${
   requiresCoding
-    ? `- Generate 1 practical Algorithmic / Coding Challenge problem for ${skillName} (${subTopicName}).
+    ? `- Generate 1 practical Algorithmic / Coding Challenge problem for ${skillName} (${subTopicName}) calibrated for ${aiDifficulty} difficulty.
 - The questionText MUST be comprehensive and include:
   1. Detailed Problem Statement & Real-world context
   2. INPUT FORMAT & CONSTRAINTS
   3. OUTPUT FORMAT
   4. 2-3 Concrete Examples with explanation
 - Provide 2-3 sample test cases with exact "input", "expectedOutput", and "description".
-- Provide a clean "starterCode" boilerplate in ${skillName.toLowerCase().includes("sql") ? "SQL" : skillName.toLowerCase().includes("java") && !skillName.toLowerCase().includes("javascript") ? "Java" : skillName.toLowerCase().includes("c++") || skillName.toLowerCase().includes("cpp") ? "C++" : skillName.toLowerCase().includes("javascript") || skillName.toLowerCase().includes("typescript") || skillName.toLowerCase().includes("react") || skillName.toLowerCase().includes("node") ? "JavaScript" : "Python"}.
+- Provide a clean "starterCode" boilerplate in ${resolvedCodeLanguage}.
+- Mark section: 2, sectionTitle: "Section 2: Coding Challenge", type: "coding", difficulty: "${aiDifficulty === "Beginner" ? "easy" : aiDifficulty === "Advanced" ? "hard" : "medium"}".`
+    : `- Generate 1 practical Real-World Case Study / Architectural Scenario Problem for ${skillName} (${subTopicName}) calibrated for ${aiDifficulty} difficulty.
+- Mark section: 2, sectionTitle: "Section 2: Practical Scenario", type: "scenario", difficulty: "medium".`
+}`includes("typescript") || skillName.toLowerCase().includes("react") || skillName.toLowerCase().includes("node") ? "JavaScript" : "Python"}.
 - Mark section: 2, sectionTitle: "Section 2: Coding Challenge", type: "coding", difficulty: "medium".`
     : `- Generate 1 practical Real-World Case Study / Architectural Scenario Problem for ${skillName} (${subTopicName}).
 - Mark section: 2, sectionTitle: "Section 2: Practical Scenario", type: "scenario", difficulty: "medium".`
@@ -280,7 +298,8 @@ const generateQuiz = asyncHandler(async (req, res) => {
   };
 
   const attemptSeed = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  const prompt = buildQuizPrompt(subTopic.name, skillName, resources, attemptSeed);
+  const userPrefs = req.user?.preferences || {};
+  const prompt = buildQuizPrompt(subTopic.name, skillName, resources, attemptSeed, userPrefs);
 
   const aiResult = await aiService.generateContent({
     prompt,

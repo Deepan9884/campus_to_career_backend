@@ -132,9 +132,21 @@ function computeAutoRoundScore(round) {
   return Math.round((correctCount / items.length) * 100);
 }
 
-async function buildRoundBankItems({ roundType, targetRole, difficulty, questionCount, gradingMethod, userId, resumeData, resumeText }) {
+async function buildRoundBankItems({
+  roundType,
+  targetRole,
+  difficulty,
+  questionCount,
+  gradingMethod,
+  userId,
+  resumeData,
+  resumeText,
+  preferredLanguage = "Python",
+  aiDifficulty = "Intermediate",
+  resumePrivacy = false,
+}) {
   // ── 1. Dynamic Resume-Driven HR Behavioral & Project Questions ───────────
-  if (roundType === "hr" && (resumeData || resumeText)) {
+  if (roundType === "hr" && !resumePrivacy && (resumeData || resumeText)) {
     const candidateResumeContent = resumeData?.extractedText
       ? resumeData.extractedText.slice(0, 7500)
       : resumeText
@@ -143,12 +155,13 @@ async function buildRoundBankItems({ roundType, targetRole, difficulty, question
 
     if (candidateResumeContent.trim().length > 100) {
       const hrResumePrompt = `You are a Senior Technical Recruiter & Hiring Manager conducting an authentic, project-centric behavioral and experience interview for a candidate applying for the target role: ${targetRole || "Software Engineer"}.
+Candidate Experience Level: ${aiDifficulty}
 
 CANDIDATE RESUME & PROJECT PROFILE:
 ${candidateResumeContent}
 
 Your goal is to conduct an insightful interview directly based on the candidate's real projects, technical achievements, work experience, and listed skills.
-Generate exactly ${Math.min(questionCount, 5)} distinct, personalized interview questions:
+Generate exactly ${Math.min(questionCount, 5)} distinct, personalized interview questions calibrated to the candidate's experience level (${aiDifficulty}):
 1. Deep-dive into a specific project from their resume: their personal contribution, architecture/design challenges, key decisions, and tradeoffs.
 2. Behavioral challenge during project development: handling unexpected bugs, tight deadlines, or scope changes.
 3. Leadership / Teamwork / Collaboration: working with teammates, mentors, or stakeholders on a project mentioned in the resume.
@@ -208,9 +221,80 @@ Return a JSON array of objects.`;
     }
   }
 
+  if (roundType === "hr" && (resumePrivacy || (!resumeData && !resumeText))) {
+    // Privacy-Safe Behavioral & Situational Questions
+    const privacyHRPrompt = `You are a Senior Technical Recruiter & Hiring Manager conducting a high-impact behavioral, leadership, and system-readiness interview for a ${targetRole || "Software Engineer"} candidate.
+Candidate Experience Level: ${aiDifficulty}
+Note: Candidate has enabled Resume Privacy Mode. Generate general scenario-based and behavioral questions without relying on personal background text.
+
+Generate exactly ${Math.min(questionCount, 5)} distinct interview questions:
+1. Architectural or technical decision-making and tradeoff analysis.
+2. Managing scope creep, critical outages, or unexpected production bugs.
+3. Cross-functional collaboration, mentorship, and resolving technical disagreements.
+4. Continuous learning, adapting to unfamiliar frameworks, and delivering under pressure.
+
+For each question return:
+- questionText: Natural, conversational interview question.
+- projectContext: A short scenario tag (e.g. "Production Incident Handling", "System Architecture & Tradeoffs").
+- idealAnswerPoints: 3-4 bullet points detailing how a strong candidate should structure their answer using the STAR method.
+
+Return a JSON array of objects.`;
+
+    try {
+      const aiGen = await aiService.generateContent({
+        prompt: privacyHRPrompt,
+        responseSchema: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              questionText: { type: "string" },
+              projectContext: { type: "string" },
+              idealAnswerPoints: { type: "array", items: { type: "string" } },
+            },
+            required: ["questionText", "projectContext"],
+          },
+        },
+        feature: "interview-hr-privacy-generation",
+        userId,
+      });
+
+      if (aiGen.success && Array.isArray(aiGen.data) && aiGen.data.length > 0) {
+        return {
+          items: aiGen.data.map((q) => ({
+            questionId: null,
+            questionText: q.questionText,
+            itemType: "open_ended",
+            projectContext: q.projectContext || "Technical Leadership & Scenarios",
+            idealAnswerPoints: q.idealAnswerPoints || [
+              "Situation & Task: Clear problem framing",
+              "Action: Strategic engineering decision",
+              "Result: Positive outcome and retrospective",
+            ],
+            selectedOptionIndex: null,
+            answer: null,
+            isCorrect: null,
+            score: null,
+            feedback: null,
+            answeredAt: null,
+          })),
+          bankEmpty: false,
+        };
+      }
+    } catch (err) {
+      console.error("[InterviewController] Privacy HR question generation error:", err);
+    }
+  }
+
   if (roundType === "coding") {
-    // Check if Question model has pre-seeded coding questions
-    const codingCandidates = await Question.find({ roundType: "coding" }).lean();
+    // Check if Question model has pre-seeded coding questions matching difficulty
+    const codingFilter = { roundType: "coding" };
+    const effectiveDiffNormalized = (difficulty || aiDifficulty || "medium").toLowerCase();
+    if (["easy", "beginner"].includes(effectiveDiffNormalized)) codingFilter.difficulty = "easy";
+    else if (["hard", "advanced"].includes(effectiveDiffNormalized)) codingFilter.difficulty = "hard";
+    else codingFilter.difficulty = "medium";
+
+    const codingCandidates = await Question.find(codingFilter).lean();
     if (codingCandidates && codingCandidates.length > 0) {
       return {
         items: codingCandidates.slice(0, Math.min(questionCount, 2)).map((q) => ({
@@ -231,15 +315,38 @@ Return a JSON array of objects.`;
       };
     }
 
-    // Dynamic AI Coding Problems Generation
+    // Dynamic AI Coding Problems Generation tailored for preferredLanguage and aiDifficulty
+    const starterBoilerplate =
+      preferredLanguage.toLowerCase() === "java"
+        ? `public class Solution {\n    public static void main(String[] args) {\n        // Write your solution here\n    }\n}`
+        : preferredLanguage.toLowerCase().includes("c++") || preferredLanguage.toLowerCase().includes("cpp")
+        ? `#include <iostream>\nusing namespace std;\n\nint main() {\n    // Write your solution here\n    return 0;\n}`
+        : preferredLanguage.toLowerCase().includes("javascript")
+        ? `function solve(input) {\n    // Write your solution here\n}`
+        : preferredLanguage.toLowerCase().includes("typescript")
+        ? `function solve(input: string): void {\n    // Write your solution here\n}`
+        : `# Write your solution in Python\ndef solve():\n    pass`;
+
     const codingPrompt = `You are a Principal Software Engineer conducting a live coding interview for a ${targetRole || "Software Engineer"} candidate.
-Generate ${Math.min(questionCount, 2)} practical coding/algorithmic problems with clear requirements, Input Format, Output Format, Constraints, and 2-3 sample test cases.
+Candidate Experience Level: ${aiDifficulty}
+Preferred Language: ${preferredLanguage}
+
+Generate ${Math.min(questionCount, 2)} practical coding/algorithmic problems calibrated strictly to ${aiDifficulty} difficulty:
+- If Beginner: String/Array manipulations, hashing, simple iteration, clear constraints.
+- If Intermediate: Two pointers, tree traversals, binary search, sliding window, O(n log n).
+- If Advanced: Dynamic programming, graph algorithms, concurrency, scale tradeoffs, strict O(n) runtime.
+
+For each problem provide:
+1. Detailed problem description with background, Input Format, Output Format, and Constraints.
+2. Clean starterCode boilerplate in ${preferredLanguage}.
+3. 2-3 sample test cases with exact input and expectedOutput.
+4. Ideal answer points covering optimal complexity and edge cases.
 
 Return JSON array:
 [
   {
-    "questionText": "Detailed problem description with background, Input Format, Output Format, and Constraints.",
-    "starterCode": "# Write your solution code here\\ndef solve():\\n    pass",
+    "questionText": "Detailed problem description...",
+    "starterCode": "${starterBoilerplate.replace(/\n/g, "\\n").replace(/"/g, '\\"')}",
     "testCases": [
       {
         "input": "sample input",
@@ -288,7 +395,7 @@ Return JSON array:
             questionId: null,
             questionText: q.questionText,
             itemType: "coding",
-            starterCode: q.starterCode || "",
+            starterCode: q.starterCode || starterBoilerplate,
             testCases: q.testCases || [],
             idealAnswerPoints: q.idealAnswerPoints || ["Correct logic and edge case handling"],
             selectedOptionIndex: null,
@@ -482,12 +589,19 @@ async function scoreGeminiRound(round, { roundType, targetRole, userId, resumeSn
 const startSession = asyncHandler(async (req, res) => {
   const { targetRole, questionCount = 5, difficulty, selectedRounds, resumeId, resumeText } = req.body;
 
-  // 1. Fetch Candidate Resume Document if supplied or fallback to user's latest completed resume
+  const userPrefs = req.user?.preferences || {};
+  const effectiveDifficulty = difficulty || userPrefs.aiDifficulty || "Intermediate";
+  const effectiveLanguage = req.body.preferredLanguage || userPrefs.preferredLanguage || "Python";
+  const isResumePrivacy = userPrefs.resumePrivacy === true;
+
+  // 1. Fetch Candidate Resume Document if supplied or fallback to user's latest completed resume (only if privacy mode is disabled)
   let resumeDoc = null;
-  if (resumeId) {
-    resumeDoc = await Resume.findOne({ _id: resumeId, user: req.user._id }).lean();
-  } else if (!resumeText) {
-    resumeDoc = await Resume.findOne({ user: req.user._id, status: "completed" }).sort({ createdAt: -1 }).lean();
+  if (!isResumePrivacy) {
+    if (resumeId) {
+      resumeDoc = await Resume.findOne({ _id: resumeId, user: req.user._id }).lean();
+    } else if (!resumeText) {
+      resumeDoc = await Resume.findOne({ user: req.user._id, status: "completed" }).sort({ createdAt: -1 }).lean();
+    }
   }
 
   const allRounds = ["quiz", "aptitude", "core", "technical", "coding", "hr"];
@@ -508,12 +622,15 @@ const startSession = asyncHandler(async (req, res) => {
     const { items, bankEmpty } = await buildRoundBankItems({
       roundType,
       targetRole,
-      difficulty,
+      difficulty: effectiveDifficulty,
       questionCount,
       gradingMethod,
       userId: req.user._id,
-      resumeData: resumeDoc,
-      resumeText,
+      resumeData: isResumePrivacy ? null : resumeDoc,
+      resumeText: isResumePrivacy ? null : resumeText,
+      preferredLanguage: effectiveLanguage,
+      aiDifficulty: effectiveDifficulty,
+      resumePrivacy: isResumePrivacy,
     });
 
     if (!bankEmpty && items.length > 0) anyRoundHadBank = true;

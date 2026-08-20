@@ -99,21 +99,24 @@ const getSuggestions = asyncHandler(async (req, res) => {
     }
   }
 
-  // 1. Resume keywords
-  const latestResume = await Resume.findOne({
-    user: req.user._id,
-    status: "completed",
-  })
-    .sort({ createdAt: -1 })
-    .lean();
+  // 1. Resume keywords (skipped if Resume Privacy Mode is enabled)
+  const isResumePrivacy = req.user?.preferences?.resumePrivacy === true;
+  if (!isResumePrivacy) {
+    const latestResume = await Resume.findOne({
+      user: req.user._id,
+      status: "completed",
+    })
+      .sort({ createdAt: -1 })
+      .lean();
 
-  if (latestResume?.keywordBreakdown?.matched) {
-    for (const kw of latestResume.keywordBreakdown.matched) {
-      if (
-        !existingSkillNames.includes(kw.toLowerCase()) &&
-        !suggestions.some((s) => s.name.toLowerCase() === kw.toLowerCase())
-      ) {
-        suggestions.push({ source: "resume", name: kw });
+    if (latestResume?.keywordBreakdown?.matched) {
+      for (const kw of latestResume.keywordBreakdown.matched) {
+        if (
+          !existingSkillNames.includes(kw.toLowerCase()) &&
+          !suggestions.some((s) => s.name.toLowerCase() === kw.toLowerCase())
+        ) {
+          suggestions.push({ source: "resume", name: kw });
+        }
       }
     }
   }

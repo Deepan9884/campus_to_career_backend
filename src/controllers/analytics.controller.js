@@ -275,16 +275,22 @@ const generateWeeklyReport = asyncHandler(async (req, res) => {
     RepoAnalysis.find({ user: userId, status: "completed", createdAt: { $gte: oneWeekAgo } }).select("repoFullName").lean(),
   ]);
 
+  const userPrefs = req.user?.preferences || {};
+  const { aiDifficulty = "Intermediate", preferredLanguage = "Python", resumePrivacy = false } = userPrefs;
+
   const prompt = `You are an expert AI Career Coach. Generate a highly personalized and motivating weekly report for the user.
+Candidate Experience Level: ${aiDifficulty}
+Preferred Language: ${preferredLanguage}
+${resumePrivacy ? "Note: Resume Privacy Mode is active. Focus recommendations strictly on coding drills, system design, and project architecture without exposing resume details." : ""}
   
 Here is the user's activity in the past 7 days:
-- Resumes uploaded: ${resumes.length} (Average score: ${resumes.length ? Math.round(resumes.reduce((a, b) => a + b.atsScore, 0) / resumes.length) : 0})
+${resumePrivacy ? `- Resumes uploaded: ${resumes.length} (Private Mode)` : `- Resumes uploaded: ${resumes.length} (Average score: ${resumes.length ? Math.round(resumes.reduce((a, b) => a + b.atsScore, 0) / resumes.length) : 0})`}
 - Mock interviews completed: ${interviews.length} (Average score: ${interviews.length ? Math.round(interviews.reduce((a, b) => a + (b.overallScore || 0), 0) / interviews.length) : 0})
 - GitHub Repositories analyzed: ${repos.length} (${repos.map(r => r.repoFullName).join(", ")})
 
 Based on this data, provide:
 1. A short, encouraging summary of their week (2-3 sentences).
-2. 3 actionable recommendations for what they should focus on next week to improve their job readiness.
+2. 3 concrete, high-yield recommendations tailored to their experience level (${aiDifficulty}) and preferred language (${preferredLanguage}) for what they should focus on next week to improve job placement readiness.
 
 Return your response as a JSON object matching this schema exactly:
 {
