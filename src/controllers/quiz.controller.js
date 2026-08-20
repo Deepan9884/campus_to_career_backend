@@ -10,37 +10,140 @@ const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 
-function buildQuizPrompt(subTopicName, skillName, resources) {
+/**
+ * Determine if a skill / subtopic requires coding / hands-on programming challenge
+ */
+function checkIfCodingTopic(skillName = "", subTopicName = "") {
+  const combined = `${skillName} ${subTopicName}`.toLowerCase();
+
+  const nonCodingKeywords = [
+    "product management",
+    "project management",
+    "agile",
+    "scrum",
+    "ui/ux design",
+    "wireframing",
+    "figma",
+    "graphic design",
+    "copywriting",
+    "soft skills",
+    "communication",
+    "public speaking",
+    "negotiation",
+    "leadership",
+    "seo marketing",
+    "digital marketing",
+    "business analysis",
+    "financial modeling",
+  ];
+
+  if (nonCodingKeywords.some((kw) => combined.includes(kw))) {
+    return false;
+  }
+
+  return true;
+}
+
+function buildQuizPrompt(subTopicName, skillName, resources, attemptSeed = Date.now()) {
   const resourceList = resources.map((r) => `- ${r.name} (${r.platform}, ${r.type})`).join("\n");
+  const requiresCoding = checkIfCodingTopic(skillName, subTopicName);
 
-  return `You are an expert technical instructor creating a focused quiz for a specific learning sub-topic.
+  return `You are a Principal Software Engineer and Technical Evaluator designing a rigorous 3-section assessment test for a specific learning milestone.
 
-Skill: ${skillName}
-Sub-topic: ${subTopicName}
+Assessment Context:
+- Target Skill: ${skillName}
+- Sub-topic / Milestone: ${subTopicName}
+- Attempt Unique Seed: ${attemptSeed} (Ensure questions generated are completely fresh, unique, and distinctly varied from previous attempts)
+${resourceList ? `- Reference Materials:\n${resourceList}` : ""}
 
-Learning resources for this sub-topic:
-${resourceList}
+EXAM STRUCTURE REQUIREMENTS (YOU MUST GENERATE ALL 3 SECTIONS ACCORDING TO SPECIFICATIONS):
 
-Generate 3-5 open-ended questions that test practical understanding of this specific sub-topic. Questions should require the student to explain concepts, not just recall facts.
+═══════════════════════════════════════════════════════════
+SECTION 1: CONCEPTUAL MCQs (Exactly 5 Questions)
+═══════════════════════════════════════════════════════════
+- Generate exactly 5 multiple-choice questions testing fundamental principles, standard syntax, foundational concepts, and best practices for ${skillName} (${subTopicName}).
+- Each question MUST have exactly 4 clear options labeled "A) ...", "B) ...", "C) ...", "D) ...".
+- Mark section: 1, sectionTitle: "Section 1: Conceptual MCQs", type: "mcq", difficulty: "medium".
+- Provide the exact correct answer (e.g. "A) option text"), brief explanation, and key points.
 
-Requirements:
-- Questions should test practical knowledge and conceptual understanding
-- Avoid yes/no or single-word answer questions
-- Each question must have clear "key points" that a correct answer should cover
-- Questions should be scoped to the sub-topic content, not the broader skill
+═══════════════════════════════════════════════════════════
+SECTION 2: HANDS-ON PRACTICAL / CODING CHALLENGE (1 Problem)
+═══════════════════════════════════════════════════════════
+${
+  requiresCoding
+    ? `- Generate 1 practical Algorithmic / Coding Challenge problem for ${skillName} (${subTopicName}).
+- The questionText MUST be comprehensive and include:
+  1. Detailed Problem Statement & Real-world context
+  2. INPUT FORMAT & CONSTRAINTS
+  3. OUTPUT FORMAT
+  4. 2-3 Concrete Examples with explanation
+- Provide 2-3 sample test cases with exact "input", "expectedOutput", and "description".
+- Provide a clean "starterCode" boilerplate in ${skillName.toLowerCase().includes("sql") ? "SQL" : skillName.toLowerCase().includes("java") && !skillName.toLowerCase().includes("javascript") ? "Java" : skillName.toLowerCase().includes("c++") || skillName.toLowerCase().includes("cpp") ? "C++" : skillName.toLowerCase().includes("javascript") || skillName.toLowerCase().includes("typescript") || skillName.toLowerCase().includes("react") || skillName.toLowerCase().includes("node") ? "JavaScript" : "Python"}.
+- Mark section: 2, sectionTitle: "Section 2: Coding Challenge", type: "coding", difficulty: "medium".`
+    : `- Generate 1 practical Real-World Case Study / Architectural Scenario Problem for ${skillName} (${subTopicName}).
+- Mark section: 2, sectionTitle: "Section 2: Practical Scenario", type: "scenario", difficulty: "medium".`
+}
 
-Return a JSON object:
+═══════════════════════════════════════════════════════════
+SECTION 3: ADVANCED TOUGH MCQs (3 to 4 Questions)
+═══════════════════════════════════════════════════════════
+- Generate 3 to 4 TOUGH, ADVANCED multiple-choice questions focusing on:
+  * Tricky edge cases & rare gotchas
+  * Code snippet output prediction & subtle bugs
+  * Concurrency, memory management, or performance optimizations
+  * Complex architectural trade-offs
+- Each question MUST have 4 distinct, well-crafted options with clever distractors labeled "A) ...", "B) ...", "C) ...", "D) ...".
+- Mark section: 3, sectionTitle: "Section 3: Advanced MCQs (Tough)", type: "mcq", difficulty: "hard".
+- Provide the exact correct answer, in-depth explanation, and key points.
+
+JSON Structure Requirements:
 {
   "questions": [
     {
-      "questionId": "string (e.g., q1, q2, q3)",
-      "questionText": "string",
-      "keyPoints": ["string", "string", ...]
+      "questionId": "s1_q1",
+      "section": 1,
+      "sectionTitle": "Section 1: Conceptual MCQs",
+      "type": "mcq",
+      "difficulty": "medium",
+      "questionText": "Question statement here...",
+      "options": ["A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4"],
+      "correctAnswer": "A) Option 1",
+      "explanation": "Why this option is correct...",
+      "keyPoints": ["Core concept evaluated"]
+    },
+    {
+      "questionId": "s2_q1",
+      "section": 2,
+      "sectionTitle": "Section 2: Coding Challenge",
+      "type": "coding",
+      "difficulty": "medium",
+      "questionText": "Problem description with input/output format and examples...",
+      "starterCode": "def solve():\\n    pass",
+      "keyPoints": ["Time complexity O(N)", "Edge cases"],
+      "testCases": [
+        {
+          "input": "sample input",
+          "expectedOutput": "expected output",
+          "description": "Basic case"
+        }
+      ]
+    },
+    {
+      "questionId": "s3_q1",
+      "section": 3,
+      "sectionTitle": "Section 3: Advanced MCQs (Tough)",
+      "type": "mcq",
+      "difficulty": "hard",
+      "questionText": "Advanced tricky question with snippet or edge case...",
+      "options": ["A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4"],
+      "correctAnswer": "B) Option 2",
+      "explanation": "Deep explanation of the nuance...",
+      "keyPoints": ["Advanced edge case logic"]
     }
   ]
 }
 
-Do NOT include any explanation or extra fields. The response must be valid JSON matching this schema exactly.`;
+Return ONLY raw, valid JSON matching this schema.`;
 }
 
 const generateQuiz = asyncHandler(async (req, res) => {
@@ -101,19 +204,29 @@ const generateQuiz = asyncHandler(async (req, res) => {
     if (isValidObjectId) {
       skill = await UserSkill.findOne({ _id: roadmapItemId, user: req.user._id });
     }
+
     if (!skill) {
-      skill = await UserSkill.findOne({ name: roadmapItemId, user: req.user._id });
+      skill = await UserSkill.findOne({
+        user: req.user._id,
+        name: { $regex: new RegExp(`^${roadmapItemId}$`, "i") },
+      });
     }
+
     if (!skill) {
-      throw ApiError.notFound("Roadmap item or Skill not found");
+      throw ApiError.notFound("Roadmap milestone or skill not found");
     }
-    skillName = skill.name;
-    subTopicId = `standalone_${skill._id.toString()}`;
-    subTopic = { subTopicId, name: skill.name };
-    resources = [];
+
     isStandaloneSkill = true;
+    skillName = skill.name;
+    subTopicId = `skill_${skill._id}`;
+    subTopic = {
+      subTopicId: subTopicId,
+      name: `${skill.name} Core Competency`,
+    };
+    resources = [];
   }
 
+  // 3. Determine attempt count
   const existingAttempt = await QuizAttempt.findOne({
     userId: req.user._id,
     subTopicId: subTopicId,
@@ -132,19 +245,42 @@ const generateQuiz = asyncHandler(async (req, res) => {
           type: "object",
           properties: {
             questionId: { type: "string" },
+            section: { type: "integer" },
+            sectionTitle: { type: "string" },
+            type: { type: "string" },
+            difficulty: { type: "string" },
             questionText: { type: "string" },
+            options: {
+              type: "array",
+              items: { type: "string" },
+            },
+            correctAnswer: { type: "string" },
+            explanation: { type: "string" },
             keyPoints: { type: "array", items: { type: "string" }, minItems: 1 },
+            starterCode: { type: "string" },
+            testCases: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  input: { type: "string" },
+                  expectedOutput: { type: "string" },
+                  description: { type: "string" },
+                },
+              },
+            },
           },
-          required: ["questionId", "questionText", "keyPoints"],
+          required: ["questionId", "section", "sectionTitle", "type", "questionText", "keyPoints"],
         },
-        minItems: 3,
-        maxItems: 5,
+        minItems: 8,
+        maxItems: 12,
       },
     },
     required: ["questions"],
   };
 
-  const prompt = buildQuizPrompt(subTopic.name, skillName, resources);
+  const attemptSeed = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const prompt = buildQuizPrompt(subTopic.name, skillName, resources, attemptSeed);
 
   const aiResult = await aiService.generateContent({
     prompt,
@@ -159,27 +295,49 @@ const generateQuiz = asyncHandler(async (req, res) => {
 
   const aiData = aiResult.data;
 
-  if (!aiData.questions || aiData.questions.length < 3 || aiData.questions.length > 5) {
-    throw ApiError.internal("AI returned invalid question count");
+  if (!aiData.questions || !Array.isArray(aiData.questions) || aiData.questions.length === 0) {
+    throw ApiError.internal("AI service returned no questions");
   }
 
-  for (const q of aiData.questions) {
-    if (
-      !q.questionId ||
-      !q.questionText ||
-      !Array.isArray(q.keyPoints) ||
-      q.keyPoints.length === 0
-    ) {
-      throw ApiError.internal("AI returned malformed question");
+  // Normalize questions across the 3 sections
+  const normalizedQuestions = aiData.questions.map((q, idx) => {
+    const sectionNum = q.section === 1 || q.section === 2 || q.section === 3 ? q.section : (idx < 5 ? 1 : idx === 5 ? 2 : 3);
+    const qType = q.type || (sectionNum === 2 ? "coding" : "mcq");
+    const sectionTitle = q.sectionTitle || (
+      sectionNum === 1
+        ? "Section 1: Conceptual MCQs"
+        : sectionNum === 2
+        ? "Section 2: Coding Challenge"
+        : "Section 3: Advanced MCQs (Tough)"
+    );
+
+    let options = Array.isArray(q.options) ? q.options : [];
+    if (qType === "mcq" && options.length < 2) {
+      options = ["A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4"];
     }
-  }
+
+    return {
+      questionId: q.questionId || `s${sectionNum}_q${idx + 1}`,
+      section: sectionNum,
+      sectionTitle: sectionTitle,
+      type: qType,
+      difficulty: q.difficulty || (sectionNum === 3 ? "hard" : "medium"),
+      questionText: q.questionText || "Question statement",
+      options: options,
+      correctAnswer: q.correctAnswer || (options[0] || ""),
+      explanation: q.explanation || "",
+      keyPoints: Array.isArray(q.keyPoints) && q.keyPoints.length > 0 ? q.keyPoints : ["Core concept understanding and correct implementation"],
+      starterCode: q.starterCode || "",
+      testCases: Array.isArray(q.testCases) ? q.testCases : [],
+    };
+  });
 
   const attempt = await QuizAttempt.create({
     userId: req.user._id,
-    roadmapItemId: isStandaloneSkill ? roadmapItemId : roadmap._id, // if standalone, just store the skill ID
+    roadmapItemId: isStandaloneSkill ? roadmapItemId : roadmap._id,
     skillName: skillName,
     subTopicId: subTopicId,
-    questions: aiData.questions,
+    questions: normalizedQuestions,
     userAnswers: [],
     score: null,
     passed: false,
@@ -199,9 +357,16 @@ const generateQuiz = asyncHandler(async (req, res) => {
     }
   }
 
-  const responseQuestions = aiData.questions.map((q) => ({
+  const responseQuestions = normalizedQuestions.map((q) => ({
     questionId: q.questionId,
+    section: q.section,
+    sectionTitle: q.sectionTitle,
+    type: q.type,
+    difficulty: q.difficulty,
     questionText: q.questionText,
+    options: q.options || [],
+    starterCode: q.starterCode || "",
+    testCases: q.testCases || [],
   }));
 
   return ApiResponse.success({
@@ -214,33 +379,39 @@ const generateQuiz = asyncHandler(async (req, res) => {
   }).send(res);
 });
 
-function buildGradingPrompt(questions, answers, skillName, subTopicName) {
-  let prompt = `You are an expert technical instructor grading a student's quiz answers for a specific sub-topic.
+function buildGradingPrompt(codingQuestions, codingAnswers, skillName, subTopicName) {
+  let prompt = `You are an expert technical evaluator grading a student's code and practical challenge solutions.
 
 Skill: ${skillName}
 Sub-topic: ${subTopicName}
 
-For each question below, the question text, the expected key points, and the student's free-text answer are provided. Grade each answer individually on a 0-100 scale based on how well it covers the key points and demonstrates understanding. Provide brief constructive feedback for each answer.
+For each coding problem below, grade the student's solution on a 0-100 scale based on:
+1. Logic & correctness against problem statement
+2. Handling of edge cases
+3. Optimal time and space complexity
+4. Code clarity and best practices
 
 `;
 
-  questions.forEach((q, i) => {
-    const answer = answers.find((a) => a.questionId === q.questionId);
-    const userAnswer = answer ? answer.answerText : "(no answer provided)";
-    prompt += `--- Question ${i + 1} ---
-Q: ${q.questionText}
-Expected key points: ${q.keyPoints.join(", ")}
-Student's answer: ${userAnswer}
+  codingQuestions.forEach((q, i) => {
+    const answer = codingAnswers.find((a) => a.questionId === q.questionId);
+    const userAnswer = answer ? answer.answerText : "(no code provided)";
+    prompt += `--- Problem ${i + 1} (ID: ${q.questionId}) ---
+Problem: ${q.questionText}
+Expected Key Points: ${q.keyPoints.join(", ")}
+Student Code / Solution:
+\`\`\`
+${userAnswer}
+\`\`\`
 
 `;
   });
 
-  prompt += `Return evaluations in a "perQuestionFeedback" array in the EXACT SAME ORDER as the questions above. Each element must have:
-- questionIndex (0-based: 0 for the first question, 1 for the second, etc.)
-- score (0-100)
-- feedback (string)
-
-Be honest and constructive — highlight genuine understanding but also identify specific gaps.`;
+  prompt += `Return evaluations in a "perQuestionFeedback" array matching each problem. Each element must have:
+- questionId (string, e.g. "${codingQuestions[0]?.questionId || "s2_q1"}")
+- score (number 0-100)
+- feedback (constructive summary highlighting strengths and specific edge cases / fixes)
+`;
 
   return prompt;
 }
@@ -257,8 +428,8 @@ const submitQuiz = asyncHandler(async (req, res) => {
     throw ApiError.badRequest("This quiz attempt has already been scored");
   }
 
-  if (answers.length !== attempt.questions.length) {
-    throw ApiError.badRequest("Number of answers does not match number of questions");
+  if (!Array.isArray(answers) || answers.length === 0) {
+    throw ApiError.badRequest("Answers array is required");
   }
 
   for (const a of answers) {
@@ -267,81 +438,156 @@ const submitQuiz = asyncHandler(async (req, res) => {
     }
   }
 
-  const gradingResponseSchema = {
-    type: "object",
-    properties: {
-      perQuestionFeedback: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            questionIndex: { type: "integer", minimum: 0 },
-            score: { type: "number", minimum: 0, maximum: 100 },
-            feedback: { type: "string" },
-          },
-          required: ["questionIndex", "score", "feedback"],
-        },
-        minItems: 3,
-        maxItems: 5,
-      },
-    },
-    required: ["perQuestionFeedback"],
-  };
-
-  const prompt = buildGradingPrompt(
-    attempt.questions,
-    answers,
-    attempt.skillName,
-    attempt.subTopicId,
-  );
-
-  const gradingResult = await aiService.generateContent({
-    prompt,
-    responseSchema: gradingResponseSchema,
-    feature: "quiz-grading",
-    userId: req.user._id,
-  });
-
-  if (!gradingResult.success || !gradingResult.data) {
-    throw ApiError.internal(gradingResult.message || "AI service failed to grade quiz");
-  }
-
-  const gradingData = gradingResult.data;
-
-  if (
-    !gradingData.perQuestionFeedback ||
-    gradingData.perQuestionFeedback.length !== attempt.questions.length
-  ) {
-    throw ApiError.internal("AI returned invalid grading feedback count");
-  }
+  // Separate MCQ questions and Coding/Scenario questions
+  const mcqQuestions = attempt.questions.filter((q) => q.type === "mcq");
+  const codingQuestions = attempt.questions.filter((q) => q.type === "coding" || q.type === "scenario");
 
   const questionResults = [];
-  let totalScore = 0;
 
-  for (let i = 0; i < attempt.questions.length; i++) {
-    const question = attempt.questions[i];
-    const userAnswer = answers.find((a) => a.questionId === question.questionId);
-    const feedback = gradingData.perQuestionFeedback.find((f) => f.questionIndex === i);
-    const score = feedback ? Math.round(feedback.score) : 0;
-    const feedbackText = feedback ? feedback.feedback : "No feedback available";
+  // 1. Grade MCQs with precision
+  for (const q of mcqQuestions) {
+    const ans = answers.find((a) => a.questionId === q.questionId);
+    const userText = (ans?.answerText || "").trim();
+    const correctText = (q.correctAnswer || "").trim();
 
-    totalScore += score;
+    let isCorrect = false;
+
+    if (userText && correctText) {
+      // Direct string comparison
+      if (userText.toLowerCase() === correctText.toLowerCase()) {
+        isCorrect = true;
+      } else {
+        // Match option prefixes e.g. "A)" or "A"
+        const userPrefixMatch = userText.match(/^([A-D])(?:\)|\.|\s|$)/i);
+        const correctPrefixMatch = correctText.match(/^([A-D])(?:\)|\.|\s|$)/i);
+
+        if (userPrefixMatch && correctPrefixMatch && userPrefixMatch[1].toUpperCase() === correctPrefixMatch[1].toUpperCase()) {
+          isCorrect = true;
+        } else if (correctText.includes(userText) || userText.includes(correctText)) {
+          isCorrect = true;
+        }
+      }
+    }
+
+    const score = isCorrect ? 100 : 0;
+    const feedback = isCorrect
+      ? `Correct! ${q.explanation || "Well done."}`
+      : `Incorrect. Correct answer: ${q.correctAnswer}. ${q.explanation || ""}`.trim();
 
     questionResults.push({
-      questionId: question.questionId,
-      questionText: question.questionText,
-      userAnswerText: userAnswer?.answerText || "",
-      keyPoints: question.keyPoints,
+      questionId: q.questionId,
+      section: q.section,
+      type: q.type,
+      questionText: q.questionText,
+      userAnswerText: userText,
+      correctAnswer: q.correctAnswer,
+      keyPoints: q.keyPoints,
       score,
-      feedback: feedbackText,
+      feedback,
     });
   }
 
-  const overallScore = Math.round(totalScore / attempt.questions.length);
-  const passed = overallScore >= 80;
+  // 2. Grade Coding/Scenario with AI Evaluation if present
+  if (codingQuestions.length > 0) {
+    const codingAnswers = answers.filter((a) =>
+      codingQuestions.some((q) => q.questionId === a.questionId)
+    );
+
+    const codingGradingResponseSchema = {
+      type: "object",
+      properties: {
+        perQuestionFeedback: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              questionId: { type: "string" },
+              score: { type: "number", minimum: 0, maximum: 100 },
+              feedback: { type: "string" },
+            },
+            required: ["questionId", "score", "feedback"],
+          },
+        },
+      },
+      required: ["perQuestionFeedback"],
+    };
+
+    const prompt = buildGradingPrompt(
+      codingQuestions,
+      codingAnswers,
+      attempt.skillName,
+      attempt.subTopicId
+    );
+
+    try {
+      const gradingResult = await aiService.generateContent({
+        prompt,
+        responseSchema: codingGradingResponseSchema,
+        feature: "quiz-grading",
+        userId: req.user._id,
+      });
+
+      const feedbackList = gradingResult?.data?.perQuestionFeedback || [];
+
+      for (const q of codingQuestions) {
+        const userAns = codingAnswers.find((a) => a.questionId === q.questionId);
+        const fb = feedbackList.find((f) => f.questionId === q.questionId);
+        const score = fb ? Math.round(fb.score) : userAns?.answerText?.trim().length > 30 ? 70 : 0;
+        const feedbackText = fb ? fb.feedback : "Solution submitted for code review.";
+
+        questionResults.push({
+          questionId: q.questionId,
+          section: q.section,
+          type: q.type,
+          questionText: q.questionText,
+          userAnswerText: userAns?.answerText || "",
+          keyPoints: q.keyPoints,
+          score,
+          feedback: feedbackText,
+        });
+      }
+    } catch (err) {
+      console.error("AI coding grading fallback:", err);
+      for (const q of codingQuestions) {
+        const userAns = codingAnswers.find((a) => a.questionId === q.questionId);
+        const hasCode = (userAns?.answerText || "").trim().length > 30;
+        questionResults.push({
+          questionId: q.questionId,
+          section: q.section,
+          type: q.type,
+          questionText: q.questionText,
+          userAnswerText: userAns?.answerText || "",
+          keyPoints: q.keyPoints,
+          score: hasCode ? 75 : 0,
+          feedback: hasCode ? "Code implementation accepted and recorded." : "No code submitted.",
+        });
+      }
+    }
+  }
+
+  // Compute Section-Wise Breakdown
+  const sec1Results = questionResults.filter((q) => q.section === 1);
+  const sec2Results = questionResults.filter((q) => q.section === 2);
+  const sec3Results = questionResults.filter((q) => q.section === 3);
+
+  const calcAvg = (arr) => (arr.length > 0 ? Math.round(arr.reduce((s, x) => s + x.score, 0) / arr.length) : 0);
+
+  const sec1Score = calcAvg(sec1Results);
+  const sec2Score = calcAvg(sec2Results);
+  const sec3Score = calcAvg(sec3Results);
+
+  // Overall Score (Weighted: Sec 1: 30%, Sec 2: 40%, Sec 3: 30% if coding present, else straight average)
+  let overallScore = 0;
+  if (sec2Results.length > 0) {
+    overallScore = Math.round(sec1Score * 0.3 + sec2Score * 0.4 + sec3Score * 0.3);
+  } else {
+    overallScore = Math.round(questionResults.reduce((s, x) => s + x.score, 0) / Math.max(1, questionResults.length));
+  }
+
+  const passed = overallScore >= 75;
 
   attempt.userAnswers = answers.map((a) => {
-    const qr = questionResults.find(q => q.questionId === a.questionId);
+    const qr = questionResults.find((q) => q.questionId === a.questionId);
     return {
       questionId: a.questionId,
       answerText: a.answerText,
@@ -409,8 +655,8 @@ const submitQuiz = asyncHandler(async (req, res) => {
       userId: req.user._id,
       module: "quiz",
       type: "quiz_passed",
-      title: "Quiz passed",
-      message: `You passed the quiz for ${attempt.skillName} — ${attempt.subTopicId} with ${overallScore}%`,
+      title: "Assessment Milestone Passed!",
+      message: `You scored ${overallScore}% in the ${attempt.skillName} — ${attempt.subTopicId} 3-Section Assessment!`,
       relatedResourceId: attempt._id,
       relatedResourceType: "QuizAttempt",
     });
@@ -419,32 +665,24 @@ const submitQuiz = asyncHandler(async (req, res) => {
       userId: req.user._id,
       module: "quiz",
       action: "quiz_passed",
-      summary: `Passed quiz for ${attempt.skillName} — ${attempt.subTopicId} with ${overallScore}%`,
+      summary: `Passed 3-section assessment for ${attempt.skillName} (${overallScore}%)`,
       relatedResourceId: attempt._id,
       relatedResourceType: "QuizAttempt",
       metadata: {
         skillName: attempt.skillName,
         subTopicId: attempt.subTopicId,
         score: overallScore,
+        sectionBreakdown: {
+          section1: sec1Score,
+          section2: sec2Score,
+          section3: sec3Score,
+        },
       },
     });
 
     const badgesPromise = badgeService.checkBadges(req.user._id);
 
-    await Promise.allSettled([notificationPromise, activityLogPromise, badgesPromise]).then(
-      (results) => {
-        results.forEach((result, idx) => {
-          if (result.status === "rejected") {
-            const serviceName =
-              idx === 0 ? "NotificationService" : idx === 1 ? "ActivityLogService" : "BadgeService";
-            console.error(
-              `[Background Task] ${serviceName} promise rejected in submitQuiz:`,
-              result.reason,
-            );
-          }
-        });
-      },
-    );
+    await Promise.allSettled([notificationPromise, activityLogPromise, badgesPromise]);
   }
 
   return ApiResponse.success({
@@ -454,7 +692,13 @@ const submitQuiz = asyncHandler(async (req, res) => {
     totalQuestions: attempt.questions.length,
     questionResults,
     subTopicStatus: passed ? "passed" : "in_progress",
+    sectionBreakdown: {
+      section1: { title: "Section 1: Conceptual MCQs", score: sec1Score, total: sec1Results.length },
+      section2: { title: "Section 2: Coding Challenge", score: sec2Score, total: sec2Results.length },
+      section3: { title: "Section 3: Advanced MCQs (Tough)", score: sec3Score, total: sec3Results.length },
+    },
   }).send(res);
 });
 
 module.exports = { generateQuiz, submitQuiz };
+

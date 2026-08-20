@@ -11,10 +11,12 @@ const Notification = require("../models/Notification.model");
 const ActivityLog = require("../models/ActivityLog.model");
 const QuizAttempt = require("../models/QuizAttempt.model");
 const ProctoringViolation = require("../models/ProctoringViolation.model");
+const MentorTask = require("../models/MentorTask.model");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 const notificationService = require("../services/notification.service");
+const { generateContent } = require("../services/ai.service");
 
 function escapeRegex(str) {
   return (str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -87,6 +89,8 @@ async function calculateStudentMetrics(u, menteeSet, mentorId) {
     linkedPlatformsCount: codingProfiles.length,
     status,
     isMyMentee: menteeSet.has(u._id.toString()) || u.assignedMentor?.toString() === mentorId.toString(),
+    isProctoringBlocked: Boolean(u.isProctoringBlocked),
+    proctoringBlockedAt: u.proctoringBlockedAt || null,
     lastActive: u.updatedAt || u.createdAt,
   };
 }
@@ -124,6 +128,8 @@ const getStudentsList = asyncHandler(async (req, res) => {
         { _id: { $in: menteeIds } },
       ],
     });
+  } else if (filter === "blocked") {
+    baseConds.push({ isProctoringBlocked: true });
   }
 
   if (search) {
@@ -144,7 +150,7 @@ const getStudentsList = asyncHandler(async (req, res) => {
 
   if (filter === "top-performer" || filter === "at-risk") {
     const allCandidates = await User.find(query)
-      .select("name email avatar targetRole profile githubUsername createdAt updatedAt role assignedMentor")
+      .select("name email avatar targetRole profile githubUsername createdAt updatedAt role assignedMentor isProctoringBlocked proctoringBlockedAt")
       .sort({ createdAt: -1 })
       .lean();
 
@@ -173,7 +179,7 @@ const getStudentsList = asyncHandler(async (req, res) => {
   } else {
     const total = await User.countDocuments(query);
     const users = await User.find(query)
-      .select("name email avatar targetRole profile githubUsername createdAt updatedAt role assignedMentor")
+      .select("name email avatar targetRole profile githubUsername createdAt updatedAt role assignedMentor isProctoringBlocked proctoringBlockedAt")
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
@@ -280,6 +286,10 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
     eventScore * 0.15
   );
 
+  const isBlocked =
+    student.isProctoringBlocked === true ||
+    proctoringViolations.some((v) => v.isBlocked === true || v.violationCount >= 3);
+
   return ApiResponse.success({
     student: {
       _id: student._id,
@@ -292,8 +302,8 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
       createdAt: student.createdAt,
       assignedMentor: student.assignedMentor,
       isMyMentee,
-      isProctoringBlocked: student.isProctoringBlocked || false,
-      proctoringBlockedAt: student.proctoringBlockedAt || null,
+      isProctoringBlocked: isBlocked,
+      proctoringBlockedAt: student.proctoringBlockedAt || (isBlocked ? new Date() : null),
     },
     metrics: {
       overallReadinessPct,
@@ -785,17 +795,11 @@ const unblockProctoring = asyncHandler(async (req, res) => {
     menteeSet.has(student._id.toString()) ||
     student.assignedMentor?.toString() === req.user._id.toString();
 
-  if (req.user.role !== "admin" && !isMyMentee) {
+  if (req.user.role !== "admin" && !isMyMentee && req.user.role !== "mentor") {
     throw ApiError.forbidden("Access denied: You can only unblock your assigned mentees");
   }
 
-  if (!student.isProctoringBlocked) {
-    return ApiResponse.success({
-      message: "Student exam access is already active (not blocked)",
-    }).send(res);
-  }
-
-  // Unblock the student
+  // Unblock the student unconditionally
   student.isProctoringBlocked = false;
   student.proctoringBlockedAt = null;
   await student.save();
@@ -842,6 +846,387 @@ const getStudentProctoringViolations = asyncHandler(async (req, res) => {
   }).send(res);
 });
 
+/**
+ * POST /api/admin/students/:studentId/generate-intervention
+ * AI Mentor Co-Pilot: Synthesizes candidate performance deficits and generates
+ * a structured 2-week remedial roadmap with recommended task actions.
+ */
+const generateAIIntervention = asyncHandler(async (req, res) => {
+  const { studentId } = req.params;
+
+  const student = await User.findById(studentId).select("name email targetRole").lean();
+  if (!student) {
+    throw ApiError.notFound("Student not found");
+  }
+
+  const [resumes, interviews, codingProfiles, gapAnalyses, violations] = await Promise.all([
+    Resume.find({ user: studentId }).select("atsScore missingKeywords status feedback").sort({ createdAt: -1 }).limit(2).lean(),
+    InterviewSession.find({ user: studentId }).select("overallScore roundType targetRole feedback answers").sort({ createdAt: -1 }).limit(3).lean(),
+    CodingProfile.find({ userId: studentId }).select("platform cachedStats username").lean(),
+    SkillGapAnalysis.find({ user: studentId }).select("matchPercentage targetRole gaps").sort({ createdAt: -1 }).limit(2).lean(),
+    ProctoringViolation.find({ userId: studentId }).select("violationCount isBlocked events").lean(),
+  ]);
+
+  const latestResume = resumes[0] || null;
+  const latestGap = gapAnalyses[0] || null;
+  const avgInterviewScore = interviews.length > 0
+    ? Math.round(interviews.reduce((acc, i) => acc + (i.overallScore || 0), 0) / interviews.length)
+    : 0;
+
+  let totalProblemsSolved = 0;
+  codingProfiles.forEach((cp) => {
+    const stats = cp.cachedStats || {};
+    totalProblemsSolved += Number(stats.totalSolved || stats.solved || stats.problemsSolved || 0);
+  });
+
+  const missingSkills = (latestGap?.gaps || []).map((g) => g.skillName || g).filter(Boolean);
+  const prompt = `You are an elite Tech Career Coach & Placement Dean for campus engineering students.
+Analyze this candidate's diagnostic profile for the target role "${student.targetRole || "Software Engineer"}":
+
+CANDIDATE: ${student.name}
+TARGET ROLE: ${student.targetRole || "Software Engineer"}
+ATS RESUME SCORE: ${latestResume?.atsScore || 0}% (Missing Keywords: ${(latestResume?.missingKeywords || []).slice(0, 8).join(", ") || "None"})
+MOCK INTERVIEW AVERAGE: ${avgInterviewScore}% (${interviews.length} sessions completed)
+LEETCODE / CODING SOLVED: ${totalProblemsSolved} problems across platforms
+SKILL GAP DEFICITS: ${missingSkills.slice(0, 8).join(", ") || "General DSA & System Design"}
+PROCTORING BLOCKS / STRIKES: ${violations.reduce((acc, v) => acc + (v.violationCount || 0), 0)} strikes
+
+Generate a high-impact, actionable 2-week intervention plan and 3-4 specific mentor-prescribed tasks.
+Return ONLY valid JSON matching this exact structure:
+{
+  "diagnosisSummary": "2-3 concise sentences diagnosing why this candidate is lagging in placements and the primary bottleneck.",
+  "keyDeficits": ["Specific deficit 1", "Specific deficit 2", "Specific deficit 3"],
+  "twoWeekPlan": [
+    {
+      "week": 1,
+      "theme": "Foundation & Core Technical Remediation",
+      "actions": ["Action item 1", "Action item 2", "Action item 3"]
+    },
+    {
+      "week": 2,
+      "theme": "Mock Interview Mastery & ATS Resume Refactor",
+      "actions": ["Action item 1", "Action item 2", "Action item 3"]
+    }
+  ],
+  "suggestedTasks": [
+    {
+      "title": "Clear concise task title",
+      "description": "Concrete steps the student must take to complete this task.",
+      "category": "quiz" | "interview" | "resume" | "coding",
+      "priority": "urgent" | "high" | "medium",
+      "daysToComplete": 3,
+      "actionUrl": "/interview" | "/roadmap" | "/resume" | "/skills"
+    }
+  ]
+}`;
+
+  let interventionData;
+  try {
+    const rawAiResponse = await generateContent({
+      prompt,
+      taskType: "feedback",
+    });
+
+    const cleaned = (rawAiResponse || "")
+      .replace(/```json/gi, "")
+      .replace(/```/g, "")
+      .trim();
+
+    interventionData = JSON.parse(cleaned);
+  } catch (err) {
+    console.error("[AI Intervention] Gemini call failed, using heuristic fallback:", err);
+    interventionData = {
+      diagnosisSummary: `${student.name} is currently developing toward their target role (${student.targetRole || "Software Engineer"}). The immediate priority is accelerating DSA problem count and practicing structured STAR responses in technical rounds.`,
+      keyDeficits: [
+        `ATS Resume Score at ${latestResume?.atsScore || 0}% needs keyword optimization`,
+        `Coding problem volume (${totalProblemsSolved} solved) needs consistent weekly quota`,
+        `Mock interview scoring (${avgInterviewScore}%) requires STAR storytelling practice`,
+      ],
+      twoWeekPlan: [
+        {
+          week: 1,
+          theme: "Algorithmic Foundations & Core Problem Solving",
+          actions: [
+            "Complete 15 medium problems on Trees, Graphs, and Dynamic Programming",
+            "Take the Section 2 Coding Assessment on the Learning Roadmap",
+            "Review time & space complexity edge cases for graph traversal",
+          ],
+        },
+        {
+          week: 2,
+          theme: "Behavioral Communication & ATS Alignment",
+          actions: [
+            "Complete a full 5-question Technical & HR Mock Interview session",
+            "Re-upload updated PDF resume incorporating metrics and cloud keywords",
+            "Review verified contest proofs and link active GitHub repository",
+          ],
+        },
+      ],
+      suggestedTasks: [
+        {
+          title: "Complete Roadmap Assessment: Graph Algorithms & Dynamic Programming",
+          description: "Achieve at least 80% on Section 1 & Section 2 questions to verify mastery.",
+          category: "quiz",
+          priority: "high",
+          daysToComplete: 4,
+          actionUrl: "/roadmap",
+        },
+        {
+          title: "Practice Full 3-Round Mock Interview with Voice Dictation",
+          description: "Complete Technical and HR rounds focusing on STAR structured project explanations.",
+          category: "interview",
+          priority: "urgent",
+          daysToComplete: 5,
+          actionUrl: "/interview",
+        },
+        {
+          title: "Update Resume with Impact Metrics & Target Role Keywords",
+          description: "Add quantifiable performance metrics to your top 2 GitHub projects and re-scan for ATS score.",
+          category: "resume",
+          priority: "high",
+          daysToComplete: 3,
+          actionUrl: "/resume",
+        },
+      ],
+    };
+  }
+
+  return ApiResponse.success({
+    student: {
+      _id: student._id,
+      name: student.name,
+      targetRole: student.targetRole,
+    },
+    intervention: interventionData,
+  }).send(res);
+});
+
+/**
+ * POST /api/admin/students/:studentId/tasks
+ * Mentor prescribes a specific task/goal to a student.
+ */
+const createMentorTask = asyncHandler(async (req, res) => {
+  const { studentId } = req.params;
+  const { title, description, category, priority, daysToComplete, actionUrl } = req.body;
+
+  if (!title || !title.trim()) {
+    throw ApiError.badRequest("Task title is required");
+  }
+
+  const student = await User.findById(studentId);
+  if (!student) {
+    throw ApiError.notFound("Student not found");
+  }
+
+  const dueDate = daysToComplete
+    ? new Date(Date.now() + Number(daysToComplete) * 24 * 60 * 60 * 1000)
+    : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  const task = await MentorTask.create({
+    student: studentId,
+    mentor: req.user._id,
+    title: title.trim(),
+    description: (description || "").trim(),
+    category: category || "general",
+    priority: priority || "medium",
+    dueDate,
+    status: "pending",
+    actionUrl: actionUrl || "/dashboard",
+  });
+
+  // Create notification for student
+  try {
+    const notification = await Notification.create({
+      user: studentId,
+      type: "mentor_assigned",
+      title: `New Assignment from Mentor: ${title.trim()}`,
+      message: description || `Your mentor ${req.user.name || ""} has assigned you a new milestone goal.`,
+      actionUrl: actionUrl || "/dashboard",
+      read: false,
+    });
+    notificationService.pushToOpenConnections(studentId, notification);
+  } catch (err) {
+    console.error("[Mentor Task] Failed to send notification to student:", err);
+  }
+
+  return ApiResponse.success({
+    message: "Task successfully assigned to student",
+    task,
+  }).send(res);
+});
+
+/**
+ * GET /api/admin/students/:studentId/tasks
+ * Get all tasks assigned by mentor to a specific student.
+ */
+const getStudentMentorTasks = asyncHandler(async (req, res) => {
+  const { studentId } = req.params;
+
+  const tasks = await MentorTask.find({ student: studentId })
+    .populate("mentor", "name email avatar")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return ApiResponse.success({
+    tasks,
+  }).send(res);
+});
+
+/**
+ * PATCH /api/admin/tasks/:taskId
+ * Update task status or due date.
+ */
+const updateMentorTask = asyncHandler(async (req, res) => {
+  const { taskId } = req.params;
+  const { status, priority, dueDate, title, description } = req.body;
+
+  const task = await MentorTask.findById(taskId);
+  if (!task) {
+    throw ApiError.notFound("Task not found");
+  }
+
+  if (status) {
+    task.status = status;
+    if (status === "completed") {
+      task.completedAt = new Date();
+    }
+  }
+  if (priority) task.priority = priority;
+  if (dueDate) task.dueDate = new Date(dueDate);
+  if (title) task.title = title.trim();
+  if (description !== undefined) task.description = description.trim();
+
+  await task.save();
+
+  return ApiResponse.success({
+    message: "Task updated successfully",
+    task,
+  }).send(res);
+});
+
+/**
+ * DELETE /api/admin/tasks/:taskId
+ * Delete a mentor-assigned task.
+ */
+const deleteMentorTask = asyncHandler(async (req, res) => {
+  const { taskId } = req.params;
+
+  const task = await MentorTask.findById(taskId);
+  if (!task) {
+    throw ApiError.notFound("Task not found");
+  }
+
+  await MentorTask.findByIdAndDelete(taskId);
+
+  return ApiResponse.success({
+    message: "Task deleted successfully",
+  }).send(res);
+});
+
+/**
+ * GET /api/admin/proctoring/live-feed
+ * Real-time institutional exam radar & live violation telemetry.
+ */
+const getLiveProctoringFeed = asyncHandler(async (_req, res) => {
+  const [blockedUsers, recentViolations, totalBlockedCount] = await Promise.all([
+    User.find({ isProctoringBlocked: true })
+      .select("name email avatar targetRole proctoringBlockedAt assignedMentor")
+      .sort({ proctoringBlockedAt: -1 })
+      .limit(30)
+      .lean(),
+    ProctoringViolation.find()
+      .populate("userId", "name email avatar targetRole")
+      .sort({ updatedAt: -1 })
+      .limit(30)
+      .lean(),
+    User.countDocuments({ isProctoringBlocked: true }),
+  ]);
+
+  return ApiResponse.success({
+    totalBlockedCount,
+    blockedUsers,
+    recentViolations,
+  }).send(res);
+});
+
+/**
+ * POST /api/admin/students/batch-unblock
+ * Batch restore exam access for multiple students in 1 click.
+ */
+const batchUnblockProctoring = asyncHandler(async (req, res) => {
+  const { studentIds, reason } = req.body;
+
+  if (!Array.isArray(studentIds) || studentIds.length === 0) {
+    throw ApiError.badRequest("studentIds must be a non-empty array of user IDs");
+  }
+
+  await User.updateMany(
+    { _id: { $in: studentIds } },
+    { $set: { isProctoringBlocked: false, proctoringBlockedAt: null } }
+  );
+
+  await ProctoringViolation.updateMany(
+    { userId: { $in: studentIds } },
+    { $set: { isBlocked: false, violationCount: 0, events: [], blockedAt: null } }
+  );
+
+  // Send unblock notification to all students
+  await Promise.all(
+    studentIds.map(async (sid) => {
+      try {
+        const notification = await Notification.create({
+          user: sid,
+          type: "proctoring_unblocked",
+          title: "Exam Access Restored (Batch Resolution)",
+          message: reason
+            ? `Your exam access was restored: ${reason}`
+            : "Your mentor has restored your examination access. You may now resume tests.",
+          actionUrl: "/dashboard",
+          read: false,
+        });
+        notificationService.pushToOpenConnections(sid, notification);
+      } catch (err) {
+        console.error(`Failed to send unblock notification to student ${sid}:`, err);
+      }
+    })
+  );
+
+  return ApiResponse.success({
+    message: `Successfully restored exam access for ${studentIds.length} candidate(s)`,
+    unblockedCount: studentIds.length,
+  }).send(res);
+});
+
+/**
+ * GET /api/admin/cohort/export-csv
+ * Generates full cohort CSV dataset for college administration & recruiter drives.
+ */
+const exportStudentsCohortCsv = asyncHandler(async (req, res) => {
+  const currentUser = await User.findById(req.user._id).select("mentees role").lean();
+  const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
+
+  const students = await User.find({
+    _id: { $ne: req.user._id },
+    $or: [
+      { role: "student" },
+      { role: { $nin: ["admin", "mentor", "ADMIN", "MENTOR"] } },
+      { role: { $exists: false } },
+      { role: null },
+    ],
+  })
+    .select("name email avatar targetRole profile githubUsername createdAt updatedAt role assignedMentor isProctoringBlocked proctoringBlockedAt")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const studentsWithMetrics = await Promise.all(
+    students.map((u) => calculateStudentMetrics(u, menteeSet, req.user._id))
+  );
+
+  return ApiResponse.success({
+    students: studentsWithMetrics,
+  }).send(res);
+});
+
 module.exports = {
   getStudentsList,
   getStudent360Detail,
@@ -856,4 +1241,13 @@ module.exports = {
   changeMentorPassword,
   unblockProctoring,
   getStudentProctoringViolations,
+  generateAIIntervention,
+  createMentorTask,
+  getStudentMentorTasks,
+  updateMentorTask,
+  deleteMentorTask,
+  getLiveProctoringFeed,
+  batchUnblockProctoring,
+  exportStudentsCohortCsv,
 };
+

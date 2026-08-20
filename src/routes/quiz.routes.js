@@ -43,6 +43,8 @@ const quizSubmitLimiter = rateLimit({
   },
 });
 
+const compilerController = require("../controllers/compiler.controller");
+
 router.post(
   "/generate",
   verifyJWT,
@@ -51,6 +53,13 @@ router.post(
   generateQuizValidators,
   validate,
   quizController.generateQuiz
+);
+
+router.post(
+  "/run-code",
+  verifyJWT,
+  checkProctoringBlock,
+  compilerController.runCode
 );
 
 router.post(

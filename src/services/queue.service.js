@@ -54,7 +54,7 @@ class InMemoryQueuePool {
   }
 }
 
-const memoryPool = new InMemoryQueuePool(6);
+const memoryPool = new InMemoryQueuePool(30);
 
 /**
  * Helper function to add a job to a queue with graceful non-blocking worker pool fallback

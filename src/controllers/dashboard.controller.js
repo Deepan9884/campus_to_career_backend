@@ -3,6 +3,7 @@ const InterviewSession = require("../models/InterviewSession.model");
 const RepoAnalysis = require("../models/RepoAnalysis.model");
 const SkillGapAnalysis = require("../models/SkillGapAnalysis.model");
 const LearningRoadmap = require("../models/LearningRoadmap.model");
+const MentorTask = require("../models/MentorTask.model");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/ApiResponse");
 
@@ -18,6 +19,7 @@ const getDashboardStats = asyncHandler(async (req, res) => {
     latestGapAnalysis,
     gapCount,
     roadmapCount,
+    pendingMentorTasks,
   ] = await Promise.all([
     Resume.findOne({ user: userId, status: { $ne: "failed" }, atsScore: { $ne: null } })
       .select("atsScore createdAt")
@@ -36,6 +38,11 @@ const getDashboardStats = asyncHandler(async (req, res) => {
       .lean(),
     SkillGapAnalysis.countDocuments({ user: userId, status: { $ne: "failed" } }),
     LearningRoadmap.countDocuments({ user: userId, status: { $ne: "failed" } }),
+    MentorTask.find({ student: userId, status: { $in: ["pending", "in_progress"] } })
+      .populate("mentor", "name avatar")
+      .sort({ dueDate: 1 })
+      .limit(5)
+      .lean(),
   ]);
 
   const avgInterviewScore =
@@ -73,6 +80,7 @@ const getDashboardStats = asyncHandler(async (req, res) => {
       completedInterviewCount: completedInterviews.length,
       avgInterviewScore,
     },
+    mentorTasks: pendingMentorTasks,
   }).send(res);
 });
 

@@ -63,15 +63,16 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 // --- NoSQL Injection & Prototype Pollution Sanitization
 app.use(mongoSanitize);
 
-// --- Global rate limit (skip in test)
+// --- Global rate limit (generous limits for classroom/campus concurrency)
 if (env.NODE_ENV !== "test") {
   app.use(
     rateLimit({
       windowMs: 15 * 60 * 1000,
-      max: env.NODE_ENV === "production" ? 100 : 500,
+      max: env.NODE_ENV === "production" ? 25000 : 50000,
       standardHeaders: true,
       legacyHeaders: false,
       message: { success: false, message: "Too many requests, please try again later" },
+      skip: (req) => req.path === "/api/health",
     }),
   );
 }

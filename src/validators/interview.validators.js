@@ -25,8 +25,8 @@ const startSessionValidators = [
 
   body("selectedRounds")
     .optional()
-    .isArray({ min: 1, max: 5 })
-    .withMessage("selectedRounds must be an array with 1 to 5 round types")
+    .isArray({ min: 1, max: 6 })
+    .withMessage("selectedRounds must be an array with 1 to 6 round types")
     .custom((value) => {
       if (!Array.isArray(value)) return true;
       const validTypes = new Set(ROUND_TYPES);
@@ -40,6 +40,18 @@ const startSessionValidators = [
       }
       return true;
     }),
+
+  body("resumeId")
+    .optional({ nullable: true })
+    .isMongoId()
+    .withMessage("resumeId must be a valid MongoDB ObjectId"),
+
+  body("resumeText")
+    .optional({ nullable: true })
+    .isString()
+    .withMessage("resumeText must be a string")
+    .isLength({ max: 50000 })
+    .withMessage("resumeText must be at most 50000 characters"),
 ];
 
 const submitAnswerValidators = [
@@ -55,7 +67,7 @@ const submitAnswerValidators = [
     .isInt({ min: 0 })
     .withMessage("itemIndex must be a non-negative integer"),
 
-  // Strict per-item type enforcement (MCQ requires selectedOptionIndex, open_ended requires answer)
+  // Strict per-item type enforcement (MCQ requires selectedOptionIndex, open_ended & coding require answer)
   body()
     .custom(async (value, { req }) => {
       const sessionId = req.params.id;
@@ -74,10 +86,10 @@ const submitAnswerValidators = [
         if (typeof req.body?.selectedOptionIndex !== "number") {
           throw new Error("selectedOptionIndex is required for mcq items");
         }
-      } else if (item.itemType === "open_ended") {
+      } else if (item.itemType === "open_ended" || item.itemType === "coding") {
         const ans = req.body?.answer;
         if (typeof ans !== "string" || !ans.trim()) {
-          throw new Error("answer is required for open_ended items");
+          throw new Error("answer is required for this item");
         }
       } else {
         throw new Error(`Unknown itemType: ${item.itemType}`);

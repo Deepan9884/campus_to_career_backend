@@ -69,6 +69,11 @@ const userSchema = new mongoose.Schema(
         enum: ["dark", "light", "system"],
         default: "dark",
       },
+      accentColor: {
+        type: String,
+        enum: ["indigo", "purple", "emerald", "amber", "cyan", "rose"],
+        default: "indigo",
+      },
       notifyOn: {
         type: [String],
         default: ["/resume", "/interview", "/github", "/skills", "/roadmap"],

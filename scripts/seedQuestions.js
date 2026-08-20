@@ -470,6 +470,54 @@ const technicalQuestions = [
   },
 ];
 
+const codingQuestions = [
+  {
+    category: "algorithms",
+    difficulty: "easy",
+    targetRoles: ["Software Engineer", "Full Stack Engineer", "Backend Engineer"],
+    roundType: "coding",
+    itemType: "coding",
+    questionText: "Two Sum: Given an array of integers `nums` and an integer `target`, return indices of the two numbers such that they add up to `target`. Output the two 0-based indices separated by a space.",
+    starterCode: "import sys\n\ndef two_sum(nums, target):\n    # Write your solution here\n    seen = {}\n    for i, n in enumerate(nums):\n        diff = target - n\n        if diff in seen:\n            return f\"{seen[diff]} {i}\"\n        seen[n] = i\n    return \"\"\n\nif __name__ == \"__main__\":\n    lines = sys.stdin.read().strip().split('\\n')\n    if len(lines) >= 2:\n        nums = [int(x) for x in lines[0].split()]\n        target = int(lines[1].strip())\n        print(two_sum(nums, target))\n",
+    testCases: [
+      { input: "2 7 11 15\n9", expectedOutput: "0 1", description: "Standard pair at start" },
+      { input: "3 2 4\n6", expectedOutput: "1 2", description: "Target sum in middle" },
+      { input: "3 3\n6", expectedOutput: "0 1", description: "Duplicate elements" },
+    ],
+    idealAnswerPoints: ["O(N) time complexity with Hash Map", "O(N) auxiliary space", "Handles edge cases cleanly"],
+  },
+  {
+    category: "data-structures",
+    difficulty: "easy",
+    targetRoles: ["Software Engineer", "Frontend Developer", "Full Stack Engineer"],
+    roundType: "coding",
+    itemType: "coding",
+    questionText: "Valid Palindrome: Given a string `s`, determine if it is a palindrome considering only alphanumeric characters and ignoring cases. Print `true` or `false`.",
+    starterCode: "import sys\n\ndef is_palindrome(s):\n    cleaned = [c.lower() for c in s if c.isalnum()]\n    return \"true\" if cleaned == cleaned[::-1] else \"false\"\n\nif __name__ == \"__main__\":\n    inp = sys.stdin.read().strip()\n    print(is_palindrome(inp))\n",
+    testCases: [
+      { input: "A man, a plan, a canal: Panama", expectedOutput: "true", description: "Phrase with punctuation" },
+      { input: "race a car", expectedOutput: "false", description: "Non-palindrome" },
+      { input: " ", expectedOutput: "true", description: "Empty string" },
+    ],
+    idealAnswerPoints: ["O(N) time complexity", "Two-pointer approach", "Correct character filtering"],
+  },
+  {
+    category: "algorithms",
+    difficulty: "medium",
+    targetRoles: ["Software Engineer", "Backend Engineer", "Data Engineer"],
+    roundType: "coding",
+    itemType: "coding",
+    questionText: "Array Rotation: Given an array of integers and an integer `k`, rotate the array to the right by `k` steps. Print the rotated array elements separated by spaces.",
+    starterCode: "import sys\n\ndef rotate_array(nums, k):\n    if not nums:\n        return \"\"\n    k = k % len(nums)\n    rotated = nums[-k:] + nums[:-k] if k > 0 else nums\n    return \" \".join(map(str, rotated))\n\nif __name__ == \"__main__\":\n    lines = sys.stdin.read().strip().split('\\n')\n    if len(lines) >= 2:\n        nums = [int(x) for x in lines[0].split()]\n        k = int(lines[1].strip())\n        print(rotate_array(nums, k))\n",
+    testCases: [
+      { input: "1 2 3 4 5 6 7\n3", expectedOutput: "5 6 7 1 2 3 4", description: "Standard rotation" },
+      { input: "-1 -100 3 99\n2", expectedOutput: "3 99 -1 -100", description: "Negative numbers" },
+      { input: "1 2\n3", expectedOutput: "2 1", description: "k > len(nums)" },
+    ],
+    idealAnswerPoints: ["Handles k > length with modulo", "O(N) time complexity", "In-place or slice reversal"],
+  },
+];
+
 async function seed(force = false) {
   if (force) {
     await Question.deleteMany({});
@@ -479,6 +527,7 @@ async function seed(force = false) {
   const allQuestions = [
     ...behavioralQuestions.map((q) => ({ ...q, roundType: "hr", itemType: "open_ended" })),
     ...technicalQuestions.map((q) => ({ ...q, roundType: "technical", itemType: "open_ended" })),
+    ...codingQuestions,
   ];
 
   let inserted = 0;
@@ -493,10 +542,11 @@ async function seed(force = false) {
   const total = await Question.countDocuments();
   const hrCount = await Question.countDocuments({ roundType: "hr" });
   const techCount = await Question.countDocuments({ roundType: "technical" });
+  const codingCount = await Question.countDocuments({ roundType: "coding" });
 
   console.log(`[seed] Questions done. Inserted ${inserted} new questions. Total in DB: ${total}`);
-  console.log(`[seed]   HR/Behavioral: ${hrCount}, Technical: ${techCount}`);
-  return { inserted, total, hrCount, techCount };
+  console.log(`[seed]   HR/Behavioral: ${hrCount}, Technical: ${techCount}, Coding: ${codingCount}`);
+  return { inserted, total, hrCount, techCount, codingCount };
 }
 
 async function main() {
@@ -517,4 +567,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { seed, behavioralQuestions, technicalQuestions };
+module.exports = { seed, behavioralQuestions, technicalQuestions, codingQuestions };

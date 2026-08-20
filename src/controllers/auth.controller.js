@@ -472,6 +472,7 @@ const updateProfile = asyncHandler(async (req, res) => {
   if (req.body.preferences && typeof req.body.preferences === "object") {
     const allowedPrefs = [
       "theme",
+      "accentColor",
       "notifyOn",
       "emailDigest",
       "aiDifficulty",
@@ -506,6 +507,7 @@ const updatePreferences = asyncHandler(async (req, res) => {
 
   const allowedPrefs = [
     "theme",
+    "accentColor",
     "notifyOn",
     "emailDigest",
     "aiDifficulty",

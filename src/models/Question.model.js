@@ -4,13 +4,13 @@ const questionSchema = new mongoose.Schema(
   {
     roundType: {
       type: String,
-      enum: ["quiz", "aptitude", "core", "technical", "hr"],
+      enum: ["quiz", "aptitude", "core", "technical", "coding", "hr"],
       required: [true, "Round type is required"],
       index: true,
     },
     itemType: {
       type: String,
-      enum: ["mcq", "open_ended"],
+      enum: ["mcq", "open_ended", "coding"],
       required: [true, "Item type is required"],
     },
     options: {
@@ -21,6 +21,17 @@ const questionSchema = new mongoose.Schema(
       type: Number,
       default: null, // optional; populated for mcq only
     },
+    starterCode: {
+      type: String,
+      default: "",
+    },
+    testCases: [
+      {
+        input: { type: String, default: "" },
+        expectedOutput: { type: String, default: "" },
+        description: { type: String, default: "" },
+      },
+    ],
 
     category: {
       type: String,

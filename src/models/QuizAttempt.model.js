@@ -1,17 +1,32 @@
 const mongoose = require("mongoose");
 
+const testCaseSchema = new mongoose.Schema(
+  {
+    input: { type: String, default: "" },
+    expectedOutput: { type: String, default: "" },
+    description: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
 const questionSchema = new mongoose.Schema(
   {
     questionId: { type: String, required: true, trim: true },
+    section: { type: Number, default: 1 }, // 1: Foundational MCQ, 2: Coding, 3: Tough MCQ
+    sectionTitle: { type: String, default: "Section 1: Conceptual MCQs" },
+    type: { type: String, enum: ["mcq", "coding", "scenario"], default: "mcq" },
+    difficulty: { type: String, enum: ["easy", "medium", "hard"], default: "medium" },
     questionText: { type: String, required: true },
+    options: { type: [String], default: [] }, // Array of 4 options for MCQs
+    correctAnswer: { type: String, default: "" }, // Correct option reference (e.g. "A" or option text)
+    explanation: { type: String, default: "" },
     keyPoints: {
       type: [String],
       required: true,
-      validate: {
-        validator: (arr) => arr.length >= 1,
-        message: "At least one key point required per question",
-      },
+      default: ["Correct understanding and implementation"],
     },
+    testCases: { type: [testCaseSchema], default: [] },
+    starterCode: { type: String, default: "" },
   },
   { _id: false },
 );
@@ -59,8 +74,8 @@ const quizAttemptSchema = new mongoose.Schema(
       type: [questionSchema],
       required: true,
       validate: {
-        validator: (arr) => arr.length >= 3 && arr.length <= 5,
-        message: "Quiz must have 3-5 questions",
+        validator: (arr) => arr.length >= 1 && arr.length <= 20,
+        message: "Quiz must have 1-20 questions",
       },
     },
     userAnswers: {

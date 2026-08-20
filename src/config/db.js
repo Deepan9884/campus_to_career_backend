@@ -117,7 +117,8 @@ const connectDB = async () => {
       const conn = await mongoose.connect(env.MONGODB_URI, {
         serverSelectionTimeoutMS: 15000,
         connectTimeoutMS: 20000,
-        maxPoolSize: 20,
+        maxPoolSize: 100,
+        minPoolSize: 10,
       });
       console.log(`[db] Connected to MongoDB: ${conn.connection.host}/${conn.connection.name}`);
       await autoSeedIfEmpty();

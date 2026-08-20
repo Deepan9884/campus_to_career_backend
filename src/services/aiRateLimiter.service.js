@@ -11,7 +11,7 @@ class AIRateLimiter {
     // Internal request spacing queue
     this.queue = [];
     this.isProcessingQueue = false;
-    this.minIntervalMs = 150; // Minimum spacing between outbound API triggers
+    this.minIntervalMs = 20; // Fast spacing between outbound API triggers
     this.lastDispatchedAt = 0;
   }
 
@@ -71,7 +71,7 @@ class AIRateLimiter {
    * Process and throttle incoming AI requests.
    * Smooths bursts so concurrent requests don't hit 429 errors.
    */
-  async process({ feature = "general", maxWaitMs = 15000 }) {
+  async process({ feature = "general", maxWaitMs = 30000 }) {
     this._maybeResetRpd();
     const startTime = Date.now();
 

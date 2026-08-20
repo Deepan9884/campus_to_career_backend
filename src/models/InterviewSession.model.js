@@ -1,8 +1,17 @@
 const mongoose = require("mongoose");
 
-const ITEM_TYPES = ["mcq", "open_ended"];
-const ROUND_TYPES = ["quiz", "aptitude", "core", "technical", "hr"];
+const ITEM_TYPES = ["mcq", "open_ended", "coding"];
+const ROUND_TYPES = ["quiz", "aptitude", "core", "technical", "coding", "hr"];
 const GRADING_METHODS = ["auto", "gemini"];
+
+const testCaseSchema = new mongoose.Schema(
+    {
+        input: { type: String, default: "" },
+        expectedOutput: { type: String, default: "" },
+        description: { type: String, default: "" },
+    },
+    { _id: false }
+);
 
 const itemSchema = new mongoose.Schema(
     {
@@ -12,11 +21,14 @@ const itemSchema = new mongoose.Schema(
         options: { type: [String], default: undefined }, // mcq only
         correctOptionIndex: { type: Number, default: null }, // mcq only
         idealAnswerPoints: { type: [String], default: undefined }, // open_ended ideal answer points
+        testCases: { type: [testCaseSchema], default: undefined }, // coding only
+        starterCode: { type: String, default: undefined }, // coding only
         selectedOptionIndex: { type: Number, default: null }, // mcq answer
-        answer: { type: String, default: null }, // open_ended answer
+        answer: { type: String, default: null }, // open_ended / coding answer
         isCorrect: { type: Boolean, default: null }, // mcq auto-grade result
         score: { type: Number, min: 0, max: 100, default: null }, // gemini-graded item score
         feedback: { type: String, default: null },
+        projectContext: { type: String, default: null }, // project/experience reference from resume
         answeredAt: { type: Date, default: null },
     },
     { _id: false },
@@ -47,6 +59,8 @@ const interviewSessionSchema = new mongoose.Schema(
     {
         user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
         targetRole: { type: String, default: null },
+        resume: { type: mongoose.Schema.Types.ObjectId, ref: "Resume", default: null },
+        resumeFilename: { type: String, default: null },
         status: { type: String, enum: ["in-progress", "completed", "failed"], default: "in-progress" },
         currentRoundIndex: { type: Number, default: 0 },
         rounds: { type: [roundSchema], default: [] },
