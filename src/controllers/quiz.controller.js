@@ -96,10 +96,6 @@ ${
 - Mark section: 2, sectionTitle: "Section 2: Coding Challenge", type: "coding", difficulty: "${aiDifficulty === "Beginner" ? "easy" : aiDifficulty === "Advanced" ? "hard" : "medium"}".`
     : `- Generate 1 practical Real-World Case Study / Architectural Scenario Problem for ${skillName} (${subTopicName}) calibrated for ${aiDifficulty} difficulty.
 - Mark section: 2, sectionTitle: "Section 2: Practical Scenario", type: "scenario", difficulty: "medium".`
-}`includes("typescript") || skillName.toLowerCase().includes("react") || skillName.toLowerCase().includes("node") ? "JavaScript" : "Python"}.
-- Mark section: 2, sectionTitle: "Section 2: Coding Challenge", type: "coding", difficulty: "medium".`
-    : `- Generate 1 practical Real-World Case Study / Architectural Scenario Problem for ${skillName} (${subTopicName}).
-- Mark section: 2, sectionTitle: "Section 2: Practical Scenario", type: "scenario", difficulty: "medium".`
 }
 
 ═══════════════════════════════════════════════════════════
