@@ -13,15 +13,13 @@ const connectLimiter = rateLimit({
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    if (!req.user?._id) {
-      throw new Error("connectLimiter: req.user not set — verifyJWT must run before this middleware");
-    }
-    return req.user._id.toString();
-  },
-  message: {
-    success: false,
-    message: "Too many GitHub connect attempts, please try again in a few minutes",
+  keyGenerator: (req) => (req.user?._id ? req.user._id.toString() : req.ip || "anon"),
+  handler: (_req, res) => {
+    return res.status(429).json({
+      success: false,
+      statusCode: 429,
+      message: "Too many GitHub connect attempts, please try again in a few minutes",
+    });
   },
 });
 
@@ -30,15 +28,13 @@ const reposLimiter = rateLimit({
   max: 120,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    if (!req.user?._id) {
-      throw new Error("reposLimiter: req.user not set — verifyJWT must run before this middleware");
-    }
-    return req.user._id.toString();
-  },
-  message: {
-    success: false,
-    message: "Too many repository list requests, please try again in a few minutes",
+  keyGenerator: (req) => (req.user?._id ? req.user._id.toString() : req.ip || "anon"),
+  handler: (_req, res) => {
+    return res.status(429).json({
+      success: false,
+      statusCode: 429,
+      message: "Too many repository list requests, please try again in a few minutes",
+    });
   },
 });
 
@@ -47,15 +43,13 @@ const analyzeLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    if (!req.user?._id) {
-      throw new Error("analyzeLimiter: req.user not set — verifyJWT must run before this middleware");
-    }
-    return req.user._id.toString();
-  },
-  message: {
-    success: false,
-    message: "Too many analysis requests, please wait a moment before trying again",
+  keyGenerator: (req) => (req.user?._id ? req.user._id.toString() : req.ip || "anon"),
+  handler: (_req, res) => {
+    return res.status(429).json({
+      success: false,
+      statusCode: 429,
+      message: "Too many analysis requests, please wait a moment before trying again",
+    });
   },
 });
 
@@ -64,15 +58,13 @@ const linkedinLimiter = rateLimit({
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    if (!req.user?._id) {
-      throw new Error("linkedinLimiter: req.user not set — verifyJWT must run before this middleware");
-    }
-    return req.user._id.toString();
-  },
-  message: {
-    success: false,
-    message: "Too many LinkedIn post generation requests, please try again later",
+  keyGenerator: (req) => (req.user?._id ? req.user._id.toString() : req.ip || "anon"),
+  handler: (_req, res) => {
+    return res.status(429).json({
+      success: false,
+      statusCode: 429,
+      message: "Too many LinkedIn post generation requests, please try again later",
+    });
   },
 });
 
