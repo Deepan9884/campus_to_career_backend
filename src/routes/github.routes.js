@@ -9,8 +9,8 @@ const githubController = require("../controllers/github.controller");
 const router = Router();
 
 const connectLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 10,
+  windowMs: 15 * 60 * 1000,
+  max: 100,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
@@ -21,13 +21,13 @@ const connectLimiter = rateLimit({
   },
   message: {
     success: false,
-    message: "Too many GitHub connect attempts, please try again later",
+    message: "Too many GitHub connect attempts, please try again in a few minutes",
   },
 });
 
 const reposLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 20,
+  windowMs: 15 * 60 * 1000,
+  max: 120,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
@@ -38,13 +38,13 @@ const reposLimiter = rateLimit({
   },
   message: {
     success: false,
-    message: "Too many repository list requests, please try again later",
+    message: "Too many repository list requests, please try again in a few minutes",
   },
 });
 
 const analyzeLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 5,
+  windowMs: 15 * 60 * 1000,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
@@ -55,12 +55,12 @@ const analyzeLimiter = rateLimit({
   },
   message: {
     success: false,
-    message: "Too many analysis requests, please try again later",
+    message: "Too many analysis requests, please wait a moment before trying again",
   },
 });
 
 const linkedinLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
+  windowMs: 15 * 60 * 1000,
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,

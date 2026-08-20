@@ -197,9 +197,12 @@ const connectGithub = asyncHandler(async (req, res) => {
     profile = await githubService.getUser(githubUsername);
   } catch (err) {
     if (err.status === 404) {
-      throw ApiError.badRequest("GitHub username not found");
+      throw ApiError.badRequest(`GitHub user "${githubUsername}" not found. Please verify the handle.`);
     }
-    throw ApiError.internal("Failed to verify GitHub username");
+    if (err.status === 403 || err.status === 429) {
+      throw new ApiError(429, "GitHub API rate limit reached. Please wait a moment or configure GITHUB_TOKEN.");
+    }
+    throw ApiError.internal(err.message || "Failed to verify GitHub username");
   }
 
   const user = await User.findByIdAndUpdate(
