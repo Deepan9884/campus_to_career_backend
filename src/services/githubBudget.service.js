@@ -1,4 +1,4 @@
-const SAFETY_FLOOR = 10;
+const SAFETY_FLOOR = 2;
 
 class GitHubBudget {
   constructor() {
