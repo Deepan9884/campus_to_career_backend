@@ -454,20 +454,50 @@ const updateProfile = asyncHandler(async (req, res) => {
   const update = {};
   for (const key of allowed) {
     if (req.body[key] !== undefined) {
-      update[key] = req.body[key];
+      update[key] = typeof req.body[key] === "string" ? req.body[key].trim() : req.body[key];
     }
   }
   if (req.body.githubUsername !== undefined) {
-    update["profile.githubUsername"] = req.body.githubUsername;
+    const val = (req.body.githubUsername || "").trim();
+    update["githubUsername"] = val;
+    update["profile.githubUsername"] = val;
   }
   if (req.body.targetRole !== undefined) {
-    update["profile.targetRole"] = req.body.targetRole;
+    const val = (req.body.targetRole || "").trim();
+    update["targetRole"] = val;
+    update["profile.targetRole"] = val;
   }
   if (req.body.bio !== undefined) {
-    update["profile.bio"] = req.body.bio;
+    const val = (req.body.bio || "").trim();
+    update["bio"] = val;
+    update["profile.bio"] = val;
   }
   if (req.body.location !== undefined) {
-    update["profile.location"] = req.body.location;
+    const val = (req.body.location || "").trim();
+    update["location"] = val;
+    update["profile.location"] = val;
+  }
+  if (req.body.profile && typeof req.body.profile === "object") {
+    if (req.body.profile.githubUsername !== undefined) {
+      const val = (req.body.profile.githubUsername || "").trim();
+      update["githubUsername"] = val;
+      update["profile.githubUsername"] = val;
+    }
+    if (req.body.profile.targetRole !== undefined) {
+      const val = (req.body.profile.targetRole || "").trim();
+      update["targetRole"] = val;
+      update["profile.targetRole"] = val;
+    }
+    if (req.body.profile.bio !== undefined) {
+      const val = (req.body.profile.bio || "").trim();
+      update["bio"] = val;
+      update["profile.bio"] = val;
+    }
+    if (req.body.profile.location !== undefined) {
+      const val = (req.body.profile.location || "").trim();
+      update["location"] = val;
+      update["profile.location"] = val;
+    }
   }
   if (req.body.preferences && typeof req.body.preferences === "object") {
     const allowedPrefs = [

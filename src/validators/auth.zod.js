@@ -21,14 +21,22 @@ const updateProfileSchema = z.object({
     name: z.string().min(2, "Name must be at least 2 characters").max(50, "Name must be at most 50 characters").trim().optional(),
     targetRole: z.string().max(100, "Target role must be at most 100 characters").regex(/^[a-zA-Z0-9 \-\/&(),\.]*$/, "Target role contains invalid characters").trim().optional().or(z.literal("")),
     bio: z.string().max(500, "Bio must be at most 500 characters").trim().optional().or(z.literal("")),
+    location: z.string().max(100, "Location must be at most 100 characters").trim().optional().or(z.literal("")),
     linkedinUrl: z.string().url("LinkedIn URL must be a valid URL").trim().optional().or(z.literal("")),
     avatar: z.string().max(7000000, "Avatar is too large")
       .refine(val => val.startsWith("http://") || val.startsWith("https://") || val.startsWith("data:image/"), {
         message: "Avatar must be a valid URL or base64 data URI",
       }).optional().or(z.literal("")),
     githubUsername: z.string().max(39, "GitHub username must be at most 39 characters").regex(/^[a-zA-Z0-9-]*$/, "GitHub username can only contain letters, numbers, and hyphens").trim().optional().or(z.literal("")),
+    profile: z.object({
+      targetRole: z.string().optional().or(z.literal("")),
+      githubUsername: z.string().optional().or(z.literal("")),
+      bio: z.string().optional().or(z.literal("")),
+      location: z.string().optional().or(z.literal("")),
+    }).optional(),
     preferences: z.object({
       theme: z.enum(["dark", "light", "system"]).optional(),
+      accentColor: z.enum(["indigo", "purple", "emerald", "amber", "cyan", "rose"]).optional(),
       notifyOn: z.array(z.string()).optional(),
       emailDigest: z.enum(["off", "daily", "weekly"]).optional(),
       aiDifficulty: z.enum(["Beginner", "Intermediate", "Advanced"]).optional(),

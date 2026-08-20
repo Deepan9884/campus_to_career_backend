@@ -204,7 +204,7 @@ const connectGithub = asyncHandler(async (req, res) => {
 
   const user = await User.findByIdAndUpdate(
     req.user._id,
-    { $set: { githubUsername: profile.login } },
+    { $set: { githubUsername: profile.login, "profile.githubUsername": profile.login } },
     { new: true, runValidators: true },
   ).select("-password -refreshToken");
 
