@@ -4,20 +4,119 @@ const path = require("path");
 const os = require("os");
 const aiService = require("./ai.service");
 
-const EXECUTION_TIMEOUT_MS = 5000;
+const EXECUTION_TIMEOUT_MS = 3500; // 3.5s maximum execution time
 
 /**
- * Execute Python 3 code with stdin and timeout
+ * Isolated minimum environment variables for safe subprocess execution.
+ * Prevents spawned processes from accessing sensitive server secrets (MONGODB_URI, JWT_SECRET, etc.).
+ */
+function getSafeSubprocessEnv() {
+  return {
+    PATH: process.env.PATH || "",
+    NODE_ENV: "production",
+    LANG: "en_US.UTF-8",
+    PYTHONUNBUFFERED: "1",
+    // Explicitly nullify access to all process secrets
+    MONGODB_URI: "",
+    JWT_SECRET: "",
+    JWT_REFRESH_SECRET: "",
+    GEMINI_API_KEY: "",
+    GEMINI_API_KEYS: "",
+    GITHUB_TOKEN: "",
+    RESET_TOKEN_SECRET: "",
+    SMTP_PASS: "",
+  };
+}
+
+/**
+ * Static Security Analysis: Checks candidate code for dangerous system calls,
+ * file system modifications, socket creation, or process spawning.
+ */
+function checkCodeSecurity(code = "", language = "python") {
+  const lang = language.toLowerCase();
+  const lowerCode = code.toLowerCase();
+
+  const dangerousTokens = {
+    python: [
+      "import os",
+      "from os",
+      "import sys",
+      "from sys",
+      "import subprocess",
+      "from subprocess",
+      "import shutil",
+      "from shutil",
+      "import socket",
+      "from socket",
+      "import pty",
+      "import ctypes",
+      "__import__",
+      "open(",
+      "eval(",
+      "exec(",
+      "getattr(",
+      "globals()",
+      "locals()",
+    ],
+    javascript: [
+      "require('child_process')",
+      'require("child_process")',
+      "require('fs')",
+      'require("fs")',
+      "require('net')",
+      'require("net")',
+      "require('http')",
+      'require("http")',
+      "require('https')",
+      'require("https")',
+      "process.env",
+      "process.exit",
+      "process.kill",
+      "child_process",
+      "globalthis.process",
+      "eval(",
+      "new function(",
+      "new Function(",
+    ],
+    java: [
+      "runtime.getruntime",
+      "processbuilder",
+      "java.io.file",
+      "java.net",
+      "system.exit",
+      "system.getenv",
+      "system.getproperty",
+      "securitymanager",
+      "reflect.",
+    ],
+  };
+
+  const tokens = dangerousTokens[lang] || [];
+  for (const token of tokens) {
+    if (lowerCode.includes(token.toLowerCase())) {
+      return {
+        safe: false,
+        reason: `Restricted system operation or security token detected: '${token}'`,
+      };
+    }
+  }
+
+  return { safe: true };
+}
+
+/**
+ * Execute Python 3 code with stdin and timeout in a secure minimal environment
  */
 function runPython(code, input = "") {
   return new Promise((resolve) => {
     const startTime = Date.now();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-py-"));
     const filePath = path.join(tempDir, "solution.py");
-    fs.writeFileSync(filePath, code, "utf8");
+    fs.writeFileSync(filePath, code, { encoding: "utf8", mode: 0o600 });
 
     const process = spawn("python", [filePath], {
       cwd: tempDir,
+      env: getSafeSubprocessEnv(),
       timeout: EXECUTION_TIMEOUT_MS,
     });
 
@@ -70,17 +169,18 @@ function runPython(code, input = "") {
 }
 
 /**
- * Execute Node.js / JavaScript code with stdin and timeout
+ * Execute Node.js / JavaScript code with stdin and timeout in a secure minimal environment
  */
 function runJavaScript(code, input = "") {
   return new Promise((resolve) => {
     const startTime = Date.now();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-js-"));
     const filePath = path.join(tempDir, "solution.js");
-    fs.writeFileSync(filePath, code, "utf8");
+    fs.writeFileSync(filePath, code, { encoding: "utf8", mode: 0o600 });
 
-    const process = spawn("node", [filePath], {
+    const process = spawn("node", ["--no-addons", "--disallow-code-generation-from-strings", filePath], {
       cwd: tempDir,
+      env: getSafeSubprocessEnv(),
       timeout: EXECUTION_TIMEOUT_MS,
     });
 
@@ -133,27 +233,24 @@ function runJavaScript(code, input = "") {
 }
 
 /**
- * Execute Java code with compilation and runtime execution
+ * Execute Java code with compilation and runtime execution in a secure minimal environment
  */
 function runJava(code, input = "") {
   return new Promise((resolve) => {
     const startTime = Date.now();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-java-"));
 
-    // Extract class name or default to Solution
     let className = "Solution";
     const classMatch = code.match(/public\s+class\s+([A-Za-z0-9_]+)/);
     if (classMatch && classMatch[1]) {
       className = classMatch[1];
     }
 
-    // Strip package declaration for isolated single-file compilation
     const cleanedCode = code.replace(/package\s+[a-zA-Z0-9_.]+;/g, "");
     const filePath = path.join(tempDir, `${className}.java`);
-    fs.writeFileSync(filePath, cleanedCode, "utf8");
+    fs.writeFileSync(filePath, cleanedCode, { encoding: "utf8", mode: 0o600 });
 
-    // 1. Compile with javac
-    exec(`javac "${filePath}"`, { cwd: tempDir, timeout: EXECUTION_TIMEOUT_MS }, (compileErr, compileStdout, compileStderr) => {
+    exec(`javac "${filePath}"`, { cwd: tempDir, env: getSafeSubprocessEnv(), timeout: EXECUTION_TIMEOUT_MS }, (compileErr, _compileStdout, compileStderr) => {
       if (compileErr || compileStderr) {
         try {
           fs.rmSync(tempDir, { recursive: true, force: true });
@@ -167,9 +264,9 @@ function runJava(code, input = "") {
         });
       }
 
-      // 2. Run compiled bytecode
       const javaProcess = spawn("java", [className], {
         cwd: tempDir,
+        env: getSafeSubprocessEnv(),
         timeout: EXECUTION_TIMEOUT_MS,
       });
 
@@ -264,12 +361,18 @@ Determine the exact stdout, whether each test case passes or fails, and return v
 Return ONLY raw valid JSON.`;
 
   try {
-    const raw = await aiService.generateContent(prompt, {
+    const raw = await aiService.generateContent({
+      prompt,
       feature: "quiz-grading",
       temperature: 0.1,
     });
-    const parsed = aiService.parseJsonSafely(raw);
-    return parsed;
+    const parsed = aiService.parseJsonSafely(raw?.data || raw);
+    return parsed || {
+      success: false,
+      stdout: "",
+      stderr: "Evaluation failed",
+      testCaseResults: [],
+    };
   } catch (err) {
     console.error("[CompilerService] AI evaluation error:", err);
     return {
@@ -308,11 +411,26 @@ async function executeCode({ code, language = "python", testCases = [], question
 
   const isUnimplemented = strippedOfComments.length === 0 || strippedOfComments === "pass" || strippedOfComments === "solve();";
 
-  const results = [];
   const defaultTestCases = (testCases && testCases.length > 0)
     ? testCases
     : [{ input: "", expectedOutput: "" }];
 
+  // 1. Static Security Check
+  const securityCheck = checkCodeSecurity(rawCode, lang);
+  if (!securityCheck.safe) {
+    // If dangerous code was detected, fallback safely to AI simulation (which won't execute on host)
+    console.warn(`[CompilerService] Security scan flagged code: ${securityCheck.reason}. Routing to AI evaluator.`);
+    const aiResult = await runWithAiEvaluator(rawCode, lang, defaultTestCases, questionText);
+    return {
+      success: aiResult.success ?? false,
+      language: lang,
+      stdout: aiResult.stdout || "",
+      stderr: aiResult.stderr ? `${aiResult.stderr}\n[Security Notice: Code evaluated in safe virtual sandbox]` : "[Security Notice: Code evaluated in safe virtual sandbox]",
+      testCaseResults: aiResult.testCaseResults || [],
+    };
+  }
+
+  const results = [];
   let hasNativeRunner = false;
   let runner = null;
 
@@ -357,7 +475,6 @@ async function executeCode({ code, language = "python", testCases = [], question
         } else if (expectedTrimmed.length > 0) {
           passed = actualTrimmed === expectedTrimmed;
         } else if (res.stdout && res.exitCode === 0) {
-          // If no expected output was defined, code executed successfully and produced output
           passed = true;
         } else {
           passed = false;

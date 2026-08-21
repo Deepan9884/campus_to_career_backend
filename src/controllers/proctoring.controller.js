@@ -14,7 +14,7 @@ const MAX_VIOLATIONS = 3;
  * Increments count, blocks user on 3rd strike.
  */
 const reportViolation = asyncHandler(async (req, res) => {
-  const { moduleType, moduleId, violationType } = req.body;
+  const { moduleType, moduleId, violationType, forceBlock } = req.body;
 
   if (!moduleType || !moduleId || !violationType) {
     throw ApiError.badRequest("moduleType, moduleId, and violationType are required");
@@ -26,8 +26,10 @@ const reportViolation = asyncHandler(async (req, res) => {
     "face_not_detected",
     "multiple_faces_detected",
     "fullscreen_exit",
+    "fullscreen_timeout",
     "tab_switch",
     "keyboard_shortcut",
+    "eye_tracking_violation",
   ];
 
   if (!allowedModuleTypes.includes(moduleType)) {
@@ -65,10 +67,13 @@ const reportViolation = asyncHandler(async (req, res) => {
   }
 
   // Increment and log
-  record.violationCount += 1;
+  const isFullscreenTimeout = Boolean(forceBlock || violationType === "fullscreen_timeout");
+  record.violationCount = isFullscreenTimeout
+    ? Math.max(record.violationCount + 1, MAX_VIOLATIONS)
+    : record.violationCount + 1;
   record.events.push({ violationType, detectedAt: new Date() });
 
-  const shouldBlock = record.violationCount >= MAX_VIOLATIONS;
+  const shouldBlock = isFullscreenTimeout || record.violationCount >= MAX_VIOLATIONS;
 
   if (shouldBlock) {
     record.isBlocked = true;
@@ -86,8 +91,9 @@ const reportViolation = asyncHandler(async (req, res) => {
         user: req.user._id,
         type: "proctoring_blocked",
         title: "Exam Access Blocked",
-        message:
-          "Your exam access has been blocked due to 3 proctoring violations. Please contact your mentor to restore access.",
+        message: isFullscreenTimeout
+          ? "Your exam access has been blocked because you did not return to fullscreen within 15 seconds. Please contact your mentor to restore access."
+          : "Your exam access has been blocked due to 3 proctoring violations. Please contact your mentor to restore access.",
         actionUrl: "/dashboard",
         read: false,
       });
@@ -104,7 +110,9 @@ const reportViolation = asyncHandler(async (req, res) => {
           user: fullUser.assignedMentor,
           type: "proctoring_blocked",
           title: "Student Exam Blocked",
-          message: `${fullUser.name} has been blocked from exam access after 3 proctoring violations. Review and unblock from the admin portal.`,
+          message: isFullscreenTimeout
+            ? `${fullUser.name} has been blocked from exam access after failing to re-enter fullscreen within 15 seconds. Review and unblock from the admin portal.`
+            : `${fullUser.name} has been blocked from exam access after 3 proctoring violations. Review and unblock from the admin portal.`,
           actionUrl: "/students",
           read: false,
         });
@@ -121,7 +129,9 @@ const reportViolation = asyncHandler(async (req, res) => {
     violationCount: record.violationCount,
     isBlocked: record.isBlocked,
     message: shouldBlock
-      ? "Exam access blocked after 3 violations"
+      ? isFullscreenTimeout
+        ? "Exam access blocked: Candidate failed to re-enter fullscreen within 15 seconds"
+        : "Exam access blocked after 3 violations"
       : `Warning ${record.violationCount} of ${MAX_VIOLATIONS}: ${violationType.replace(/_/g, " ")}`,
   }).send(res);
 });

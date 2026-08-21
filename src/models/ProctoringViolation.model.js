@@ -5,8 +5,10 @@ const VIOLATION_TYPES = [
   "face_not_detected",
   "multiple_faces_detected",
   "fullscreen_exit",
+  "fullscreen_timeout",
   "tab_switch",
   "keyboard_shortcut",
+  "eye_tracking_violation",
 ];
 
 const MODULE_TYPES = ["quiz", "interview"];

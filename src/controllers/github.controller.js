@@ -103,6 +103,9 @@ function buildLinkedInPostPrompt(data) {
   let contextDescription = "";
 
   if (postType === "event") {
+    const teammatesList = Array.isArray(data.teammates)
+      ? data.teammates.filter(Boolean).join(", ")
+      : data.teammates || data.teammateNames || "";
     contextDescription = `
 Source Type: Event / Hackathon / Competition Achievement
 Event Name: ${data.eventName || "Hackathon / Competition"}
@@ -114,6 +117,7 @@ Project Title: ${data.projectTitle || "Project"}
 Problem Statement: ${data.problemStatement || "Real-world engineering challenge"}
 Role in Team: ${data.role || "Developer"}
 Team Name / Size: ${data.teamName || "Team"} (${data.teamSize || 1} members)
+Teammates / Collaborators: ${teammatesList || "Solo / Not specified"}
 Tech Stack: ${Array.isArray(data.techStack) ? data.techStack.join(", ") : data.techStack || "Modern Tech Stack"}
 What Was Built: ${data.whatDidYouBuild || data.description || "High impact software solution"}
 What Was Learned: ${data.whatDidYouLearn || "Advanced technical and collaborative skills"}

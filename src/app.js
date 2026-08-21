@@ -15,7 +15,10 @@ const { getDbStatus } = require("./config/db");
 
 const app = express();
 
-// --- Security headers & CSP
+// --- Disable Express signature to prevent fingerprinting
+app.disable("x-powered-by");
+
+// --- Security headers, HSTS, Frameguard & CSP
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -24,20 +27,34 @@ app.use(
         scriptSrc: ["'self'", "'unsafe-inline'", "https://accounts.google.com"],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         imgSrc: ["'self'", "data:", "blob:", "https:", "http:"],
-        connectSrc: ["'self'", "https://api.github.com", "https://generativelanguage.googleapis.com", "https://accounts.google.com"],
+        connectSrc: [
+          "'self'",
+          "https://api.github.com",
+          "https://generativelanguage.googleapis.com",
+          "https://accounts.google.com",
+        ],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
         objectSrc: ["'none'"],
         upgradeInsecureRequests: env.NODE_ENV === "production" ? [] : null,
       },
     },
+    hsts:
+      env.NODE_ENV === "production"
+        ? { maxAge: 31536000, includeSubDomains: true, preload: true }
+        : false,
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+    xContentTypeOptions: true,
+    dnsPrefetchControl: { allow: false },
+    frameguard: { action: "deny" },
     crossOriginEmbedderPolicy: false,
   }),
 );
 
 // --- CORS
-const corsOrigins = env.NODE_ENV === "production"
-  ? [env.CLIENT_URL]
-  : [env.CLIENT_URL, "http://localhost:8080", "http://localhost:8081", "http://localhost:5173"];
+const corsOrigins =
+  env.NODE_ENV === "production"
+    ? [env.CLIENT_URL]
+    : [env.CLIENT_URL, "http://localhost:8080", "http://localhost:8081", "http://localhost:5173"];
 
 app.use(
   cors({
