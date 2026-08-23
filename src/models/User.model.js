@@ -59,10 +59,12 @@ const userSchema = new mongoose.Schema(
     linkedinUrl: { type: String, default: "" },
     bio: { type: String, maxlength: 500, default: "" },
     isEmailVerified: { type: Boolean, default: false },
-    is2FAEnabled: { type: Boolean, default: false },
-    twoFactorSecret: { type: String, select: false },
+    is2FAEnabled: { type: Boolean, default: false }, // TOTP 2FA — routes at POST /api/auth/2fa/*
+    twoFactorSecret: { type: String, select: false }, // speakeasy TOTP secret, excluded from default queries
     refreshToken: { type: String, select: false },
     refreshTokenVersion: { type: Number, default: 0 },
+    failedLoginAttempts: { type: Number, default: 0 },
+    lockUntil: { type: Date, default: null },
     preferences: {
       theme: {
         type: String,

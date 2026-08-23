@@ -5,6 +5,7 @@ const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 const notificationService = require("../services/notification.service");
+const { invalidateUserCache } = require("../middleware/auth.middleware");
 
 const MAX_VIOLATIONS = 3;
 
@@ -43,6 +44,7 @@ const reportViolation = asyncHandler(async (req, res) => {
   let record = await ProctoringViolation.findOne({
     userId: req.user._id,
     moduleId,
+    moduleType,
   });
 
   if (!record) {
@@ -57,13 +59,14 @@ const reportViolation = asyncHandler(async (req, res) => {
     });
   }
 
-  // If already blocked, just return current state
+  // If already blocked, return HTTP 403
   if (record.isBlocked) {
-    return ApiResponse.success({
+    return res.status(403).json({
+      success: false,
       violationCount: record.violationCount,
       isBlocked: true,
-      message: "Access is already blocked",
-    }).send(res);
+      message: "Exam access is blocked. Please contact your mentor to restore access.",
+    });
   }
 
   // Increment and log
@@ -79,11 +82,12 @@ const reportViolation = asyncHandler(async (req, res) => {
     record.isBlocked = true;
     record.blockedAt = new Date();
 
-    // Block the user's proctoring access
+    // Block the user's proctoring access and invalidate auth user cache
     await User.findByIdAndUpdate(req.user._id, {
       isProctoringBlocked: true,
       proctoringBlockedAt: new Date(),
     });
+    invalidateUserCache(req.user._id);
 
     // Notify the student
     try {
@@ -125,14 +129,21 @@ const reportViolation = asyncHandler(async (req, res) => {
 
   await record.save();
 
+  if (shouldBlock) {
+    return res.status(403).json({
+      success: false,
+      violationCount: record.violationCount,
+      isBlocked: true,
+      message: isFullscreenTimeout
+        ? "Exam access blocked: Candidate failed to re-enter fullscreen within 15 seconds"
+        : "Exam access blocked after 3 violations",
+    });
+  }
+
   return ApiResponse.success({
     violationCount: record.violationCount,
-    isBlocked: record.isBlocked,
-    message: shouldBlock
-      ? isFullscreenTimeout
-        ? "Exam access blocked: Candidate failed to re-enter fullscreen within 15 seconds"
-        : "Exam access blocked after 3 violations"
-      : `Warning ${record.violationCount} of ${MAX_VIOLATIONS}: ${violationType.replace(/_/g, " ")}`,
+    isBlocked: false,
+    message: `Warning ${record.violationCount} of ${MAX_VIOLATIONS}: ${violationType.replace(/_/g, " ")}`,
   }).send(res);
 });
 

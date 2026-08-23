@@ -15,6 +15,7 @@ const {
   getEventPortfolio,
   generateEventDescription,
   predictSkillGaps,
+  getEventCertificate,
 } = require("../controllers/event.controller");
 
 const router = Router();
@@ -29,6 +30,7 @@ router.get("/badges", getEventBadges);
 router.get("/portfolio", getEventPortfolio);
 router.get("/portfolio/:userId", getEventPortfolio);
 router.get("/:id", getEventById);
+router.get("/:id/certificate", getEventCertificate);
 router.patch("/:id", eventMulter.single("certificate"), updateEventValidators, validate, updateEvent);
 router.delete("/:id", deleteEvent);
 

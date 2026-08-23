@@ -17,7 +17,7 @@ const router = Router();
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 2500, // Accommodates 150+ simultaneous students logging in
+  max: 30, // Brute-force protection for login attempts
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Too many login attempts, please try again later" },
@@ -25,7 +25,7 @@ const loginLimiter = rateLimit({
 
 const registerLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 2000, // Accommodates full batch registrations
+  max: 30, // Anti-spam protection for user registration
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Too many registration attempts, please try again later" },
@@ -33,7 +33,7 @@ const registerLimiter = rateLimit({
 
 const refreshLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5000, // Background token refresh for hundreds of active tabs
+  max: 150, // Token refresh limit
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Too many refresh attempts, please try again later" },
@@ -41,7 +41,7 @@ const refreshLimiter = rateLimit({
 
 const forgotPasswordLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 50,
+  max: 10,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Too many password reset requests, please try again later" },
@@ -49,7 +49,7 @@ const forgotPasswordLimiter = rateLimit({
 
 const verifyResetTokenLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 200,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
   message: {

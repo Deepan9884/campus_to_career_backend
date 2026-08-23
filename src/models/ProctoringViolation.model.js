@@ -60,12 +60,18 @@ const proctoringViolationSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    expiresAt: {
+      type: Date,
+      default: () => new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days TTL auto-cleanup
+    },
   },
   {
     timestamps: true,
   },
 );
 
+// TTL index — automatically deletes records after expiresAt
+proctoringViolationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 proctoringViolationSchema.index({ userId: 1, moduleId: 1 }, { unique: true });
 
 module.exports = mongoose.model("ProctoringViolation", proctoringViolationSchema);

@@ -17,16 +17,19 @@ function normalizeDifficulties(byDifficulty) {
 }
 
 async function fetchLeetCodeStats(username) {
-    // NOTE: This uses LeetCode's unofficial GraphQL endpoint.
-    // We keep it isolated; caller handles exceptions.
-
     const query = `
     query userProblems($username: String!) {
       matchedUser(username: $username) {
         username
-        submitStats {
-          acSubmissionNum { difficulty count }
+        profile { ranking userAvatar realName reputation }
+        submitStats: submitStatsGlobal {
+          acSubmissionNum { difficulty count submissions }
         }
+      }
+      userContestRanking(username: $username) {
+        rating
+        globalRanking
+        attendedContestsCount
       }
     }
   `;
@@ -35,6 +38,8 @@ async function fetchLeetCodeStats(username) {
         method: "POST",
         headers: {
             "content-type": "application/json",
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://leetcode.com",
         },
         body: JSON.stringify({
             query,
@@ -51,9 +56,12 @@ async function fetchLeetCodeStats(username) {
         throw new Error(data.errors[0].message || "LeetCode graphql error");
     }
 
-    const ac =
-        data?.data?.matchedUser?.submitStats?.acSubmissionNum || null;
+    const matchedUser = data?.data?.matchedUser;
+    if (!matchedUser) {
+        throw new Error("LeetCode user not found");
+    }
 
+    const ac = matchedUser?.submitStats?.acSubmissionNum || [];
     const byDifficulty = {};
     let solved = 0;
     if (Array.isArray(ac)) {
@@ -62,14 +70,27 @@ async function fetchLeetCodeStats(username) {
             const cnt = item?.count;
             if (!diff || typeof cnt !== "number") continue;
             byDifficulty[diff] = cnt;
-            if (diff !== "All") {
-                solved += cnt;
+            if (diff === "All") {
+                solved = cnt;
             }
         }
     }
 
+    if (solved === 0 && byDifficulty.Easy !== undefined) {
+        solved = (byDifficulty.Easy || 0) + (byDifficulty.Medium || 0) + (byDifficulty.Hard || 0);
+    }
+
+    const contest = data?.data?.userContestRanking;
+    const rating = contest?.rating ? Math.round(contest.rating) : 1500;
+    const ranking = matchedUser.profile?.ranking || contest?.globalRanking || 0;
+
     return {
         solved,
+        easy: byDifficulty.Easy || 0,
+        medium: byDifficulty.Medium || 0,
+        hard: byDifficulty.Hard || 0,
+        ranking,
+        rating,
         byDifficulty: normalizeDifficulties(byDifficulty),
         raw: data,
     };

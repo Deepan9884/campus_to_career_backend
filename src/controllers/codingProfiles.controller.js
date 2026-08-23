@@ -32,8 +32,6 @@ function parseUsernameFromUrl(platform, profileUrl) {
 
         if (platform === "codechef") {
             // /users/<username>
-            const parts = path.split("/".replace(/\/+$/, "").replace(/^\//, ""));
-            // safer generic:
             const segs = path.split("/").filter(Boolean);
             const idx = segs.indexOf("users");
             if (idx >= 0 && segs[idx + 1]) return segs[idx + 1];
@@ -147,10 +145,12 @@ const refreshProfile = async (req, res) => {
     const codingPlatform = platform;
     const bodyProfileUrl = req.body?.profileUrl;
 
-    const existing = await CodingProfile.findOne({ userId: req.user._id, platform: codingPlatform });
-    if (!existing) throw ApiError.notFound("Coding profile not found");
+    let existing = await CodingProfile.findOne({ userId: req.user._id, platform: codingPlatform });
+    if (!existing && !bodyProfileUrl) {
+        throw ApiError.notFound("Coding profile not found");
+    }
 
-    const profileUrl = bodyProfileUrl || existing.profileUrl;
+    const profileUrl = bodyProfileUrl || existing?.profileUrl;
     const username = parseUsernameFromUrl(codingPlatform, profileUrl);
 
     // Isolated platform failure: only this request
@@ -374,7 +374,8 @@ const getRecommendations = async (req, res) => {
                 score += 7;
             }
 
-            // Random jitter for freshness
+            // Intentional ±3pt randomness: ensures varied problem sets across page refreshes
+            // for users with identical performance signals. Prevents stale-feeling recommendations.
             score += Math.random() * 3;
 
             return { ...problem, score };

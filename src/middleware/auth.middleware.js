@@ -4,6 +4,36 @@ const User = require("../models/User.model");
 const ApiError = require("../utils/ApiError");
 const env = require("../config/env");
 
+// ── Short-lived user cache (30s TTL, max 500 entries) ─────────────────────
+// Reduces DB reads under high concurrency. Short TTL ensures role/block
+// changes propagate quickly.
+const USER_CACHE_TTL_MS = 30 * 1000;
+const USER_CACHE_MAX = 500;
+const _userCache = new Map();
+
+function _getCachedUser(userId) {
+  const entry = _userCache.get(userId);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    _userCache.delete(userId);
+    return null;
+  }
+  return entry.user;
+}
+
+function _setCachedUser(userId, user) {
+  if (_userCache.size >= USER_CACHE_MAX) {
+    _userCache.delete(_userCache.keys().next().value);
+  }
+  _userCache.set(userId, { user, expiresAt: Date.now() + USER_CACHE_TTL_MS });
+}
+
+/** Call this whenever a user's role or isProctoringBlocked changes. */
+function invalidateUserCache(userId) {
+  if (!userId) return;
+  _userCache.delete(userId.toString());
+}
+
 /**
  * Extracts the Bearer token from the Authorization header.
  * @param {import("express").Request} req
@@ -49,9 +79,14 @@ const verifyJWT = async (req, _res, next) => {
       throw ApiError.unauthorized("Invalid token payload");
     }
 
-    const user = await User.findById(userId).select("-password -refreshToken").lean();
+    const userIdStr = userId.toString();
+    let user = _getCachedUser(userIdStr);
     if (!user) {
-      throw ApiError.unauthorized("User no longer exists");
+      user = await User.findById(userId).select("-password -refreshToken").lean();
+      if (!user) {
+        throw ApiError.unauthorized("User no longer exists");
+      }
+      _setCachedUser(userIdStr, user);
     }
 
     req.user = user;
@@ -61,4 +96,6 @@ const verifyJWT = async (req, _res, next) => {
   }
 };
 
+verifyJWT.invalidateUserCache = invalidateUserCache;
 module.exports = verifyJWT;
+module.exports.invalidateUserCache = invalidateUserCache;

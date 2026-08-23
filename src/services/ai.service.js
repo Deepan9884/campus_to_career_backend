@@ -17,6 +17,29 @@ redis.on("error", () => {
   // Suppress uncaught Redis connection error logs when Redis is not running
 });
 
+// ── L1 In-Memory Cache (used when Redis is offline) ───────────────────────
+// Max 200 entries. Evicts oldest on overflow. 30-minute TTL per entry.
+const L1_MAX_SIZE = 200;
+const L1_TTL_MS = 30 * 60 * 1000;
+const l1Cache = new Map();
+
+function l1Get(key) {
+  const entry = l1Cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    l1Cache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function l1Set(key, value) {
+  if (l1Cache.size >= L1_MAX_SIZE) {
+    l1Cache.delete(l1Cache.keys().next().value);
+  }
+  l1Cache.set(key, { value, expiresAt: Date.now() + L1_TTL_MS });
+}
+
 const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 const ERROR_TYPES = {
@@ -193,9 +216,9 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
     };
   }
 
-  // Step 2: Check Redis Cache
+  // Step 2: Check Redis / L1 Cache (model-agnostic for high hit rate)
   const promptHash = crypto.createHash("sha256").update(prompt).digest("hex");
-  const cacheKey = `ai_cache:${model || defaultModel}:${feature}:${promptHash}`;
+  const cacheKey = `ai_cache:${feature}:${promptHash}`;
 
   try {
     const cachedResponse = await redis.get(cacheKey);
@@ -211,7 +234,16 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
       };
     }
   } catch {
-    // Cache miss or Redis offline
+    // Redis offline — check L1 in-memory cache
+    const l1Hit = l1Get(cacheKey);
+    if (l1Hit) {
+      return {
+        ...l1Hit,
+        model: model || defaultModel,
+        tokensEstimate: 0,
+        cached: true,
+      };
+    }
   }
 
   // Step 3: Candidate models to try in sequence
@@ -228,6 +260,12 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
     const clientEntry = keyPool.getClient();
     if (!clientEntry || !clientEntry.client) {
       break;
+    }
+
+    // If the selected key is still cooling down, wait out the remaining cooldown (up to 5s cap)
+    const cooldownRemaining = clientEntry.cooldownUntil - Date.now();
+    if (cooldownRemaining > 0) {
+      await new Promise((r) => setTimeout(r, Math.min(cooldownRemaining + 50, 5000)));
     }
 
     const currentModel = modelsToTry[attempt % modelsToTry.length];
@@ -256,7 +294,7 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
       keyPool.reportSuccess(clientEntry);
       const result = buildSuccessResult(response, currentModel);
 
-      // Save to cache
+      // Save to cache (Redis with fallback to L1 in-memory cache)
       if (result.success && (result.data || result.raw)) {
         try {
           await redis.setex(
@@ -265,7 +303,7 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
             JSON.stringify({ data: result.data, raw: result.raw })
           );
         } catch {
-          // Ignore cache save errors
+          l1Set(cacheKey, { success: true, data: result.data, raw: result.raw });
         }
       }
 
@@ -408,8 +446,12 @@ function generateContextualFallback(feature, prompt, responseSchema) {
   if (feature === "resume_improve_bullet" || feature.includes("improve_bullet")) {
     const rawMatch = promptText.match(/"([^"]+)"/) || [null, promptText];
     const original = (rawMatch[1] || promptText).replace(/Original bullet point:\s*/i, "").trim();
+    const techKeywords = extractKeywordsFromText(original);
+    const techPhrase = techKeywords.length > 0
+      ? `leveraging ${techKeywords.slice(0, 2).join(" and ")}`
+      : "applying modern engineering best practices";
     return {
-      improved: `Architected and implemented high-performance module using modern best practices, reducing execution latency by 35% and improving reliability across production workflows.`,
+      improved: `Engineered and delivered high-impact solution ${techPhrase}, achieving measurable improvements in system reliability, performance efficiency, and production-grade scalability.`,
     };
   }
 

@@ -23,7 +23,7 @@ const updateProfileSchema = z.object({
     bio: z.string().max(500, "Bio must be at most 500 characters").trim().optional().or(z.literal("")),
     location: z.string().max(100, "Location must be at most 100 characters").trim().optional().or(z.literal("")),
     linkedinUrl: z.string().url("LinkedIn URL must be a valid URL").trim().optional().or(z.literal("")),
-    avatar: z.string().max(7000000, "Avatar is too large")
+    avatar: z.string().max(500000, "Avatar payload exceeds maximum allowed size (500KB)")
       .refine(val => val.startsWith("http://") || val.startsWith("https://") || val.startsWith("data:image/"), {
         message: "Avatar must be a valid URL or base64 data URI",
       }).optional().or(z.literal("")),

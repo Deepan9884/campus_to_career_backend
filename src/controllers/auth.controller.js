@@ -35,7 +35,7 @@ const googleClient = new OAuth2Client(env.GOOGLE_CLIENT_ID);
  */
 async function hashToken(token) {
   const sha256 = crypto.createHash("sha256").update(token).digest("base64");
-  return bcryptjs.hash(sha256, 5);
+  return bcryptjs.hash(sha256, 10);
 }
 
 /**
@@ -136,9 +136,28 @@ const login = asyncHandler(async (req, res) => {
     throw ApiError.unauthorized("Invalid credentials");
   }
 
+  // Account Lockout check (5 failed attempts locks for 15 minutes)
+  if (user.lockUntil && user.lockUntil > new Date()) {
+    const remainingMinutes = Math.ceil((user.lockUntil.getTime() - Date.now()) / (60 * 1000));
+    throw ApiError.unauthorized(
+      `Account is temporarily locked due to consecutive failed login attempts. Please try again in ${remainingMinutes} minute${remainingMinutes === 1 ? "" : "s"}.`,
+    );
+  }
+
   const isMatch = await user.comparePassword(password);
   if (!isMatch) {
+    user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+    if (user.failedLoginAttempts >= 5) {
+      user.lockUntil = new Date(Date.now() + 15 * 60 * 1000); // 15-minute lock
+    }
+    await user.save();
     throw ApiError.unauthorized("Invalid credentials");
+  }
+
+  // Reset failed login attempts on successful credentials
+  if (user.failedLoginAttempts > 0 || user.lockUntil) {
+    user.failedLoginAttempts = 0;
+    user.lockUntil = null;
   }
 
   // Enforce 2FA if enabled on the user account
@@ -243,6 +262,7 @@ const googleLogin = asyncHandler(async (req, res) => {
       googleId,
       authProvider: "google",
       avatar: picture || "",
+      role: "student",
     });
   }
 
@@ -350,6 +370,7 @@ const githubLogin = asyncHandler(async (req, res) => {
       githubUsername: githubUser.login,
       authProvider: "github",
       avatar: avatar || "",
+      role: "student",
     });
   }
 
@@ -715,6 +736,11 @@ const exportUserData = asyncHandler(async (req, res) => {
 });
 
 const generate2FA = asyncHandler(async (req, res) => {
+  const currentUser = await User.findById(req.user._id);
+  if (currentUser && currentUser.is2FAEnabled) {
+    throw ApiError.badRequest("Two-factor authentication is already active on your account. Please disable it first to reconfigure.");
+  }
+
   const secret = speakeasy.generateSecret({ name: `Campus to Career AI (${req.user.email})` });
   
   await User.findByIdAndUpdate(req.user._id, { twoFactorSecret: secret.base32 });

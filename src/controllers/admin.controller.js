@@ -17,6 +17,7 @@ const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 const notificationService = require("../services/notification.service");
 const { generateContent } = require("../services/ai.service");
+const { invalidateUserCache } = require("../middleware/auth.middleware");
 
 function escapeRegex(str) {
   return (str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -110,14 +111,7 @@ const getStudentsList = asyncHandler(async (req, res) => {
 
   const baseConds = [
     { _id: { $ne: req.user._id } },
-    {
-      $or: [
-        { role: "student" },
-        { role: { $nin: ["admin", "mentor", "ADMIN", "MENTOR"] } },
-        { role: { $exists: false } },
-        { role: null },
-      ],
-    },
+    { role: "student" },
   ];
 
   if (filter === "my-mentees") {
@@ -216,6 +210,10 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
   const currentUser = await User.findById(req.user._id).select("mentees role").lean();
   const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
   const isMyMentee = menteeSet.has(student._id.toString()) || student.assignedMentor?.toString() === req.user._id.toString();
+
+  if (req.user.role !== "admin" && !isMyMentee) {
+    throw ApiError.forbidden("Access denied: You can only view detailed diagnostic profiles of your assigned mentees.");
+  }
 
 
 
@@ -795,7 +793,7 @@ const unblockProctoring = asyncHandler(async (req, res) => {
     menteeSet.has(student._id.toString()) ||
     student.assignedMentor?.toString() === req.user._id.toString();
 
-  if (req.user.role !== "admin" && !isMyMentee && req.user.role !== "mentor") {
+  if (req.user.role !== "admin" && !isMyMentee) {
     throw ApiError.forbidden("Access denied: You can only unblock your assigned mentees");
   }
 
@@ -803,6 +801,7 @@ const unblockProctoring = asyncHandler(async (req, res) => {
   student.isProctoringBlocked = false;
   student.proctoringBlockedAt = null;
   await student.save();
+  invalidateUserCache(studentId);
 
   // Reset the student's violation records so they start fresh
   await ProctoringViolation.updateMany(
@@ -837,6 +836,19 @@ const unblockProctoring = asyncHandler(async (req, res) => {
 const getStudentProctoringViolations = asyncHandler(async (req, res) => {
   const { studentId } = req.params;
 
+  const student = await User.findById(studentId).select("assignedMentor").lean();
+  if (!student) {
+    throw ApiError.notFound("Student not found");
+  }
+
+  const currentUser = await User.findById(req.user._id).select("mentees role").lean();
+  const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
+  const isMyMentee = menteeSet.has(student._id.toString()) || student.assignedMentor?.toString() === req.user._id.toString();
+
+  if (req.user.role !== "admin" && !isMyMentee) {
+    throw ApiError.forbidden("Access denied: You can only view proctoring violations for your assigned mentees.");
+  }
+
   const violations = await ProctoringViolation.find({ userId: studentId })
     .sort({ createdAt: -1 })
     .lean();
@@ -854,9 +866,17 @@ const getStudentProctoringViolations = asyncHandler(async (req, res) => {
 const generateAIIntervention = asyncHandler(async (req, res) => {
   const { studentId } = req.params;
 
-  const student = await User.findById(studentId).select("name email targetRole").lean();
+  const student = await User.findById(studentId).select("name email targetRole assignedMentor").lean();
   if (!student) {
     throw ApiError.notFound("Student not found");
+  }
+
+  const currentUser = await User.findById(req.user._id).select("mentees role").lean();
+  const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
+  const isMyMentee = menteeSet.has(student._id.toString()) || student.assignedMentor?.toString() === req.user._id.toString();
+
+  if (req.user.role !== "admin" && !isMyMentee) {
+    throw ApiError.forbidden("Access denied: You can only generate AI interventions for your assigned mentees.");
   }
 
   const [resumes, interviews, codingProfiles, gapAnalyses, violations] = await Promise.all([
@@ -1013,9 +1033,17 @@ const createMentorTask = asyncHandler(async (req, res) => {
     throw ApiError.badRequest("Task title is required");
   }
 
-  const student = await User.findById(studentId);
+  const student = await User.findById(studentId).select("assignedMentor").lean();
   if (!student) {
     throw ApiError.notFound("Student not found");
+  }
+
+  const currentUser = await User.findById(req.user._id).select("mentees role").lean();
+  const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
+  const isMyMentee = menteeSet.has(student._id.toString()) || student.assignedMentor?.toString() === req.user._id.toString();
+
+  if (req.user.role !== "admin" && !isMyMentee) {
+    throw ApiError.forbidden("Access denied: You can only assign tasks to your assigned mentees.");
   }
 
   const dueDate = daysToComplete
@@ -1062,6 +1090,17 @@ const createMentorTask = asyncHandler(async (req, res) => {
 const getStudentMentorTasks = asyncHandler(async (req, res) => {
   const { studentId } = req.params;
 
+  if (req.user.role !== "admin" && req.user._id.toString() !== studentId) {
+    const student = await User.findById(studentId).select("assignedMentor").lean();
+    const currentUser = await User.findById(req.user._id).select("mentees role").lean();
+    const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
+    const isMyMentee = student && (menteeSet.has(student._id.toString()) || student.assignedMentor?.toString() === req.user._id.toString());
+
+    if (!isMyMentee) {
+      throw ApiError.forbidden("Access denied: You can only view tasks of your assigned mentees.");
+    }
+  }
+
   const tasks = await MentorTask.find({ student: studentId })
     .populate("mentor", "name email avatar")
     .sort({ createdAt: -1 })
@@ -1083,6 +1122,10 @@ const updateMentorTask = asyncHandler(async (req, res) => {
   const task = await MentorTask.findById(taskId);
   if (!task) {
     throw ApiError.notFound("Task not found");
+  }
+
+  if (req.user.role !== "admin" && task.mentor.toString() !== req.user._id.toString()) {
+    throw ApiError.forbidden("Access denied: You can only modify tasks you created.");
   }
 
   if (status) {
@@ -1114,6 +1157,10 @@ const deleteMentorTask = asyncHandler(async (req, res) => {
   const task = await MentorTask.findById(taskId);
   if (!task) {
     throw ApiError.notFound("Task not found");
+  }
+
+  if (req.user.role !== "admin" && task.mentor.toString() !== req.user._id.toString()) {
+    throw ApiError.forbidden("Access denied: You can only delete tasks you created.");
   }
 
   await MentorTask.findByIdAndDelete(taskId);
@@ -1164,6 +1211,7 @@ const batchUnblockProctoring = asyncHandler(async (req, res) => {
     { _id: { $in: studentIds } },
     { $set: { isProctoringBlocked: false, proctoringBlockedAt: null } }
   );
+  studentIds.forEach((sid) => invalidateUserCache(sid));
 
   await ProctoringViolation.updateMany(
     { userId: { $in: studentIds } },

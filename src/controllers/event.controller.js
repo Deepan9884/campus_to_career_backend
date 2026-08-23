@@ -9,6 +9,7 @@ const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 const aiService = require("../services/ai.service");
 const { validateFileMagicBytes } = require("../utils/fileValidation");
+const { sanitizePromptInput } = require("../utils/promptSanitizer");
 
 /**
  * Task 2 — techStack → UserSkill auto-upsert (silent)
@@ -742,12 +743,19 @@ const getEventPortfolio = asyncHandler(async (req, res) => {
 const generateEventDescription = asyncHandler(async (req, res) => {
   const { eventType, projectTitle, problemStatement, techStack, result } = req.body;
 
+  const safeEventType = sanitizePromptInput(eventType || "Hackathon / Competition", 100);
+  const safeProjectTitle = sanitizePromptInput(projectTitle || "Not specified", 150);
+  const safeProblemStatement = sanitizePromptInput(problemStatement || "Not specified", 1000);
+  const rawTech = Array.isArray(techStack) ? techStack.join(", ") : techStack || "Not specified";
+  const safeTechStack = sanitizePromptInput(rawTech, 500);
+  const safeResult = sanitizePromptInput(result || "Not specified", 100);
+
   const prompt = `You are helping a student create a professional event description and reflection for their portfolio.
-Event Type: ${eventType}
-Project Title: ${projectTitle || "Not specified"}
-Problem Statement: ${problemStatement || "Not specified"}
-Technologies Used: ${Array.isArray(techStack) ? techStack.join(", ") : techStack || "Not specified"}
-Result: ${result || "Not specified"}
+Event Type: ${safeEventType}
+Project Title: ${safeProjectTitle}
+Problem Statement: ${safeProblemStatement}
+Technologies Used: ${safeTechStack}
+Result: ${safeResult}
 
 Generate:
 1. A compelling 3-4 sentence project description in STAR format (Situation, Task, Action, Result)
@@ -796,9 +804,9 @@ Return ONLY a JSON object with keys: description, reflection { whatILearned, wha
     }).send(res);
   } catch (err) {
     console.error("[events] generateEventDescription failed, using fallback:", err.message);
-    const fallbackTech = Array.isArray(techStack) ? techStack.join(", ") : techStack || "modern tech stack";
+    const fallbackTech = safeTechStack !== "Not specified" ? safeTechStack : "modern tech stack";
     return ApiResponse.success({
-      description: `Participated in ${eventType} working on ${projectTitle || "an innovative project"} utilizing ${fallbackTech}. Successfully developed a working solution for the problem statement.`,
+      description: `Participated in ${safeEventType} working on ${safeProjectTitle !== "Not specified" ? safeProjectTitle : "an innovative project"} utilizing ${fallbackTech}. Successfully developed a working solution for the problem statement.`,
       reflection: {
         whatILearned: `Gained practical hands-on experience building solutions under deadline constraints using ${fallbackTech}.`,
         whatIdDoDifferently: `Allocate more time upfront for system architecture design and edge-case testing.`,
@@ -810,6 +818,42 @@ Return ONLY a JSON object with keys: description, reflection { whatILearned, wha
       },
     }).send(res);
   }
+});
+
+/**
+ * GET /api/events/:id/certificate
+ * Authenticated download/stream of an event certificate proof file.
+ */
+const getEventCertificate = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const event = await Event.findById(id).select("user certificateUrl eventName").lean();
+  if (!event || !event.certificateUrl) {
+    throw ApiError.notFound("Certificate not found for this event");
+  }
+
+  // Authorization check: User must own the event, or be an admin or mentor
+  const isOwner = event.user.toString() === req.user._id.toString();
+  const isAdminOrMentor = req.user.role === "admin" || req.user.role === "mentor";
+
+  if (!isOwner && !isAdminOrMentor) {
+    throw ApiError.forbidden("Access denied: You do not have permission to view this certificate");
+  }
+
+  const baseUploadDir = path.resolve(__dirname, "../../uploads/certificates");
+  const certFilename = path.basename(event.certificateUrl);
+  const resolvedPath = path.join(baseUploadDir, certFilename);
+
+  // Path traversal defense: verify resolvedPath starts with baseUploadDir
+  if (!resolvedPath.startsWith(baseUploadDir)) {
+    throw ApiError.badRequest("Invalid certificate path");
+  }
+
+  if (!fs.existsSync(resolvedPath)) {
+    throw ApiError.notFound("Certificate file not found on server");
+  }
+
+  return res.sendFile(resolvedPath);
 });
 
 /**
@@ -875,5 +919,6 @@ module.exports = {
   getEventPortfolio,
   generateEventDescription,
   predictSkillGaps,
+  getEventCertificate,
   upsertSkillsFromTechStack,
 };
