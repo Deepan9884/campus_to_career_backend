@@ -2,11 +2,66 @@ const { spawn, exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const crypto = require("crypto");
 const aiService = require("./ai.service");
 
 const EXECUTION_TIMEOUT_MS = 4000; // 4s maximum runtime execution time
 const COMPILE_TIMEOUT_MS = 8000;   // 8s for compile step (javac, g++ can be CPU-intensive)
 const MAX_OUTPUT_BYTES = 512 * 1024; // 512 KB maximum stdout/stderr buffer to prevent memory exhaustion
+
+// ── In-Memory Execution Cache (5-Minute TTL, max 500 entries) ───────────────
+// Provides sub-millisecond response time for repeated test case executions during high-concurrency exams.
+const EXECUTION_CACHE_TTL_MS = 5 * 60 * 1000;
+const executionCache = new Map();
+
+function computeCacheKey(code = "", language = "", testCases = []) {
+  return crypto
+    .createHash("sha256")
+    .update(`${language.toLowerCase()}::${code.trim()}::${JSON.stringify(testCases)}`)
+    .digest("hex");
+}
+
+function getCachedResult(key) {
+  const entry = executionCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    executionCache.delete(key);
+    return null;
+  }
+  return entry.result;
+}
+
+function setCachedResult(key, result) {
+  if (executionCache.size >= 500) {
+    executionCache.delete(executionCache.keys().next().value);
+  }
+  executionCache.set(key, { result, expiresAt: Date.now() + EXECUTION_CACHE_TTL_MS });
+}
+
+// ── High-Concurrency Execution Queue (Semaphore) ───────────────────────────
+// Throttles simultaneous CPU-bound subprocess compilations to prevent host saturation when 40+ students submit code.
+const MAX_CONCURRENT_COMPILATIONS = Math.max(6, (os.cpus()?.length || 2) * 2);
+let runningCompilations = 0;
+const compilationQueue = [];
+
+function acquireExecutionSlot() {
+  return new Promise((resolve) => {
+    if (runningCompilations < MAX_CONCURRENT_COMPILATIONS) {
+      runningCompilations++;
+      return resolve();
+    }
+    compilationQueue.push(resolve);
+  });
+}
+
+function releaseExecutionSlot() {
+  runningCompilations--;
+  if (compilationQueue.length > 0) {
+    runningCompilations++;
+    const next = compilationQueue.shift();
+    next();
+  }
+}
 
 /**
  * Isolated minimum environment variables for safe subprocess execution.
@@ -289,83 +344,100 @@ function checkCodeSecurity(code = "", language = "python") {
 
 /**
  * Execute Python 3 code with stdin and timeout in a secure minimal environment
+ * Automatically tries multiple Python binary candidates ('python3', 'python', 'py')
  */
-function runPython(code, input = "") {
-  return new Promise((resolve) => {
-    const startTime = Date.now();
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-py-"));
-    const filePath = path.join(tempDir, "solution.py");
-    fs.writeFileSync(filePath, code, { encoding: "utf8", mode: 0o600 });
+async function runPython(code, input = "") {
+  const pythonCmds = process.platform === "win32"
+    ? [["python", []], ["py", ["-3"]], ["python3", []]]
+    : [["python3", []], ["python", []]];
 
-    const process = spawn("python", [filePath], {
-      cwd: tempDir,
-      env: getSafeSubprocessEnv(),
-      timeout: EXECUTION_TIMEOUT_MS,
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-py-"));
+  const filePath = path.join(tempDir, "solution.py");
+  fs.writeFileSync(filePath, code, { encoding: "utf8", mode: 0o600 });
+
+  for (const [cmd, extraArgs] of pythonCmds) {
+    const res = await new Promise((resolve) => {
+      const startTime = Date.now();
+      const proc = spawn(cmd, [...extraArgs, filePath], {
+        cwd: tempDir,
+        env: getSafeSubprocessEnv(),
+        timeout: EXECUTION_TIMEOUT_MS,
+      });
+
+      let stdout = "";
+      let stderr = "";
+
+      if (input) {
+        proc.stdin.write(input);
+        proc.stdin.end();
+      } else {
+        proc.stdin.end();
+      }
+
+      proc.stdout.on("data", (data) => {
+        if (stdout.length < MAX_OUTPUT_BYTES) {
+          stdout += data.toString();
+          if (stdout.length >= MAX_OUTPUT_BYTES) {
+            stdout = stdout.slice(0, MAX_OUTPUT_BYTES) + "\n[Output truncated: Exceeded buffer limit]";
+            try { proc.kill(); } catch {}
+          }
+        }
+      });
+
+      proc.stderr.on("data", (data) => {
+        if (stderr.length < MAX_OUTPUT_BYTES) {
+          stderr += data.toString();
+          if (stderr.length >= MAX_OUTPUT_BYTES) {
+            stderr = stderr.slice(0, MAX_OUTPUT_BYTES) + "\n[Error truncated: Exceeded buffer limit]";
+            try { proc.kill(); } catch {}
+          }
+        }
+      });
+
+      proc.on("close", (exitCode) => {
+        const elapsed = Date.now() - startTime;
+        const cleanErr = sanitizeStderr(stderr, tempDir, "solution.py");
+        resolve({
+          stdout: stdout.trim(),
+          stderr: cleanErr,
+          exitCode,
+          executionTimeMs: elapsed,
+          timedOut: elapsed >= EXECUTION_TIMEOUT_MS,
+          isCompileError: isSyntaxOrCompileError(cleanErr, "python"),
+          hostCompilerMissing: false,
+        });
+      });
+
+      proc.on("error", (err) => {
+        const isMissing = isHostCompilerMissing(err.message);
+        resolve({
+          stdout: "",
+          stderr: err.message,
+          exitCode: isMissing ? 127 : 1,
+          executionTimeMs: Date.now() - startTime,
+          timedOut: false,
+          isCompileError: false,
+          hostCompilerMissing: isMissing,
+        });
+      });
     });
 
-    let stdout = "";
-    let stderr = "";
-
-    if (input) {
-      process.stdin.write(input);
-      process.stdin.end();
-    } else {
-      process.stdin.end();
+    if (!res.hostCompilerMissing) {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+      return res;
     }
+  }
 
-    process.stdout.on("data", (data) => {
-      if (stdout.length < MAX_OUTPUT_BYTES) {
-        stdout += data.toString();
-        if (stdout.length >= MAX_OUTPUT_BYTES) {
-          stdout = stdout.slice(0, MAX_OUTPUT_BYTES) + "\n[Output truncated: Exceeded buffer limit]";
-          try { process.kill(); } catch {}
-        }
-      }
-    });
-
-    process.stderr.on("data", (data) => {
-      if (stderr.length < MAX_OUTPUT_BYTES) {
-        stderr += data.toString();
-        if (stderr.length >= MAX_OUTPUT_BYTES) {
-          stderr = stderr.slice(0, MAX_OUTPUT_BYTES) + "\n[Error truncated: Exceeded buffer limit]";
-          try { process.kill(); } catch {}
-        }
-      }
-    });
-
-    process.on("close", (exitCode) => {
-      const elapsed = Date.now() - startTime;
-      const cleanErr = sanitizeStderr(stderr, tempDir, "solution.py");
-      try {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      } catch {}
-
-      resolve({
-        stdout: stdout.trim(),
-        stderr: cleanErr,
-        exitCode,
-        executionTimeMs: elapsed,
-        timedOut: elapsed >= EXECUTION_TIMEOUT_MS,
-        isCompileError: isSyntaxOrCompileError(cleanErr, "python"),
-      });
-    });
-
-    process.on("error", (err) => {
-      try {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      } catch {}
-      const isMissing = isHostCompilerMissing(err.message);
-      resolve({
-        stdout: "",
-        stderr: err.message,
-        exitCode: isMissing ? 127 : 1,
-        executionTimeMs: Date.now() - startTime,
-        timedOut: false,
-        isCompileError: false,
-        hostCompilerMissing: isMissing,
-      });
-    });
-  });
+  try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+  return {
+    stdout: "",
+    stderr: "Python interpreter not found on host",
+    exitCode: 127,
+    executionTimeMs: 0,
+    timedOut: false,
+    isCompileError: false,
+    hostCompilerMissing: true,
+  };
 }
 
 /**
@@ -435,13 +507,15 @@ function runJavaScript(code, input = "") {
       try {
         fs.rmSync(tempDir, { recursive: true, force: true });
       } catch {}
+      const isMissing = isHostCompilerMissing(err.message);
       resolve({
         stdout: "",
         stderr: err.message,
-        exitCode: 1,
+        exitCode: isMissing ? 127 : 1,
         executionTimeMs: Date.now() - startTime,
         timedOut: false,
         isCompileError: false,
+        hostCompilerMissing: isMissing,
       });
     });
   });
@@ -541,13 +615,15 @@ function runJava(code, input = "") {
         try {
           fs.rmSync(tempDir, { recursive: true, force: true });
         } catch {}
+        const isMissing = isHostCompilerMissing(err.message);
         resolve({
           stdout: "",
           stderr: err.message,
-          exitCode: 1,
+          exitCode: isMissing ? 127 : 1,
           executionTimeMs: Date.now() - startTime,
           timedOut: false,
           isCompileError: false,
+          hostCompilerMissing: isMissing,
         });
       });
     });
@@ -556,106 +632,129 @@ function runJava(code, input = "") {
 
 /**
  * Execute C++ code with compilation and runtime execution
+ * Automatically tries available C++ compilers ('g++', 'clang++', 'gcc')
  */
-function runCpp(code, input = "") {
+async function runCpp(code, input = "") {
+  const compilerBinaries = ["g++", "clang++", "gcc", "clang"];
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-cpp-"));
+  const srcPath = path.join(tempDir, "solution.cpp");
+  const exePath = path.join(tempDir, process.platform === "win32" ? "solution.exe" : "solution.out");
+  fs.writeFileSync(srcPath, code, { encoding: "utf8", mode: 0o600 });
+
+  let compiled = false;
+  let lastCompileErr = "";
+  let hostMissing = false;
+
+  for (const bin of compilerBinaries) {
+    const res = await new Promise((resolve) => {
+      exec(`${bin} -O2 "${srcPath}" -o "${exePath}"`, { cwd: tempDir, env: getSafeSubprocessEnv(), timeout: COMPILE_TIMEOUT_MS }, (err, _stdout, stderr) => {
+        if (err || stderr) {
+          const rawErr = stderr || err?.message || "";
+          const isMissing = isHostCompilerMissing(rawErr);
+          return resolve({ success: false, err: rawErr, isMissing });
+        }
+        return resolve({ success: true, err: "" });
+      });
+    });
+
+    if (res.success) {
+      compiled = true;
+      break;
+    } else {
+      lastCompileErr = res.err;
+      if (res.isMissing) {
+        hostMissing = true;
+      } else {
+        // Genuine compilation error
+        hostMissing = false;
+        break;
+      }
+    }
+  }
+
+  if (!compiled) {
+    const cleanErr = sanitizeStderr(lastCompileErr, tempDir, "solution.cpp");
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+    return {
+      stdout: "",
+      stderr: cleanErr || (hostMissing ? "C++ compiler not available on host" : "Compilation Error"),
+      exitCode: hostMissing ? 127 : 1,
+      executionTimeMs: 0,
+      compileError: !hostMissing,
+      isCompileError: !hostMissing,
+      hostCompilerMissing: hostMissing,
+    };
+  }
+
   return new Promise((resolve) => {
     const startTime = Date.now();
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-cpp-"));
-    const srcPath = path.join(tempDir, "solution.cpp");
-    const exePath = path.join(tempDir, process.platform === "win32" ? "solution.exe" : "solution.out");
-    fs.writeFileSync(srcPath, code, { encoding: "utf8", mode: 0o600 });
+    const cppProcess = spawn(process.platform === "win32" ? exePath : `./${path.basename(exePath)}`, [], {
+      cwd: tempDir,
+      env: getSafeSubprocessEnv(),
+      timeout: EXECUTION_TIMEOUT_MS,
+    });
 
-    exec(`g++ -O2 "${srcPath}" -o "${exePath}"`, { cwd: tempDir, env: getSafeSubprocessEnv(), timeout: COMPILE_TIMEOUT_MS }, (compileErr, _compileStdout, compileStderr) => {
-      const rawCompileErr = compileStderr || compileErr?.message || "";
-      if (compileErr || compileStderr) {
-        const cleanErr = sanitizeStderr(rawCompileErr, tempDir, "solution.cpp");
-        const isMissing = isHostCompilerMissing(rawCompileErr);
-        try {
-          fs.rmSync(tempDir, { recursive: true, force: true });
-        } catch {}
-        return resolve({
-          stdout: "",
-          stderr: cleanErr,
-          exitCode: isMissing ? 127 : 1,
-          executionTimeMs: Date.now() - startTime,
-          compileError: !isMissing,
-          isCompileError: !isMissing,
-          hostCompilerMissing: isMissing,
-        });
-      }
+    let stdout = "";
+    let stderr = "";
 
-      const cppProcess = spawn(process.platform === "win32" ? exePath : `./${path.basename(exePath)}`, [], {
-        cwd: tempDir,
-        env: getSafeSubprocessEnv(),
-        timeout: EXECUTION_TIMEOUT_MS,
-      });
+    if (input) {
+      cppProcess.stdin.write(input);
+      cppProcess.stdin.end();
+    } else {
+      cppProcess.stdin.end();
+    }
 
-      let stdout = "";
-      let stderr = "";
-
-      if (input) {
-        cppProcess.stdin.write(input);
-        cppProcess.stdin.end();
-      } else {
-        cppProcess.stdin.end();
-      }
-
-      cppProcess.stdout.on("data", (data) => {
-        if (stdout.length < MAX_OUTPUT_BYTES) {
-          stdout += data.toString();
-          if (stdout.length >= MAX_OUTPUT_BYTES) {
-            stdout = stdout.slice(0, MAX_OUTPUT_BYTES) + "\n[Output truncated: Exceeded buffer limit]";
-            try { cppProcess.kill(); } catch {}
-          }
+    cppProcess.stdout.on("data", (data) => {
+      if (stdout.length < MAX_OUTPUT_BYTES) {
+        stdout += data.toString();
+        if (stdout.length >= MAX_OUTPUT_BYTES) {
+          stdout = stdout.slice(0, MAX_OUTPUT_BYTES) + "\n[Output truncated: Exceeded buffer limit]";
+          try { cppProcess.kill(); } catch {}
         }
-      });
+      }
+    });
 
-      cppProcess.stderr.on("data", (data) => {
-        if (stderr.length < MAX_OUTPUT_BYTES) {
-          stderr += data.toString();
-          if (stderr.length >= MAX_OUTPUT_BYTES) {
-            stderr = stderr.slice(0, MAX_OUTPUT_BYTES) + "\n[Error truncated: Exceeded buffer limit]";
-            try { cppProcess.kill(); } catch {}
-          }
+    cppProcess.stderr.on("data", (data) => {
+      if (stderr.length < MAX_OUTPUT_BYTES) {
+        stderr += data.toString();
+        if (stderr.length >= MAX_OUTPUT_BYTES) {
+          stderr = stderr.slice(0, MAX_OUTPUT_BYTES) + "\n[Error truncated: Exceeded buffer limit]";
+          try { cppProcess.kill(); } catch {}
         }
+      }
+    });
+
+    cppProcess.on("close", (exitCode) => {
+      const elapsed = Date.now() - startTime;
+      const cleanErr = sanitizeStderr(stderr, tempDir, "solution.cpp");
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+
+      resolve({
+        stdout: stdout.trim(),
+        stderr: cleanErr,
+        exitCode,
+        executionTimeMs: elapsed,
+        timedOut: elapsed >= EXECUTION_TIMEOUT_MS,
+        isCompileError: false,
       });
+    });
 
-      cppProcess.on("close", (exitCode) => {
-        const elapsed = Date.now() - startTime;
-        const cleanErr = sanitizeStderr(stderr, tempDir, "solution.cpp");
-        try {
-          fs.rmSync(tempDir, { recursive: true, force: true });
-        } catch {}
-
-        resolve({
-          stdout: stdout.trim(),
-          stderr: cleanErr,
-          exitCode,
-          executionTimeMs: elapsed,
-          timedOut: elapsed >= EXECUTION_TIMEOUT_MS,
-          isCompileError: false,
-        });
-      });
-
-      cppProcess.on("error", (err) => {
-        try {
-          fs.rmSync(tempDir, { recursive: true, force: true });
-        } catch {}
-        resolve({
-          stdout: "",
-          stderr: err.message,
-          exitCode: 1,
-          executionTimeMs: Date.now() - startTime,
-          timedOut: false,
-          isCompileError: false,
-        });
+    cppProcess.on("error", (err) => {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+      resolve({
+        stdout: "",
+        stderr: err.message,
+        exitCode: 1,
+        executionTimeMs: Date.now() - startTime,
+        timedOut: false,
+        isCompileError: false,
       });
     });
   });
 }
 
 /**
- * Intelligent Code Evaluator fallback powered by Gemini
+ * Intelligent Code Evaluator fallback powered by Gemini with deterministic temperature (0.0)
  */
 async function runWithAiEvaluator(code, language, testCases = [], questionText = "") {
   const prompt = `You are a strict automated code execution engine and compiler judge.
@@ -712,7 +811,7 @@ Return ONLY raw valid JSON.`;
     const raw = await aiService.generateContent({
       prompt,
       feature: "quiz-grading",
-      temperature: 0.1,
+      temperature: 0.0,
     });
     const parsed = parseJsonSafely(raw?.data || raw);
     if (parsed && Array.isArray(parsed.testCaseResults)) {
@@ -762,7 +861,7 @@ Return ONLY raw valid JSON.`;
 }
 
 /**
- * Main Code Execution & Test Case Verification Handler
+ * Main Code Execution & Test Case Verification Handler with High-Concurrency Throttling and Result Caching
  */
 async function executeCode({ code, language = "python", testCases = [], questionText = "" }) {
   const lang = String(language).toLowerCase().trim();
@@ -797,12 +896,19 @@ async function executeCode({ code, language = "python", testCases = [], question
     ? testCases
     : [{ input: "", expectedOutput: "", description: "Default Case" }];
 
-  // 1. Static Security Check
+  // 1. In-Memory Cache Lookup (Sub-millisecond latency for repeated runs)
+  const cacheKey = computeCacheKey(cleanCode, lang, defaultTestCases);
+  const cachedResponse = getCachedResult(cacheKey);
+  if (cachedResponse) {
+    return cachedResponse;
+  }
+
+  // 2. Static Security Check
   const securityCheck = checkCodeSecurity(cleanCode, lang);
   if (!securityCheck.safe) {
-    console.warn(`[CompilerService] Security scan flagged code: ${securityCheck.reason}. Routing to AI evaluator.`);
+    console.warn(`[CompilerService] Security scan flagged code: ${securityCheck.reason}. Routing to safe AI sandbox evaluator.`);
     const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
-    return {
+    const finalResult = {
       success: aiResult.success ?? false,
       isCompilationError: aiResult.isCompilationError ?? false,
       compilationError: aiResult.compilationError ?? false,
@@ -813,31 +919,37 @@ async function executeCode({ code, language = "python", testCases = [], question
       totalCount: aiResult.totalCount ?? defaultTestCases.length,
       testCaseResults: aiResult.testCaseResults || [],
     };
+    setCachedResult(cacheKey, finalResult);
+    return finalResult;
   }
 
-  let hasNativeRunner = false;
-  let runner = null;
+  // 3. Acquire Concurrency Slot (Ensures 40 students do not overwhelm host CPU)
+  await acquireExecutionSlot();
 
-  if (lang.includes("python") || lang === "py") {
-    hasNativeRunner = true;
-    runner = runPython;
-  } else if (lang.includes("javascript") || lang.includes("node") || lang === "js" || lang.includes("typescript")) {
-    hasNativeRunner = true;
-    runner = runJavaScript;
-  } else if (lang.includes("java")) {
-    hasNativeRunner = true;
-    runner = runJava;
-  } else if (lang.includes("cpp") || lang.includes("c++")) {
-    hasNativeRunner = true;
-    runner = runCpp;
-  }
+  try {
+    let hasNativeRunner = false;
+    let runner = null;
 
-  if (hasNativeRunner && runner) {
-    try {
+    if (lang.includes("python") || lang === "py") {
+      hasNativeRunner = true;
+      runner = runPython;
+    } else if (lang.includes("javascript") || lang.includes("node") || lang === "js" || lang.includes("typescript")) {
+      hasNativeRunner = true;
+      runner = runJavaScript;
+    } else if (lang.includes("java")) {
+      hasNativeRunner = true;
+      runner = runJava;
+    } else if (lang.includes("cpp") || lang.includes("c++") || lang === "c") {
+      hasNativeRunner = true;
+      runner = runCpp;
+    }
+
+    if (hasNativeRunner && runner) {
       const results = [];
       let overallStdout = "";
       let overallStderr = "";
       let hasCompilationError = false;
+      let hostCompilerMissing = false;
 
       for (let i = 0; i < defaultTestCases.length; i++) {
         const tc = defaultTestCases[i];
@@ -850,22 +962,10 @@ async function executeCode({ code, language = "python", testCases = [], question
           overallStdout = res.stdout;
         }
 
-        // If host compiler binary is missing on server, immediately delegate to AI sandbox runner!
+        // If host compiler binary is missing on server, immediately break and delegate to AI sandbox runner
         if (res.hostCompilerMissing || isHostCompilerMissing(res.stderr)) {
-          console.info(`[CompilerService] Host binary for ${lang} not available. Delegating to AI execution sandbox.`);
-          const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
-          return {
-            success: aiResult.success ?? false,
-            isCompilationError: aiResult.isCompilationError ?? false,
-            compilationError: aiResult.compilationError ?? false,
-            isRuntimeError: aiResult.isRuntimeError ?? false,
-            language: lang,
-            stdout: aiResult.stdout || "",
-            stderr: aiResult.stderr || "",
-            passedCount: aiResult.passedCount ?? 0,
-            totalCount: aiResult.totalCount ?? defaultTestCases.length,
-            testCaseResults: aiResult.testCaseResults || [],
-          };
+          hostCompilerMissing = true;
+          break;
         }
 
         // If compilation / syntax error occurred on execution
@@ -924,6 +1024,26 @@ async function executeCode({ code, language = "python", testCases = [], question
         });
       }
 
+      // If host compiler was missing, delegate to AI sandbox
+      if (hostCompilerMissing) {
+        console.info(`[CompilerService] Host binary for ${lang} not available. Delegating to AI execution sandbox.`);
+        const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
+        const finalResult = {
+          success: aiResult.success ?? false,
+          isCompilationError: aiResult.isCompilationError ?? false,
+          compilationError: aiResult.compilationError ?? false,
+          isRuntimeError: aiResult.isRuntimeError ?? false,
+          language: lang,
+          stdout: aiResult.stdout || "",
+          stderr: aiResult.stderr || "",
+          passedCount: aiResult.passedCount ?? 0,
+          totalCount: aiResult.totalCount ?? defaultTestCases.length,
+          testCaseResults: aiResult.testCaseResults || [],
+        };
+        setCachedResult(cacheKey, finalResult);
+        return finalResult;
+      }
+
       const passedCount = results.filter((r) => r.passed).length;
       const totalCount = results.length;
 
@@ -934,7 +1054,7 @@ async function executeCode({ code, language = "python", testCases = [], question
         console.info("[CompilerService] Native runner produced 0 stdout for function-based code. Evaluating with AI sandbox engine.");
         const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
         if (aiResult && Array.isArray(aiResult.testCaseResults) && aiResult.testCaseResults.length > 0) {
-          return {
+          const finalResult = {
             success: aiResult.success ?? false,
             isCompilationError: aiResult.isCompilationError ?? false,
             compilationError: aiResult.compilationError ?? false,
@@ -946,10 +1066,12 @@ async function executeCode({ code, language = "python", testCases = [], question
             totalCount: aiResult.totalCount ?? defaultTestCases.length,
             testCaseResults: aiResult.testCaseResults,
           };
+          setCachedResult(cacheKey, finalResult);
+          return finalResult;
         }
       }
 
-      return {
+      const finalResult = {
         success: !hasCompilationError && totalCount > 0 && passedCount === totalCount,
         isCompilationError: hasCompilationError,
         compilationError: hasCompilationError,
@@ -961,28 +1083,33 @@ async function executeCode({ code, language = "python", testCases = [], question
         totalCount,
         testCaseResults: results,
       };
-    } catch (err) {
-      console.warn("[CompilerService] Native runner failed, falling back to AI evaluator:", err);
+      setCachedResult(cacheKey, finalResult);
+      return finalResult;
     }
-  }
 
-  // Fallback to AI-powered execution evaluator
-  const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
-  return {
-    success: aiResult.success ?? false,
-    isCompilationError: aiResult.isCompilationError ?? false,
-    compilationError: aiResult.compilationError ?? false,
-    isRuntimeError: aiResult.isRuntimeError ?? false,
-    language: lang,
-    stdout: aiResult.stdout || "",
-    stderr: aiResult.stderr || "",
-    passedCount: aiResult.passedCount ?? 0,
-    totalCount: aiResult.totalCount ?? defaultTestCases.length,
-    testCaseResults: aiResult.testCaseResults || [],
-  };
+    // Fallback to AI-powered execution evaluator for any other language
+    const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
+    const finalResult = {
+      success: aiResult.success ?? false,
+      isCompilationError: aiResult.isCompilationError ?? false,
+      compilationError: aiResult.compilationError ?? false,
+      isRuntimeError: aiResult.isRuntimeError ?? false,
+      language: lang,
+      stdout: aiResult.stdout || "",
+      stderr: aiResult.stderr || "",
+      passedCount: aiResult.passedCount ?? 0,
+      totalCount: aiResult.totalCount ?? defaultTestCases.length,
+      testCaseResults: aiResult.testCaseResults || [],
+    };
+    setCachedResult(cacheKey, finalResult);
+    return finalResult;
+  } finally {
+    releaseExecutionSlot();
+  }
 }
 
 module.exports = {
   executeCode,
   checkCodeSecurity,
 };
+
