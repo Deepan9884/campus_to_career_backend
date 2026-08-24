@@ -21,6 +21,7 @@ const {
   reportStudentExamBlocked,
   getStudentExamBlockStatus,
   unblockStudentExamSession,
+  blockStudentExamSession,
 } = require("../controllers/exam.controller");
 
 const router = Router();
@@ -58,6 +59,11 @@ router.patch(
   "/admin/:examId/students/:studentId/unblock",
   verifyRole(["admin", "mentor"]),
   unblockStudentExamSession
+);
+router.patch(
+  "/admin/:examId/students/:studentId/block",
+  verifyRole(["admin", "mentor"]),
+  blockStudentExamSession
 );
 router.post(
   "/admin/parse-coding-link",

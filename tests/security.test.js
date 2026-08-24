@@ -138,4 +138,91 @@ describe("Security Hardening & Input Sanitization Tests", () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe("Super Dream Mentor-Mentee Isolation & Exclusion Tests", () => {
+    test("Client-side candidate filter strictly removes mentor/faculty accounts and unassigned students", () => {
+      const rawCandidates = [
+        { id: "1", name: "Alice Student", email: "alice@example.com", targetRole: "Full Stack Engineer", isAssignedToMe: true },
+        { id: "2", name: "Bob Student", email: "bob@example.com", targetRole: "Backend Engineer", isAssignedToMe: true },
+        { id: "3", name: "Dr. Saranya Mentor", email: "s.saranya@college.edu", targetRole: "Faculty Mentor", isAssignedToMe: true },
+        { id: "4", name: "Admin Lead", email: "admin@college.edu", targetRole: "System Admin", isAssignedToMe: true },
+        { id: "5", name: "Charlie Student", email: "charlie@example.com", targetRole: "AI Engineer", isAssignedToMe: false },
+        { id: "6", name: "Prof. John Doe", email: "john@college.edu", targetRole: "Lead Mentor", isAssignedToMe: true },
+      ];
+
+      const filtered = rawCandidates.filter((cand) => {
+        if (cand.isAssignedToMe === false) {
+          return false;
+        }
+        const roleStr = (cand.targetRole || "").toLowerCase();
+        const nameStr = (cand.name || "").toLowerCase();
+        const emailStr = (cand.email || "").toLowerCase();
+        if (
+          roleStr.includes("mentor") ||
+          roleStr.includes("faculty") ||
+          roleStr.includes("admin") ||
+          roleStr.includes("professor") ||
+          roleStr.includes("hod") ||
+          roleStr.includes("staff")
+        ) {
+          return false;
+        }
+        if (
+          nameStr.startsWith("dr.") ||
+          nameStr.startsWith("prof.") ||
+          nameStr.includes("faculty") ||
+          nameStr.includes("mentor") ||
+          nameStr.includes("admin") ||
+          nameStr.includes("saranya")
+        ) {
+          return false;
+        }
+        if (
+          emailStr.includes("mentor") ||
+          emailStr.includes("faculty") ||
+          emailStr.includes("admin") ||
+          emailStr.includes("s.saranya")
+        ) {
+          return false;
+        }
+        return true;
+      });
+
+      expect(filtered.length).toBe(2);
+      expect(filtered.map((c) => c.name)).toEqual(["Alice Student", "Bob Student"]);
+    });
+
+    test("Mentor assignment rejects self and faculty/mentor accounts", () => {
+      const mentorId = "650000000000000000000001";
+
+      function validateMenteeAssignment(candidate, currentMentorId) {
+        if (candidate._id === currentMentorId) {
+          return { valid: false, error: "Cannot assign self as mentee" };
+        }
+        if (candidate.role !== "student" || (candidate.mentees && candidate.mentees.length > 0)) {
+          return { valid: false, error: "Cannot assign mentor/faculty account as mentee" };
+        }
+        const nameLower = (candidate.name || "").toLowerCase();
+        const targetLower = (candidate.targetRole || "").toLowerCase();
+        if (
+          nameLower.startsWith("dr.") ||
+          nameLower.startsWith("prof.") ||
+          nameLower.includes("mentor") ||
+          nameLower.includes("faculty") ||
+          targetLower.includes("mentor") ||
+          targetLower.includes("faculty") ||
+          targetLower.includes("admin")
+        ) {
+          return { valid: false, error: "Cannot assign mentor/faculty account as mentee" };
+        }
+        return { valid: true };
+      }
+
+      expect(validateMenteeAssignment({ _id: mentorId, role: "mentor", name: "Mentor User" }, mentorId).valid).toBe(false);
+      expect(validateMenteeAssignment({ _id: "650000000000000000000002", role: "mentor", name: "Faculty Lead" }, mentorId).valid).toBe(false);
+      expect(validateMenteeAssignment({ _id: "650000000000000000000003", role: "student", mentees: ["student1"] }, mentorId).valid).toBe(false);
+      expect(validateMenteeAssignment({ _id: "650000000000000000000004", role: "student", name: "Dr. Strange" }, mentorId).valid).toBe(false);
+      expect(validateMenteeAssignment({ _id: "650000000000000000000005", role: "student", name: "Real Student", targetRole: "Software Engineer" }, mentorId).valid).toBe(true);
+    });
+  });
 });

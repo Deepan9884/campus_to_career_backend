@@ -472,11 +472,11 @@ const logSuperDreamMovement = asyncHandler(async (req, res) => {
 /**
  * GET /api/super-dream/cohort
  * (Mentor / Admin) Retrieves cohort students assigned to the logged-in mentor with their live Super Dream performance.
+ * STRICT: Only returns registered students assigned as mentees to this mentor.
  */
 const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
   const search = (req.query.search || "").trim();
   const phaseFilter = req.query.phase;
-  const scope = (req.query.scope || "my-mentees").trim();
 
   const currentUser = await User.findById(req.user._id).select("mentees role name email");
 
@@ -485,25 +485,39 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
     currentUser.role = "mentor";
     await currentUser.save();
   }
-  
+
+  // Find all mentor/admin accounts in the database to guarantee total exclusion
+  const allMentorAccounts = await User.find({
+    $or: [
+      { role: { $in: ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD", "staff", "STAFF"] } },
+      { "mentees.0": { $exists: true } },
+    ],
+  }).select("_id email").lean();
+
+  const allMentorIds = allMentorAccounts.map((m) => m._id.toString());
+  const allMentorEmails = allMentorAccounts.map((m) => m.email?.toLowerCase()).filter(Boolean);
+
   // Clean up mentor's mentees array:
   // 1. Remove self (_id === req.user._id)
-  // 2. Validate all mentees have real student role (not mentor, admin, faculty)
+  // 2. Remove any other mentor/admin user IDs
+  // 3. Validate all mentees have real student role
   const rawMenteeIds = (currentUser?.mentees || [])
     .map((id) => id.toString())
-    .filter((id) => id !== req.user._id.toString());
+    .filter((id) => id !== req.user._id.toString() && !allMentorIds.includes(id));
 
   const nonStudentRoles = ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD", "staff", "STAFF"];
-  const nonStudentRegex = /faculty|mentor|admin|professor|prof\.|dr\./i;
+  const nonStudentRegex = /faculty|mentor|admin|professor|prof\.|dr\.|hod|staff/i;
 
   const validStudentMentees = await User.find({
-    _id: { $in: rawMenteeIds, $ne: req.user._id },
+    _id: { $in: rawMenteeIds, $nin: allMentorAccounts.map((m) => m._id), $ne: req.user._id },
     role: { $in: ["student", "STUDENT"], $nin: nonStudentRoles },
     targetRole: { $not: nonStudentRegex },
     "profile.targetRole": { $not: nonStudentRegex },
+    name: { $not: /^(dr\.|prof\.|professor|faculty|mentor|admin|hod)/i },
   }).select("_id").lean();
 
   const validMenteeIds = validStudentMentees.map((m) => m._id);
+  const validMenteeIdStrings = validMenteeIds.map((id) => id.toString());
 
   // Auto-sync mentor's mentees field in DB if invalid IDs or self-reference existed
   if (currentUser && Array.isArray(currentUser.mentees) && currentUser.mentees.length !== validMenteeIds.length) {
@@ -511,21 +525,24 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
     await currentUser.save();
   }
 
-  // Base conditions: STRICTLY exclude current user, mentor email, and all mentor/admin roles/titles
+  // STRICT RULE: Super Dream Track ONLY displays assigned mentees of the logged-in mentor
+  const assignedOr = [{ assignedMentor: req.user._id }];
+  if (validMenteeIds.length > 0) {
+    assignedOr.push({ _id: { $in: validMenteeIds } });
+  }
+
+  // Base conditions: STRICTLY exclude current user, all mentor emails/IDs, and non-student roles
   const baseConditions = [
-    { _id: { $ne: req.user._id } },
-    ...(currentUser?.email ? [{ email: { $ne: currentUser.email.toLowerCase() } }] : []),
+    { _id: { $ne: req.user._id, $nin: allMentorAccounts.map((m) => m._id) } },
     { role: { $in: ["student", "STUDENT"], $nin: nonStudentRoles } },
     { targetRole: { $not: nonStudentRegex } },
     { "profile.targetRole": { $not: nonStudentRegex } },
+    { name: { $not: /^(dr\.|prof\.|professor|faculty|mentor|admin|hod)/i } },
+    { $or: assignedOr },
   ];
 
-  if (scope !== "all") {
-    const assignedOr = [{ assignedMentor: req.user._id }];
-    if (validMenteeIds.length > 0) {
-      assignedOr.push({ _id: { $in: validMenteeIds } });
-    }
-    baseConditions.push({ $or: assignedOr });
+  if (currentUser?.email) {
+    baseConditions.push({ email: { $ne: currentUser.email.toLowerCase(), $nin: allMentorEmails } });
   }
 
   if (search) {
@@ -550,12 +567,14 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
 
   // Defense-in-depth: Filter out any non-student or mentor objects
   const filteredUsers = users.filter((u) => {
-    if (u._id.toString() === req.user._id.toString()) return false;
+    const uId = u._id.toString();
+    if (uId === req.user._id.toString() || allMentorIds.includes(uId)) return false;
     if (currentUser?.email && u.email?.toLowerCase() === currentUser.email.toLowerCase()) return false;
+    if (allMentorEmails.includes(u.email?.toLowerCase())) return false;
     const tRole = (u.targetRole || u.profile?.targetRole || "").toLowerCase();
-    if (tRole.includes("mentor") || tRole.includes("faculty") || tRole.includes("admin")) return false;
+    if (tRole.includes("mentor") || tRole.includes("faculty") || tRole.includes("admin") || tRole.includes("professor") || tRole.includes("hod")) return false;
     const nameLower = (u.name || "").toLowerCase();
-    if (nameLower.startsWith("dr.") || nameLower.includes("saranya")) return false;
+    if (nameLower.startsWith("dr.") || nameLower.startsWith("prof.") || nameLower.includes("faculty") || nameLower.includes("mentor") || nameLower.includes("admin")) return false;
     return true;
   });
 
@@ -621,7 +640,7 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
         lastActivityAt: sd?.lastActivityAt || u.createdAt,
         recentMovements,
         hasFullData: true,
-        isAssignedToMe: menteeIds.includes(u._id.toString()) || u.assignedMentor?.toString() === req.user._id.toString(),
+        isAssignedToMe: validMenteeIdStrings.includes(u._id.toString()) || u.assignedMentor?.toString() === req.user._id.toString(),
       };
     })
   );
@@ -652,13 +671,35 @@ const assignSuperDreamMentee = asyncHandler(async (req, res) => {
 
   let student = null;
   if (input.includes("@")) {
-    student = await User.findOne({ email: input.toLowerCase(), role: "student" });
+    student = await User.findOne({ email: input.toLowerCase() });
   } else if (input.match(/^[0-9a-fA-F]{24}$/)) {
-    student = await User.findOne({ _id: input, role: "student" });
+    student = await User.findById(input);
   }
 
   if (!student) {
     throw ApiError.notFound("No registered student account found with this email/ID.");
+  }
+
+  if (student._id.toString() === req.user._id.toString()) {
+    throw ApiError.badRequest("You cannot assign yourself as your own mentee. Please select a registered student account.");
+  }
+
+  if (student.role !== "student" || (student.mentees && student.mentees.length > 0)) {
+    throw ApiError.badRequest("Selected account is a faculty mentor or administrator. Only registered student candidates can be assigned.");
+  }
+
+  const nameLower = (student.name || "").toLowerCase();
+  const targetLower = (student.targetRole || student.profile?.targetRole || "").toLowerCase();
+  if (
+    nameLower.startsWith("dr.") ||
+    nameLower.startsWith("prof.") ||
+    nameLower.includes("mentor") ||
+    nameLower.includes("faculty") ||
+    targetLower.includes("mentor") ||
+    targetLower.includes("faculty") ||
+    targetLower.includes("admin")
+  ) {
+    throw ApiError.badRequest("Selected account is a faculty/mentor account and cannot be added as a mentee.");
   }
 
   student.assignedMentor = req.user._id;
@@ -677,7 +718,7 @@ const assignSuperDreamMentee = asyncHandler(async (req, res) => {
       name: student.name,
       email: student.email,
       avatar: resolveCandidateAvatar(student),
-      targetRole: student.targetRole || "Software Engineer",
+      targetRole: student.targetRole || student.profile?.targetRole || "Software Engineer",
     },
   }).send(res);
 });
@@ -733,6 +774,18 @@ const getAdminStudentSuperDream = asyncHandler(async (req, res) => {
   const studentUser = await User.findById(studentId).select("-password -refreshToken").lean();
   if (!studentUser) {
     throw ApiError.notFound("Student not found");
+  }
+
+  if (studentUser.role !== "student" || studentUser._id.toString() === req.user._id.toString()) {
+    throw ApiError.badRequest("Selected user profile is not a registered student candidate.");
+  }
+
+  const currentUser = await User.findById(req.user._id).select("mentees role").lean();
+  const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
+  const isMyMentee = menteeSet.has(studentUser._id.toString()) || studentUser.assignedMentor?.toString() === req.user._id.toString();
+
+  if (req.user.role !== "admin" && !isMyMentee) {
+    throw ApiError.forbidden("Access denied: You can only view Super Dream diagnostic portfolios of your assigned mentees.");
   }
 
   let sd = await SuperDream.findOne({ student: studentId }).lean();

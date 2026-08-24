@@ -1385,6 +1385,80 @@ const unblockStudentExamSession = asyncHandler(async (req, res) => {
   );
 });
 
+// ── ADMIN / MENTOR: MANUALLY DISQUALIFY / BLOCK CANDIDATE FROM EXAM ──────────
+const blockStudentExamSession = asyncHandler(async (req, res) => {
+  const { examId, studentId } = req.params;
+  const { reason } = req.body;
+
+  const student = await User.findById(studentId);
+  if (!student) {
+    throw new ApiError(404, "Student not found");
+  }
+
+  student.isProctoringBlocked = true;
+  student.proctoringBlockedAt = new Date();
+  await student.save();
+  invalidateUserCache(studentId);
+
+  // Update ExamSubmission to blocked
+  const sub = await ExamSubmission.findOne({ examId, userId: studentId });
+  if (sub) {
+    sub.isBlocked = true;
+    sub.status = "disqualified";
+    sub.blockedReason = reason || "Disqualified by mentor/proctor for violation";
+    sub.blockedAt = new Date();
+    await sub.save();
+  }
+
+  // Upsert proctoring violation record
+  await ProctoringViolation.findOneAndUpdate(
+    { userId: studentId, moduleId: examId },
+    {
+      $set: {
+        isBlocked: true,
+        violationCount: 3,
+        blockedAt: new Date(),
+      },
+      $push: {
+        events: {
+          violationType: "proctor_manual_disqualification",
+          detectedAt: new Date(),
+        },
+      },
+    },
+    { upsert: true, new: true }
+  );
+
+  // Send real-time notification to the student
+  try {
+    const notification = await Notification.create({
+      user: studentId,
+      type: "proctoring_blocked",
+      title: "Exam Disqualified / Blocked",
+      message: `Your exam session was disqualified by ${
+        req.user.name || "the proctor"
+      }. Reason: ${reason || "Proctoring integrity violation"}.`,
+      actionUrl: "/dashboard",
+      read: false,
+    });
+    notificationService.pushToOpenConnections(studentId, notification);
+  } catch (err) {
+    console.error("[Proctoring] Failed to send block notification:", err);
+  }
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        studentId,
+        examId,
+        isBlocked: true,
+      },
+      `${student.name} has been disqualified and blocked from this examination.`
+    )
+  );
+});
+
 module.exports = {
   createExam,
   getAdminExams,
@@ -1405,4 +1479,5 @@ module.exports = {
   reportStudentExamBlocked,
   getStudentExamBlockStatus,
   unblockStudentExamSession,
+  blockStudentExamSession,
 };

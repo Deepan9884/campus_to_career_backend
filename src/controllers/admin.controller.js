@@ -111,9 +111,24 @@ const getStudentsList = asyncHandler(async (req, res) => {
   const currentUser = await User.findById(req.user._id).select("mentees role").lean();
   const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
 
+  // Find all mentor and admin IDs to guarantee total exclusion from student list
+  const allMentorAccounts = await User.find({
+    $or: [
+      { role: { $in: ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD", "staff", "STAFF"] } },
+      { "mentees.0": { $exists: true } },
+    ],
+  }).select("_id").lean();
+  const allMentorIds = allMentorAccounts.map((m) => m._id);
+
+  const nonStudentRoles = ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD", "staff", "STAFF"];
+  const nonStudentRegex = /faculty|mentor|admin|professor|prof\.|dr\.|hod|staff/i;
+
   const baseConds = [
-    { _id: { $ne: req.user._id } },
-    { role: "student" },
+    { _id: { $ne: req.user._id, $nin: allMentorIds } },
+    { role: { $in: ["student", "STUDENT"], $nin: nonStudentRoles } },
+    { targetRole: { $not: nonStudentRegex } },
+    { "profile.targetRole": { $not: nonStudentRegex } },
+    { name: { $not: /^(dr\.|prof\.|professor|faculty|mentor|admin|hod)/i } },
   ];
 
   if (filter === "my-mentees" || !filter) {
@@ -205,6 +220,10 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
   const student = await User.findById(studentId).select("-password -refreshToken").lean();
   if (!student) {
     throw ApiError.notFound("Student not found");
+  }
+
+  if (student.role !== "student" || student._id.toString() === req.user._id.toString()) {
+    throw ApiError.badRequest("Selected user profile is not a registered student candidate.");
   }
 
   const currentUser = await User.findById(req.user._id).select("mentees role").lean();
@@ -544,12 +563,30 @@ const addMentee = asyncHandler(async (req, res) => {
     student = await User.findOne({ email: input.toLowerCase() });
   }
 
-  if (!student || student.role === "admin" || student.role === "mentor") {
-    throw ApiError.notFound("No student account found with this email. Only registered students can be added as mentees.");
+  if (!student || student.role !== "student") {
+    throw ApiError.notFound("No registered student account found with this email/ID. Only registered students can be added as mentees.");
   }
 
   if (student._id.toString() === req.user._id.toString()) {
     throw ApiError.badRequest("You cannot add yourself as your own mentee. Please select a registered student account.");
+  }
+
+  if (student.mentees && student.mentees.length > 0) {
+    throw ApiError.badRequest("Selected account is a faculty mentor with assigned mentees and cannot be added as a mentee.");
+  }
+
+  const nameLower = (student.name || "").toLowerCase();
+  const targetLower = (student.targetRole || student.profile?.targetRole || "").toLowerCase();
+  if (
+    nameLower.startsWith("dr.") ||
+    nameLower.startsWith("prof.") ||
+    nameLower.includes("mentor") ||
+    nameLower.includes("faculty") ||
+    targetLower.includes("mentor") ||
+    targetLower.includes("faculty") ||
+    targetLower.includes("admin")
+  ) {
+    throw ApiError.badRequest("Selected account is a faculty/mentor account and cannot be added as a mentee.");
   }
 
   const mentor = await User.findById(req.user._id);
