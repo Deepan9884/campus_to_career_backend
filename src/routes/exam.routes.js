@@ -22,6 +22,7 @@ const {
   getStudentExamBlockStatus,
   unblockStudentExamSession,
   blockStudentExamSession,
+  assignExamStudents,
 } = require("../controllers/exam.controller");
 
 const router = Router();
@@ -49,6 +50,11 @@ router.patch(
   "/admin/:examId/toggle-retakes",
   verifyRole(["admin", "mentor"]),
   toggleExamRetakes
+);
+router.patch(
+  "/admin/:examId/assign-students",
+  verifyRole(["admin", "mentor"]),
+  assignExamStudents
 );
 router.get(
   "/admin/:examId/results",

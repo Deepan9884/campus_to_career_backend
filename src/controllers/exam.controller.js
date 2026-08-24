@@ -717,38 +717,59 @@ Output ONLY valid JSON matching this schema:
   );
 });
 
+/**
+ * Strict authorization check: Verifies if a student is assigned to take an exam.
+ */
+function isStudentAuthorizedForExam(exam, studentId, user) {
+  if (!exam || !exam.isPublished || exam.status === "stopped") {
+    return false;
+  }
+  const studentIdStr = studentId ? studentId.toString() : "";
+
+  // 1. If assignedStudents is explicitly populated and non-empty:
+  if (Array.isArray(exam.assignedStudents) && exam.assignedStudents.length > 0) {
+    return exam.assignedStudents.some((id) => id && id.toString() === studentIdStr);
+  }
+
+  // 2. If targetAudience is "selected" or "batch" (and assignedStudents is empty):
+  if (exam.targetAudience === "selected" || exam.targetAudience === "batch") {
+    return false;
+  }
+
+  // 3. If targetAudience is "mentees":
+  if (exam.targetAudience === "mentees") {
+    const creatorIdStr = exam.createdBy ? exam.createdBy.toString() : "";
+    const studentMentorStr = user?.assignedMentor ? user.assignedMentor.toString() : "";
+    return Boolean(creatorIdStr && studentMentorStr && creatorIdStr === studentMentorStr);
+  }
+
+  // 4. Default: "all" (open to all students)
+  return exam.targetAudience === "all" || !exam.targetAudience;
+}
+
 // ── STUDENT: GET AVAILABLE EXAMS ─────────────────────────────────────────────
 const getStudentAvailableExams = asyncHandler(async (req, res) => {
   const studentId = req.user._id;
   const user = await User.findById(studentId).lean();
-
   const mentorId = user?.assignedMentor;
-  // Also find any mentors who have this student in their mentees roster or admins
-  const facultyUsers = await User.find({
-    $or: [
-      { _id: mentorId },
-      { mentees: studentId },
-      { role: "admin" },
-      { role: "mentor" },
-    ],
-  }).select("_id").lean();
-  const facultyIds = facultyUsers.map((f) => f._id);
 
-  // Find all published exams where:
-  // 1. targetAudience == 'all' or not specified
-  // 2. assignedStudents contains studentId
-  // 3. targetAudience == 'mentees' and created by admin/faculty mentor
+  // Build query to fetch only tests that land on this student:
   const query = {
     isPublished: { $ne: false },
+    status: { $ne: "stopped" },
     $or: [
-      { targetAudience: "all" },
-      { targetAudience: { $exists: false } },
-      { targetAudience: null },
-      { targetAudience: "" },
+      // 1. Explicitly assigned by batch / individual student selection
       { assignedStudents: studentId },
       { assignedStudents: studentId.toString() },
-      { targetAudience: "selected", assignedStudents: { $in: [studentId, studentId.toString()] } },
-      { targetAudience: "mentees", createdBy: { $in: facultyIds } },
+      // 2. Mentees cohort created by student's assigned mentor
+      ...(mentorId ? [{ targetAudience: "mentees", createdBy: mentorId }] : []),
+      // 3. Open to all students ONLY when no specific student list is assigned
+      {
+        $and: [
+          { $or: [{ targetAudience: "all" }, { targetAudience: { $exists: false } }, { targetAudience: null }, { targetAudience: "" }] },
+          { $or: [{ assignedStudents: { $size: 0 } }, { assignedStudents: { $exists: false } }, { assignedStudents: null }] },
+        ],
+      },
     ],
   };
 
@@ -829,6 +850,15 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
   const exam = await Exam.findById(examId).lean();
   if (!exam || !exam.isPublished) {
     throw new ApiError(404, "Exam not found or is inactive");
+  }
+
+  // Strictly enforce batch/student assignment authorization
+  const isAuthorized = isStudentAuthorizedForExam(exam, studentId, req.user);
+  if (!isAuthorized) {
+    throw new ApiError(
+      403,
+      "You are not assigned to this examination batch. Access is restricted to designated candidates."
+    );
   }
 
   // Check if exam was stopped by admin
@@ -968,6 +998,15 @@ const submitStudentExam = asyncHandler(async (req, res) => {
   const exam = await Exam.findById(examId).lean();
   if (!exam) {
     throw new ApiError(404, "Exam not found");
+  }
+
+  // Strictly enforce batch/student assignment authorization
+  const isAuthorized = isStudentAuthorizedForExam(exam, studentId, req.user);
+  if (!isAuthorized) {
+    throw new ApiError(
+      403,
+      "You are not authorized to submit responses for this examination batch."
+    );
   }
 
   // Strictly block duplicate submission if retakes are not allowed
@@ -1459,6 +1498,34 @@ const blockStudentExamSession = asyncHandler(async (req, res) => {
   );
 });
 
+// ── ADMIN: ASSIGN STUDENTS / BATCH TO EXAM ──────────────────────────────────
+const assignExamStudents = asyncHandler(async (req, res) => {
+  const { examId } = req.params;
+  const { targetAudience = "selected", assignedStudents = [] } = req.body;
+
+  const exam = await Exam.findById(examId);
+  if (!exam) {
+    throw new ApiError(404, "Exam not found");
+  }
+
+  exam.targetAudience = targetAudience;
+  exam.assignedStudents = Array.isArray(assignedStudents) ? assignedStudents : [];
+  await exam.save();
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        examId: exam._id,
+        targetAudience: exam.targetAudience,
+        assignedCount: exam.assignedStudents.length,
+        assignedStudents: exam.assignedStudents,
+      },
+      `Successfully assigned ${exam.assignedStudents.length} candidate(s) to exam batch.`
+    )
+  );
+});
+
 module.exports = {
   createExam,
   getAdminExams,
@@ -1480,4 +1547,5 @@ module.exports = {
   getStudentExamBlockStatus,
   unblockStudentExamSession,
   blockStudentExamSession,
+  assignExamStudents,
 };
