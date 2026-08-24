@@ -1,6 +1,8 @@
 const { Router } = require("express");
+const rateLimit = require("express-rate-limit");
 const verifyJWT = require("../middleware/auth.middleware");
 const verifyRole = require("../middleware/role.middleware");
+const checkProctoringBlock = require("../middleware/proctoringBlock.middleware");
 const {
   createExam,
   getAdminExams,
@@ -26,6 +28,30 @@ const {
 } = require("../controllers/exam.controller");
 
 const router = Router();
+
+const examSubmitLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  message: {
+    success: false,
+    message: "Too many submission attempts, please wait a moment",
+  },
+});
+
+const reportBlockedLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  message: {
+    success: false,
+    message: "Too many status report requests",
+  },
+});
 
 // Protect all exam routes with authentication
 router.use(verifyJWT);
@@ -90,9 +116,9 @@ router.post(
 // ── STUDENT ROUTES ──────────────────────────────────────────────────────────
 router.get("/student/available", getStudentAvailableExams);
 router.get("/student/my-results", getStudentMyResults);
-router.get("/student/:examId", getStudentExamForTaking);
+router.get("/student/:examId", checkProctoringBlock, getStudentExamForTaking);
 router.get("/student/:examId/block-status", getStudentExamBlockStatus);
-router.post("/student/:examId/report-blocked", reportStudentExamBlocked);
-router.post("/student/:examId/submit", submitStudentExam);
+router.post("/student/:examId/report-blocked", reportBlockedLimiter, reportStudentExamBlocked);
+router.post("/student/:examId/submit", checkProctoringBlock, examSubmitLimiter, submitStudentExam);
 
 module.exports = router;

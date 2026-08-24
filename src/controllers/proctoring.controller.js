@@ -1,4 +1,5 @@
 const ProctoringViolation = require("../models/ProctoringViolation.model");
+const ExamSubmission = require("../models/ExamSubmission.model");
 const User = require("../models/User.model");
 const Notification = require("../models/Notification.model");
 const asyncHandler = require("../utils/asyncHandler");
@@ -21,7 +22,7 @@ const reportViolation = asyncHandler(async (req, res) => {
     throw ApiError.badRequest("moduleType, moduleId, and violationType are required");
   }
 
-  const allowedModuleTypes = ["quiz", "interview"];
+  const allowedModuleTypes = ["quiz", "interview", "exam"];
   const allowedViolationTypes = [
     "mobile_phone_detected",
     "face_not_detected",
@@ -88,6 +89,27 @@ const reportViolation = asyncHandler(async (req, res) => {
       proctoringBlockedAt: new Date(),
     });
     invalidateUserCache(req.user._id);
+
+    // Synchronize ExamSubmission if candidate is taking an exam
+    try {
+      await ExamSubmission.findOneAndUpdate(
+        { userId: req.user._id, examId: moduleId },
+        {
+          $set: {
+            isBlocked: true,
+            status: "disqualified",
+            blockedReason: isFullscreenTimeout
+              ? "Exited fullscreen and failed to return within 15 seconds"
+              : "Exceeded maximum anti-cheat proctoring violations limit (3 strikes)",
+            blockedAt: new Date(),
+            violationsCount: record.violationCount,
+            proctoringIntegrity: 0,
+          },
+        }
+      );
+    } catch (examSubErr) {
+      console.error("[Proctoring] Failed to sync ExamSubmission status:", examSubErr);
+    }
 
     // Notify the student
     try {

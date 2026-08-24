@@ -17,6 +17,7 @@ const {
   PRE_DEVELOPED_CODING_BANK,
 } = require("../services/questionBank.service");
 const { generateContent } = require("../services/ai.service");
+const compilerService = require("../services/compiler.service");
 
 /**
  * Recalculate ranks for all submissions of an exam
@@ -1024,6 +1025,31 @@ const submitStudentExam = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Exam not found");
   }
 
+  // Check if exam is stopped or unpublished
+  if (exam.status === "stopped" || (!exam.isPublished && exam.status !== "active")) {
+    throw new ApiError(
+      403,
+      "This examination has been concluded by the faculty/administrator."
+    );
+  }
+
+  // Check scheduled window expiration
+  if (exam.isScheduled) {
+    const now = new Date();
+    const effectiveEndTime = exam.scheduledEndTime
+      ? new Date(exam.scheduledEndTime)
+      : exam.scheduledStartTime
+      ? new Date(new Date(exam.scheduledStartTime).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
+      : null;
+    // Allow a 5-minute network tolerance window
+    if (effectiveEndTime && now.getTime() > effectiveEndTime.getTime() + 5 * 60 * 1000) {
+      throw new ApiError(
+        403,
+        "The submission window for this scheduled examination has expired."
+      );
+    }
+  }
+
   // Strictly enforce batch/student assignment authorization
   const isAuthorized = isStudentAuthorizedForExam(exam, studentId, req.user);
   if (!isAuthorized) {
@@ -1033,13 +1059,34 @@ const submitStudentExam = asyncHandler(async (req, res) => {
     );
   }
 
-  // Strictly block duplicate submission if retakes are not allowed
+  // Check existing submission
   const existingSub = await ExamSubmission.findOne({
     examId,
     userId: studentId,
   });
 
-  if (existingSub && !exam.allowRetakes) {
+  // Check if student is blocked/disqualified in database
+  const dbViolation = await ProctoringViolation.findOne({
+    userId: studentId,
+    moduleId: examId,
+  }).lean();
+
+  const isUserBlocked = Boolean(
+    req.user.isProctoringBlocked ||
+    existingSub?.isBlocked ||
+    dbViolation?.isBlocked ||
+    (dbViolation && dbViolation.violationCount >= 3)
+  );
+
+  if (isUserBlocked) {
+    throw new ApiError(
+      403,
+      "Your exam access is locked due to proctoring policy violations. Submissions are not permitted."
+    );
+  }
+
+  // Strictly block duplicate submission if retakes are not allowed
+  if (existingSub && !exam.allowRetakes && (existingSub.status === "submitted" || existingSub.status === "evaluated")) {
     throw new ApiError(
       403,
       "You have already submitted this examination. Retakes are not permitted."
@@ -1057,13 +1104,13 @@ const submitStudentExam = asyncHandler(async (req, res) => {
   const questionScores = [];
   const sectionScores = [];
 
-  // Evaluate each section
-  exam.sections.forEach((sec) => {
+  // Evaluate each section (with server-side test case execution for coding questions)
+  for (const sec of (exam.sections || [])) {
     let sectionScore = 0;
     let sectionMax = 0;
 
     if (sec.type === "mcq") {
-      sec.mcqQuestions?.forEach((q) => {
+      (sec.mcqQuestions || []).forEach((q) => {
         const qMax = Number(q.positiveMarks) || 1;
         sectionMax += qMax;
         maxPossibleMarks += qMax;
@@ -1078,7 +1125,7 @@ const submitStudentExam = asyncHandler(async (req, res) => {
           if (!isNaN(parsed)) selectedIdx = parsed;
           else {
             // Check matching option text
-            selectedIdx = q.options.findIndex((opt) => opt === rawAns);
+            selectedIdx = (q.options || []).findIndex((opt) => opt === rawAns);
           }
         }
 
@@ -1096,7 +1143,7 @@ const submitStudentExam = asyncHandler(async (req, res) => {
           questionId: q.questionId,
           questionTitle: q.question.slice(0, 80),
           type: "mcq",
-          userAnswer: selectedIdx !== -1 ? q.options[selectedIdx] || String(selectedIdx) : "Not Answered",
+          userAnswer: selectedIdx !== -1 ? (q.options || [])[selectedIdx] || String(selectedIdx) : "Not Answered",
           selectedOptionIndex: selectedIdx,
           correctOptionIndex: q.correctOptionIndex,
           isCorrect,
@@ -1106,14 +1153,35 @@ const submitStudentExam = asyncHandler(async (req, res) => {
         });
       });
     } else if (sec.type === "coding") {
-      sec.codingQuestions?.forEach((c) => {
+      for (const c of (sec.codingQuestions || [])) {
         const cMax = Number(c.marks) || 10;
         sectionMax += cMax;
         maxPossibleMarks += cMax;
 
-        const exec = codingResults[c.id] || {};
-        const passedTests = Number(exec.passedCount) || 0;
-        const totalTests = Number(exec.totalCount) || (c.testCases?.length || 1);
+        const candidateCode = (answers[c.id] || "").trim();
+        let passedTests = 0;
+        let totalTests = c.testCases?.length || 1;
+        let execTimeMs = 0;
+
+        // Anti-Cheat: Evaluate candidate code against test cases directly on the server
+        if (candidateCode) {
+          try {
+            const execResult = await compilerService.executeCode({
+              code: candidateCode,
+              language: "python",
+              testCases: c.testCases || [],
+              questionText: c.problemStatement || c.title,
+            });
+            passedTests = Number(execResult.passedCount) || 0;
+            totalTests = Number(execResult.totalCount) || (c.testCases?.length || 1);
+            execTimeMs = execResult.testCaseResults?.[0]?.executionTimeMs || 0;
+          } catch (execErr) {
+            console.error(`[Exam Submission] Error executing candidate code for question ${c.id}:`, execErr);
+            const clientExec = codingResults[c.id] || {};
+            passedTests = Math.min(Number(clientExec.passedCount) || 0, totalTests);
+          }
+        }
+
         const ratio = totalTests > 0 ? passedTests / totalTests : 0;
         const awardedScore = Math.round(ratio * cMax);
         const isPassed = ratio >= 0.7 && passedTests > 0;
@@ -1123,16 +1191,16 @@ const submitStudentExam = asyncHandler(async (req, res) => {
           questionId: c.id,
           questionTitle: c.title,
           type: "coding",
-          userAnswer: answers[c.id] || "",
+          userAnswer: candidateCode,
           isCorrect: isPassed,
           score: awardedScore,
           maxMarks: cMax,
           testCasesPassed: passedTests,
           totalTestCases: totalTests,
-          executionTimeMs: exec.executionTimeMs || 0,
+          executionTimeMs: execTimeMs,
           feedback: `${passedTests}/${totalTests} test cases passed`,
         });
-      });
+      }
     }
 
     sectionScores.push({
@@ -1145,11 +1213,22 @@ const submitStudentExam = asyncHandler(async (req, res) => {
     });
 
     totalScore += Math.max(0, sectionScore);
-  });
+  }
 
   const finalPercentage =
     maxPossibleMarks > 0 ? Math.round((totalScore / maxPossibleMarks) * 100) : 0;
   const isPassed = finalPercentage >= (exam.passingScorePercentage || 60);
+
+  // Compute verified proctoring metrics
+  const verifiedViolationsCount = Math.max(
+    Number(violationsCount) || 0,
+    dbViolation?.violationCount || 0,
+    existingSub?.violationsCount || 0
+  );
+
+  const verifiedIntegrity = verifiedViolationsCount === 0
+    ? 100
+    : Math.max(0, Math.min(100, Math.round(100 - verifiedViolationsCount * 33.3)));
 
   // Save / Upsert submission
   const submission = await ExamSubmission.findOneAndUpdate(
@@ -1165,10 +1244,10 @@ const submitStudentExam = asyncHandler(async (req, res) => {
       maxScore: maxPossibleMarks || exam.totalMarks,
       percentage: finalPercentage,
       passed: isPassed,
-      durationSeconds: Number(durationSeconds) || 0,
-      proctoringIntegrity: Number(proctoringIntegrity) || 100,
-      violationsCount: Number(violationsCount) || 0,
-      violationDetails: Array.isArray(violationDetails) ? violationDetails : [],
+      durationSeconds: Math.max(0, Number(durationSeconds) || 0),
+      proctoringIntegrity: verifiedIntegrity,
+      violationsCount: verifiedViolationsCount,
+      violationDetails: Array.isArray(violationDetails) ? violationDetails : (dbViolation?.events || []),
       status: "submitted",
       submittedAt: new Date(),
     },
