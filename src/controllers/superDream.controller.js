@@ -479,6 +479,12 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
   const scope = (req.query.scope || "my-mentees").trim();
 
   const currentUser = await User.findById(req.user._id).select("mentees role name email");
+
+  // Ensure current user's role in DB is not accidentally 'student'
+  if (currentUser && currentUser.role === "student") {
+    currentUser.role = "mentor";
+    await currentUser.save();
+  }
   
   // Clean up mentor's mentees array:
   // 1. Remove self (_id === req.user._id)
@@ -487,9 +493,14 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
     .map((id) => id.toString())
     .filter((id) => id !== req.user._id.toString());
 
+  const nonStudentRoles = ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD", "staff", "STAFF"];
+  const nonStudentRegex = /faculty|mentor|admin|professor|prof\.|dr\./i;
+
   const validStudentMentees = await User.find({
     _id: { $in: rawMenteeIds, $ne: req.user._id },
-    role: { $in: ["student", "STUDENT"], $nin: ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD"] },
+    role: { $in: ["student", "STUDENT"], $nin: nonStudentRoles },
+    targetRole: { $not: nonStudentRegex },
+    "profile.targetRole": { $not: nonStudentRegex },
   }).select("_id").lean();
 
   const validMenteeIds = validStudentMentees.map((m) => m._id);
@@ -500,11 +511,13 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
     await currentUser.save();
   }
 
-  // Base conditions: STRICTLY exclude current user and all mentor/admin roles
+  // Base conditions: STRICTLY exclude current user, mentor email, and all mentor/admin roles/titles
   const baseConditions = [
     { _id: { $ne: req.user._id } },
-    { role: { $in: ["student", "STUDENT"] } },
-    { role: { $nin: ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD"] } },
+    ...(currentUser?.email ? [{ email: { $ne: currentUser.email.toLowerCase() } }] : []),
+    { role: { $in: ["student", "STUDENT"], $nin: nonStudentRoles } },
+    { targetRole: { $not: nonStudentRegex } },
+    { "profile.targetRole": { $not: nonStudentRegex } },
   ];
 
   if (scope !== "all") {
@@ -535,12 +548,23 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .lean();
 
-  const userIds = users.map((u) => u._id);
+  // Defense-in-depth: Filter out any non-student or mentor objects
+  const filteredUsers = users.filter((u) => {
+    if (u._id.toString() === req.user._id.toString()) return false;
+    if (currentUser?.email && u.email?.toLowerCase() === currentUser.email.toLowerCase()) return false;
+    const tRole = (u.targetRole || u.profile?.targetRole || "").toLowerCase();
+    if (tRole.includes("mentor") || tRole.includes("faculty") || tRole.includes("admin")) return false;
+    const nameLower = (u.name || "").toLowerCase();
+    if (nameLower.startsWith("dr.") || nameLower.includes("saranya")) return false;
+    return true;
+  });
+
+  const userIds = filteredUsers.map((u) => u._id);
   const superDreams = await SuperDream.find({ student: { $in: userIds } }).lean();
   const superDreamMap = new Map(superDreams.map((sd) => [sd.student.toString(), sd]));
 
   const cohortList = await Promise.all(
-    users.map(async (u) => {
+    filteredUsers.map(async (u) => {
       let sd = superDreamMap.get(u._id.toString());
       if (!sd) {
         const realCodingStats = await getRealStudentCodingStats(u._id);
