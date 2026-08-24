@@ -51,6 +51,9 @@ const createExam = asyncHandler(async (req, res) => {
     assignedStudents = [],
     sections = [],
     proctoringConfig,
+    isScheduled = false,
+    scheduledStartTime = null,
+    scheduledEndTime = null,
   } = req.body;
 
   if (!title || !examType || !sections || sections.length === 0) {
@@ -82,6 +85,18 @@ const createExam = asyncHandler(async (req, res) => {
     }
   });
 
+  const isScheduleActive = Boolean(isScheduled && scheduledStartTime);
+  const now = new Date();
+  let initialStatus = "active";
+  if (isScheduleActive) {
+    const startTimeDate = new Date(scheduledStartTime);
+    if (startTimeDate > now) {
+      initialStatus = "scheduled";
+    } else if (scheduledEndTime && new Date(scheduledEndTime) < now) {
+      initialStatus = "completed";
+    }
+  }
+
   const exam = await Exam.create({
     title,
     description,
@@ -103,6 +118,10 @@ const createExam = asyncHandler(async (req, res) => {
     },
     isResultDisclosed: false, // Default: Marks concealed from students
     isPublished: true,
+    isScheduled: Boolean(isScheduleActive),
+    scheduledStartTime: isScheduleActive ? new Date(scheduledStartTime) : null,
+    scheduledEndTime: isScheduled && scheduledEndTime ? new Date(scheduledEndTime) : null,
+    status: initialStatus,
     createdBy: req.user._id,
   });
 
@@ -113,11 +132,14 @@ const createExam = asyncHandler(async (req, res) => {
 
 // ── ADMIN: GET ALL EXAMS LIST ────────────────────────────────────────────────
 const getAdminExams = asyncHandler(async (req, res) => {
-  const { examType, search } = req.query;
+  const { examType, search, status } = req.query;
 
   const filter = {};
   if (examType && examType !== "all") {
     filter.examType = examType;
+  }
+  if (status && status !== "all") {
+    filter.status = status;
   }
   if (search) {
     filter.title = { $regex: search, $options: "i" };
@@ -127,6 +149,8 @@ const getAdminExams = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .populate("assignedStudents", "name email profile.registerNumber")
     .lean();
+
+  const now = new Date();
 
   // Aggregate submission stats for each exam
   const examIds = exams.map((e) => e._id);
@@ -153,14 +177,28 @@ const getAdminExams = asyncHandler(async (req, res) => {
     };
   });
 
-  const enrichedExams = exams.map((e) => ({
-    ...e,
-    stats: statsLookup[e._id.toString()] || {
-      totalSubmissions: 0,
-      avgScore: 0,
-      passedCount: 0,
-    },
-  }));
+  const enrichedExams = exams.map((e) => {
+    let computedStatus = e.status || "active";
+    if (computedStatus !== "stopped" && e.isScheduled) {
+      if (e.scheduledStartTime && new Date(e.scheduledStartTime) > now) {
+        computedStatus = "scheduled";
+      } else if (e.scheduledEndTime && new Date(e.scheduledEndTime) < now) {
+        computedStatus = "completed";
+      } else if (e.scheduledStartTime && new Date(e.scheduledStartTime) <= now) {
+        computedStatus = "active";
+      }
+    }
+
+    return {
+      ...e,
+      status: computedStatus,
+      stats: statsLookup[e._id.toString()] || {
+        totalSubmissions: 0,
+        avgScore: 0,
+        passedCount: 0,
+      },
+    };
+  });
 
   return res
     .status(200)
@@ -254,6 +292,156 @@ const toggleExamRetakes = asyncHandler(async (req, res) => {
         allowRetakes: exam.allowRetakes,
       },
       `Exam retakes are now ${exam.allowRetakes ? "PERMITTED" : "DISABLED"}`
+    )
+  );
+});
+
+// ── ADMIN: STOP EXAM IMMEDIATELY & FINALIZE / AUTO-GRADE SUBMISSIONS ────────
+const stopExam = asyncHandler(async (req, res) => {
+  const { examId } = req.params;
+
+  const exam = await Exam.findById(examId);
+  if (!exam) {
+    throw new ApiError(404, "Exam not found");
+  }
+
+  exam.status = "stopped";
+  exam.stoppedAt = new Date();
+  exam.stoppedBy = req.user._id;
+  exam.isPublished = false;
+  await exam.save();
+
+  // Find all in-progress or pending submissions for this exam and finalize scores
+  const inProgressSubmissions = await ExamSubmission.find({
+    examId,
+    status: { $in: ["in_progress", "disqualified", "blocked"] },
+  });
+
+  for (const sub of inProgressSubmissions) {
+    if (sub.status !== "submitted" && sub.status !== "evaluated") {
+      sub.status = "submitted";
+      sub.submittedAt = sub.submittedAt || new Date();
+      await sub.save();
+    }
+  }
+
+  // Recalculate ranks for all candidate submissions up to stoppage
+  await recalculateExamRanks(examId);
+
+  // Send real-time notification to any assigned students taking the exam
+  try {
+    const studentIds = await ExamSubmission.distinct("userId", { examId });
+    for (const sid of studentIds) {
+      const notif = await Notification.create({
+        user: sid,
+        type: "exam_stopped",
+        title: "Assessment Concluded",
+        message: `The examination '${exam.title}' has been concluded by the faculty/administrator. Your results have been calculated up to the stoppage point.`,
+        actionUrl: "/tests",
+        read: false,
+      });
+      notificationService.pushToOpenConnections(sid, notif);
+    }
+  } catch (err) {
+    console.error("[Exam] Failed to broadcast stop notification:", err);
+  }
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        examId: exam._id,
+        status: "stopped",
+        stoppedAt: exam.stoppedAt,
+        finalizedSubmissionsCount: inProgressSubmissions.length,
+      },
+      `Exam '${exam.title}' stopped successfully. All candidate results have been evaluated up to the stoppage time.`
+    )
+  );
+});
+
+// ── ADMIN: GET ACTIVE EXAMS WITH LIVE TAKERS (GROUPED BY EXAM) ───────────────
+const getActiveExamsWithLiveTakers = asyncHandler(async (_req, res) => {
+  const activeExams = await Exam.find({
+    status: { $in: ["active", "scheduled"] },
+    isPublished: true,
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const activeExamIds = activeExams.map((e) => e._id);
+
+  // Find all recent submissions or active takers for these exams
+  const recentSubmissions = await ExamSubmission.find({
+    examId: { $in: activeExamIds },
+  })
+    .populate("userId", "name email avatar targetRole isProctoringBlocked proctoringBlockedAt profile")
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  const groupedMap = new Map();
+  activeExams.forEach((e) => {
+    groupedMap.set(e._id.toString(), {
+      examId: e._id,
+      title: e.title,
+      examType: e.examType,
+      category: e.category,
+      difficulty: e.difficulty,
+      durationMinutes: e.durationMinutes,
+      totalMarks: e.totalMarks,
+      status: e.status,
+      isScheduled: e.isScheduled,
+      scheduledStartTime: e.scheduledStartTime,
+      scheduledEndTime: e.scheduledEndTime,
+      activeCandidates: [],
+      totalCandidates: 0,
+      blockedCount: 0,
+      warningCount: 0,
+    });
+  });
+
+  recentSubmissions.forEach((sub) => {
+    const examGroup = groupedMap.get(sub.examId.toString());
+    if (examGroup) {
+      const user = sub.userId || {};
+      const isBlocked = Boolean(user.isProctoringBlocked || sub.isBlocked);
+      const isWarning = !isBlocked && (sub.violationsCount || 0) > 0;
+
+      examGroup.totalCandidates += 1;
+      if (isBlocked) examGroup.blockedCount += 1;
+      if (isWarning) examGroup.warningCount += 1;
+
+      examGroup.activeCandidates.push({
+        submissionId: sub._id,
+        studentId: user._id || sub.userId,
+        name: sub.studentName || user.name || "Student",
+        email: sub.studentEmail || user.email || "",
+        avatar: user.avatar || sub.studentAvatar || "",
+        registerNumber: sub.registerNumber || user.profile?.registerNumber || "N/A",
+        targetRole: user.targetRole || "Candidate",
+        status: isBlocked ? "blocked" : isWarning ? "warning" : sub.status || "in_progress",
+        violationsCount: sub.violationsCount || 0,
+        violationDetails: sub.violationDetails || [],
+        proctoringIntegrity: sub.proctoringIntegrity || 100,
+        totalScore: sub.totalScore || 0,
+        durationSeconds: sub.durationSeconds || 0,
+        submittedAt: sub.submittedAt,
+        updatedAt: sub.updatedAt,
+      });
+    }
+  });
+
+  const groupedList = Array.from(groupedMap.values());
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        totalActiveExams: activeExams.length,
+        totalActiveCandidates: recentSubmissions.length,
+        exams: groupedList,
+      },
+      "Live exam takers retrieved successfully"
     )
   );
 });
@@ -585,23 +773,48 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
     };
   });
 
-  const studentExams = exams.map((exam) => ({
-    _id: exam._id,
-    title: exam.title,
-    description: exam.description,
-    examType: exam.examType,
-    category: exam.category,
-    difficulty: exam.difficulty,
-    durationMinutes: exam.durationMinutes,
-    totalMarks: exam.totalMarks,
-    passingScorePercentage: exam.passingScorePercentage,
-    sectionsCount: exam.sections?.length || 0,
-    proctoringConfig: exam.proctoringConfig,
-    isResultDisclosed: exam.isResultDisclosed,
-    allowRetakes: Boolean(exam.allowRetakes), // Only true if explicitly enabled by admin
-    hasAttempted: Boolean(subMap[exam._id.toString()]),
-    submissionStatus: subMap[exam._id.toString()] || null,
-  }));
+  const now = new Date();
+
+  const studentExams = exams.map((exam) => {
+    let computedStatus = exam.status || "active";
+    if (computedStatus !== "stopped" && exam.isScheduled) {
+      if (exam.scheduledStartTime && new Date(exam.scheduledStartTime) > now) {
+        computedStatus = "scheduled";
+      } else if (exam.scheduledEndTime && new Date(exam.scheduledEndTime) < now) {
+        computedStatus = "completed";
+      } else if (exam.scheduledStartTime && new Date(exam.scheduledStartTime) <= now) {
+        computedStatus = "active";
+      }
+    }
+
+    const hasAttempted = Boolean(subMap[exam._id.toString()]);
+    const canStart =
+      computedStatus === "active" &&
+      (!hasAttempted || Boolean(exam.allowRetakes));
+
+    return {
+      _id: exam._id,
+      title: exam.title,
+      description: exam.description,
+      examType: exam.examType,
+      category: exam.category,
+      difficulty: exam.difficulty,
+      durationMinutes: exam.durationMinutes,
+      totalMarks: exam.totalMarks,
+      passingScorePercentage: exam.passingScorePercentage,
+      sectionsCount: exam.sections?.length || 0,
+      proctoringConfig: exam.proctoringConfig,
+      isResultDisclosed: exam.isResultDisclosed,
+      allowRetakes: Boolean(exam.allowRetakes), // Only true if explicitly enabled by admin
+      isScheduled: Boolean(exam.isScheduled),
+      scheduledStartTime: exam.scheduledStartTime,
+      scheduledEndTime: exam.scheduledEndTime,
+      status: computedStatus,
+      canStart,
+      hasAttempted,
+      submissionStatus: subMap[exam._id.toString()] || null,
+    };
+  });
 
   return res
     .status(200)
@@ -616,6 +829,31 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
   const exam = await Exam.findById(examId).lean();
   if (!exam || !exam.isPublished) {
     throw new ApiError(404, "Exam not found or is inactive");
+  }
+
+  // Check if exam was stopped by admin
+  if (exam.status === "stopped") {
+    throw new ApiError(
+      403,
+      "This examination has been concluded by the faculty/administrator."
+    );
+  }
+
+  // Check if exam is scheduled and within window
+  if (exam.isScheduled) {
+    const now = new Date();
+    if (exam.scheduledStartTime && new Date(exam.scheduledStartTime) > now) {
+      throw new ApiError(
+        403,
+        `This assessment is scheduled to begin on ${new Date(exam.scheduledStartTime).toLocaleString()}. Please wait until the start time.`
+      );
+    }
+    if (exam.scheduledEndTime && new Date(exam.scheduledEndTime) < now) {
+      throw new ApiError(
+        403,
+        "The scheduled window for this examination has concluded."
+      );
+    }
   }
 
   // Check if student already has a submission record
@@ -1050,19 +1288,19 @@ const reportStudentExamBlocked = asyncHandler(async (req, res) => {
   );
 });
 
-// ── STUDENT: CHECK EXAM BLOCK / UNBLOCK STATUS ──────────────────────────────
+// ── STUDENT: CHECK EXAM BLOCK / UNBLOCK STATUS & STOPPED STATE ──────────────
 const getStudentExamBlockStatus = asyncHandler(async (req, res) => {
   const { examId } = req.params;
   const studentId = req.user._id;
 
-  const user = await User.findById(studentId)
-    .select("isProctoringBlocked name")
-    .lean();
-  const sub = await ExamSubmission.findOne({ examId, userId: studentId })
-    .select("isBlocked unblockedAt status blockedReason")
-    .lean();
+  const [user, sub, exam] = await Promise.all([
+    User.findById(studentId).select("isProctoringBlocked name").lean(),
+    ExamSubmission.findOne({ examId, userId: studentId }).select("isBlocked unblockedAt status blockedReason").lean(),
+    Exam.findById(examId).select("status isPublished").lean(),
+  ]);
 
   const isBlocked = Boolean(user?.isProctoringBlocked || sub?.isBlocked);
+  const isExamStopped = Boolean(exam?.status === "stopped" || (!exam?.isPublished && exam?.status !== "active"));
 
   return res.status(200).json(
     new ApiResponse(
@@ -1072,8 +1310,14 @@ const getStudentExamBlockStatus = asyncHandler(async (req, res) => {
         unblockedAt: sub?.unblockedAt,
         status: sub?.status,
         blockedReason: sub?.blockedReason,
+        examStatus: exam?.status || "active",
+        isExamStopped,
       },
-      isBlocked ? "Exam session is currently blocked" : "Exam session is authorized"
+      isBlocked
+        ? "Exam session is currently blocked"
+        : isExamStopped
+        ? "Assessment has been concluded by administrator"
+        : "Exam session is authorized"
     )
   );
 });
@@ -1148,6 +1392,8 @@ module.exports = {
   deleteExam,
   toggleResultDisclosure,
   toggleExamRetakes,
+  stopExam,
+  getActiveExamsWithLiveTakers,
   getExamResults,
   parseCodingLink,
   generateAiMcqs,

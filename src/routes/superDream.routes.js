@@ -6,6 +6,7 @@ const {
   syncMySuperDreamState,
   logSuperDreamMovement,
   getAdminSuperDreamCohort,
+  assignSuperDreamMentee,
   getAdminStudentSuperDream,
   mentorVerifyDeliverable,
   mentorSignoffEvaluation,
@@ -25,6 +26,7 @@ router.delete("/reset", resetMySuperDreamState);
 
 // Mentor / Admin protected routes
 router.get("/cohort", verifyRole(["admin", "mentor"]), getAdminSuperDreamCohort);
+router.post("/assign-mentee", verifyRole(["admin", "mentor"]), assignSuperDreamMentee);
 router.get("/student/:studentId", verifyRole(["admin", "mentor"]), getAdminStudentSuperDream);
 router.post("/student/:studentId/verify", verifyRole(["admin", "mentor"]), mentorVerifyDeliverable);
 router.post("/student/:studentId/signoff", verifyRole(["admin", "mentor"]), mentorSignoffEvaluation);

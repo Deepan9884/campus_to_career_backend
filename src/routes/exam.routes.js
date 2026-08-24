@@ -8,6 +8,8 @@ const {
   deleteExam,
   toggleResultDisclosure,
   toggleExamRetakes,
+  stopExam,
+  getActiveExamsWithLiveTakers,
   getExamResults,
   parseCodingLink,
   generateAiMcqs,
@@ -29,8 +31,14 @@ router.use(verifyJWT);
 // ── ADMIN & MENTOR ROUTES ──────────────────────────────────────────────────
 router.post("/admin/create", verifyRole(["admin", "mentor"]), createExam);
 router.get("/admin", verifyRole(["admin", "mentor"]), getAdminExams);
+router.get("/admin/live-takers", verifyRole(["admin", "mentor"]), getActiveExamsWithLiveTakers);
 router.get("/admin/:examId", verifyRole(["admin", "mentor"]), getAdminExamDetail);
 router.delete("/admin/:examId", verifyRole(["admin", "mentor"]), deleteExam);
+router.patch(
+  "/admin/:examId/stop",
+  verifyRole(["admin", "mentor"]),
+  stopExam
+);
 router.patch(
   "/admin/:examId/toggle-disclosure",
   verifyRole(["admin", "mentor"]),

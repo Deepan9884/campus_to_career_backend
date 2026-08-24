@@ -179,6 +179,34 @@ const examSchema = new mongoose.Schema(
       default: true,
       index: true,
     },
+    isScheduled: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    scheduledStartTime: {
+      type: Date,
+      default: null,
+    },
+    scheduledEndTime: {
+      type: Date,
+      default: null,
+    },
+    status: {
+      type: String,
+      enum: ["draft", "scheduled", "active", "completed", "stopped"],
+      default: "active",
+      index: true,
+    },
+    stoppedAt: {
+      type: Date,
+      default: null,
+    },
+    stoppedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

@@ -471,32 +471,53 @@ const logSuperDreamMovement = asyncHandler(async (req, res) => {
 
 /**
  * GET /api/super-dream/cohort
- * (Mentor / Admin) Retrieves all registered cohort students with their live Super Dream performance.
+ * (Mentor / Admin) Retrieves cohort students assigned to the logged-in mentor with their live Super Dream performance.
  */
 const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
   const search = (req.query.search || "").trim();
   const phaseFilter = req.query.phase;
+  const scope = (req.query.scope || "my-mentees").trim();
 
-  // Find all registered users who have a SuperDream record or are candidates/students
-  const superDreamStudentIds = await SuperDream.distinct("student");
-  const users = await User.find({
-    $or: [
-      { _id: { $in: superDreamStudentIds } },
-      { role: { $in: ["student", "STUDENT", "admin", "ADMIN"] } },
-      { role: { $nin: ["mentor", "MENTOR"] } },
-    ],
-    ...(search
-      ? {
+  const currentUser = await User.findById(req.user._id).select("mentees role name email").lean();
+  const menteeIds = (currentUser?.mentees || []).map((id) => id.toString());
+
+  // Strict Scoping: Only return assigned mentees for this mentor/admin by default
+  let userQuery = {};
+  if (scope === "my-mentees" || req.user.role === "mentor") {
+    userQuery = {
+      role: { $in: ["student", "STUDENT"] },
+      $or: [
+        { assignedMentor: req.user._id },
+        { _id: { $in: currentUser?.mentees || [] } },
+        ...(currentUser?.name ? [{ "profile.facultyMentor": new RegExp(currentUser.name, "i") }] : []),
+      ],
+    };
+  } else {
+    userQuery = {
+      role: { $in: ["student", "STUDENT"] },
+    };
+  }
+
+  if (search) {
+    const searchRegex = new RegExp(search, "i");
+    userQuery = {
+      $and: [
+        userQuery,
+        {
           $or: [
-            { name: new RegExp(search, "i") },
-            { email: new RegExp(search, "i") },
-            { targetRole: new RegExp(search, "i") },
-            { "profile.targetRole": new RegExp(search, "i") },
+            { name: searchRegex },
+            { email: searchRegex },
+            { targetRole: searchRegex },
+            { "profile.targetRole": searchRegex },
+            { "profile.registerNumber": searchRegex },
           ],
-        }
-      : {}),
-  })
-    .select("name email avatar targetRole profile githubUsername createdAt role")
+        },
+      ],
+    };
+  }
+
+  const users = await User.find(userQuery)
+    .select("name email avatar targetRole profile githubUsername createdAt role assignedMentor")
     .sort({ createdAt: -1 })
     .lean();
 
@@ -549,6 +570,8 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
         email: u.email,
         avatar: resolveCandidateAvatar(u),
         targetRole: u.targetRole || u.profile?.targetRole || sd?.checklist?.profile?.targetRole || "Software Engineer",
+        registerNumber: u.profile?.registerNumber || "N/A",
+        department: u.profile?.department || "Computer Science",
         readinessIndex: Math.round(readiness),
         tierName: tier,
         activePhase: phase,
@@ -560,6 +583,7 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
         lastActivityAt: sd?.lastActivityAt || u.createdAt,
         recentMovements,
         hasFullData: true,
+        isAssignedToMe: menteeIds.includes(u._id.toString()) || u.assignedMentor?.toString() === req.user._id.toString(),
       };
     })
   );
@@ -572,6 +596,51 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
     total: cohortList.length,
     filteredTotal: filtered.length,
     cohort: filtered,
+    mentorName: currentUser?.name || req.user.name,
+  }).send(res);
+});
+
+/**
+ * POST /api/super-dream/assign-mentee
+ * Assigns a registered student to the logged-in mentor's Super Dream and mentee cohort.
+ */
+const assignSuperDreamMentee = asyncHandler(async (req, res) => {
+  const { studentId, studentEmail } = req.body;
+  const input = (studentId || studentEmail || "").trim();
+
+  if (!input) {
+    throw ApiError.badRequest("Student ID or email is required");
+  }
+
+  let student = null;
+  if (input.includes("@")) {
+    student = await User.findOne({ email: input.toLowerCase(), role: "student" });
+  } else if (input.match(/^[0-9a-fA-F]{24}$/)) {
+    student = await User.findOne({ _id: input, role: "student" });
+  }
+
+  if (!student) {
+    throw ApiError.notFound("No registered student account found with this email/ID.");
+  }
+
+  student.assignedMentor = req.user._id;
+  if (!student.profile) student.profile = {};
+  student.profile.facultyMentor = req.user.name || "Faculty Mentor";
+  await student.save();
+
+  await User.findByIdAndUpdate(req.user._id, {
+    $addToSet: { mentees: student._id },
+  });
+
+  return ApiResponse.success({
+    message: `${student.name} (${student.email}) successfully assigned to your Super Dream roster!`,
+    student: {
+      id: student._id.toString(),
+      name: student.name,
+      email: student.email,
+      avatar: resolveCandidateAvatar(student),
+      targetRole: student.targetRole || "Software Engineer",
+    },
   }).send(res);
 });
 
@@ -917,6 +986,7 @@ module.exports = {
   syncMySuperDreamState,
   logSuperDreamMovement,
   getAdminSuperDreamCohort,
+  assignSuperDreamMentee,
   getAdminStudentSuperDream,
   mentorVerifyDeliverable,
   mentorSignoffEvaluation,
