@@ -79,6 +79,23 @@ function isSyntaxOrCompileError(stderr = "", lang = "") {
 }
 
 /**
+ * Check if the local host machine is missing the compiler / runtime executable
+ */
+function isHostCompilerMissing(stderr = "") {
+  if (!stderr) return false;
+  const lower = stderr.toLowerCase();
+  return (
+    lower.includes("not recognized as an internal or external command") ||
+    lower.includes("is not recognized as an operable program") ||
+    lower.includes("command not found") ||
+    lower.includes("enoent") ||
+    lower.includes("cannot find the path specified") ||
+    lower.includes("no such file or directory") ||
+    lower.includes("cannot spawn")
+  );
+}
+
+/**
  * Robust JSON parser for AI evaluator responses
  */
 function parseJsonSafely(raw) {
@@ -337,13 +354,15 @@ function runPython(code, input = "") {
       try {
         fs.rmSync(tempDir, { recursive: true, force: true });
       } catch {}
+      const isMissing = isHostCompilerMissing(err.message);
       resolve({
         stdout: "",
         stderr: err.message,
-        exitCode: 1,
+        exitCode: isMissing ? 127 : 1,
         executionTimeMs: Date.now() - startTime,
         timedOut: false,
         isCompileError: false,
+        hostCompilerMissing: isMissing,
       });
     });
   });
@@ -450,16 +469,18 @@ function runJava(code, input = "") {
       const rawCompileErr = compileStderr || compileErr?.message || "";
       if (compileErr || compileStderr) {
         const cleanErr = sanitizeStderr(rawCompileErr, tempDir, `${className}.java`);
+        const isMissing = isHostCompilerMissing(rawCompileErr);
         try {
           fs.rmSync(tempDir, { recursive: true, force: true });
         } catch {}
         return resolve({
           stdout: "",
           stderr: cleanErr,
-          exitCode: 1,
+          exitCode: isMissing ? 127 : 1,
           executionTimeMs: Date.now() - startTime,
-          compileError: true,
-          isCompileError: true,
+          compileError: !isMissing,
+          isCompileError: !isMissing,
+          hostCompilerMissing: isMissing,
         });
       }
 
@@ -548,16 +569,18 @@ function runCpp(code, input = "") {
       const rawCompileErr = compileStderr || compileErr?.message || "";
       if (compileErr || compileStderr) {
         const cleanErr = sanitizeStderr(rawCompileErr, tempDir, "solution.cpp");
+        const isMissing = isHostCompilerMissing(rawCompileErr);
         try {
           fs.rmSync(tempDir, { recursive: true, force: true });
         } catch {}
         return resolve({
           stdout: "",
           stderr: cleanErr,
-          exitCode: 1,
+          exitCode: isMissing ? 127 : 1,
           executionTimeMs: Date.now() - startTime,
-          compileError: true,
-          isCompileError: true,
+          compileError: !isMissing,
+          isCompileError: !isMissing,
+          hostCompilerMissing: isMissing,
         });
       }
 
@@ -825,6 +848,24 @@ async function executeCode({ code, language = "python", testCases = [], question
         }
         if (res.stdout) {
           overallStdout = res.stdout;
+        }
+
+        // If host compiler binary is missing on server, immediately delegate to AI sandbox runner!
+        if (res.hostCompilerMissing || isHostCompilerMissing(res.stderr)) {
+          console.info(`[CompilerService] Host binary for ${lang} not available. Delegating to AI execution sandbox.`);
+          const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
+          return {
+            success: aiResult.success ?? false,
+            isCompilationError: aiResult.isCompilationError ?? false,
+            compilationError: aiResult.compilationError ?? false,
+            isRuntimeError: aiResult.isRuntimeError ?? false,
+            language: lang,
+            stdout: aiResult.stdout || "",
+            stderr: aiResult.stderr || "",
+            passedCount: aiResult.passedCount ?? 0,
+            totalCount: aiResult.totalCount ?? defaultTestCases.length,
+            testCaseResults: aiResult.testCaseResults || [],
+          };
         }
 
         // If compilation / syntax error occurred on execution

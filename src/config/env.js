@@ -20,6 +20,7 @@ const env = {
   JWT_EXPIRES_IN: getVar("JWT_EXPIRES_IN") || "15m",
   JWT_REFRESH_EXPIRES_IN: getVar("JWT_REFRESH_EXPIRES_IN") || "7d",
   CLIENT_URL: getVar("CLIENT_URL") || "http://localhost:5173",
+  ADMIN_CLIENT_URL: getVar("ADMIN_CLIENT_URL") || "http://localhost:8081",
   GOOGLE_CLIENT_ID: getVar("GOOGLE_CLIENT_ID"),
   GEMINI_API_KEY: getVar("GEMINI_API_KEY", false) || getVar("GEMINI_API_KEYS", false),
   GEMINI_API_KEYS: (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "")
@@ -34,6 +35,9 @@ const env = {
     .filter(Boolean),
   GEMINI_MAX_RPM: parseInt(getVar("GEMINI_MAX_RPM") || "60", 10),
   GEMINI_MAX_RPD: parseInt(getVar("GEMINI_MAX_RPD") || "5000", 10),
+  NVIDIA_API_KEY: getVar("NVIDIA_API_KEY") || "",
+  NVIDIA_MODEL: getVar("NVIDIA_MODEL") || "nvidia/nemotron-3.5-lightning-30b-a3b",
+  NVIDIA_API_URL: getVar("NVIDIA_API_URL") || "https://integrate.api.nvidia.com/v1",
   GITHUB_TOKEN: getVar("GITHUB_TOKEN"),
   RESET_TOKEN_SECRET: getVar("RESET_TOKEN_SECRET", true),
   SMTP_HOST: getVar("SMTP_HOST"),

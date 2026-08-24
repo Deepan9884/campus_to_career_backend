@@ -6,38 +6,38 @@ const ApiResponse = require("../utils/ApiResponse");
 const updateProfile = asyncHandler(async (req, res) => {
   const update = {};
   
-  if (req.body.profile) {
-    if (req.body.profile.targetRole !== undefined) {
-      const val = (req.body.profile.targetRole || "").trim();
-      update["targetRole"] = val;
-      update["profile.targetRole"] = val;
-    }
-    if (req.body.profile.githubUsername !== undefined) {
-      const val = (req.body.profile.githubUsername || "").trim();
-      update["githubUsername"] = val;
-      update["profile.githubUsername"] = val;
-    }
-    if (req.body.profile.bio !== undefined) {
-      const val = (req.body.profile.bio || "").trim();
-      update["bio"] = val;
-      update["profile.bio"] = val;
-    }
-    if (req.body.profile.location !== undefined) {
-      const val = (req.body.profile.location || "").trim();
-      update["location"] = val;
-      update["profile.location"] = val;
+  const topAllowed = ["name", "avatar", "targetRole", "githubUsername", "bio", "location", "linkedinUrl"];
+  for (const key of topAllowed) {
+    if (req.body[key] !== undefined) {
+      const val = typeof req.body[key] === "string" ? req.body[key].trim() : req.body[key];
+      update[key] = val;
+      if (key === "targetRole" || key === "githubUsername" || key === "bio" || key === "location") {
+        update[`profile.${key}`] = val;
+      }
     }
   }
 
-  if (req.body.githubUsername !== undefined) {
-    const val = (req.body.githubUsername || "").trim();
-    update["githubUsername"] = val;
-    update["profile.githubUsername"] = val;
-  }
-  if (req.body.targetRole !== undefined) {
-    const val = (req.body.targetRole || "").trim();
-    update["targetRole"] = val;
-    update["profile.targetRole"] = val;
+  if (req.body.profile && typeof req.body.profile === "object") {
+    const profileFields = [
+      "githubUsername",
+      "targetRole",
+      "bio",
+      "location",
+      "registerNumber",
+      "department",
+      "batch",
+      "currentSemester",
+      "facultyMentor",
+    ];
+    for (const f of profileFields) {
+      if (req.body.profile[f] !== undefined) {
+        const val = typeof req.body.profile[f] === "string" ? req.body.profile[f].trim() : req.body.profile[f];
+        update[`profile.${f}`] = val;
+        if (f === "githubUsername" || f === "targetRole" || f === "bio" || f === "location") {
+          update[f] = val;
+        }
+      }
+    }
   }
 
   // If there's nothing to update, just return the current user

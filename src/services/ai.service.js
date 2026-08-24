@@ -1,6 +1,8 @@
 const { keyPool, defaultModel, modelFallbackList } = require("../config/gemini");
+const env = require("../config/env");
 const rateLimiter = require("./aiRateLimiter.service");
 const AIUsageLog = require("../models/AIUsageLog.model");
+const { callNemotron } = require("./nvidia.service");
 const crypto = require("crypto");
 const IORedis = require("ioredis");
 
@@ -324,7 +326,43 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
     }
   }
 
-  // Step 4: Universal Smart Contextual Fallback Engine
+  // Step 4: NVIDIA Nemotron High-Concurrency Fallback Engine
+  if (env.NVIDIA_API_KEY) {
+    try {
+      console.info(`[AI Engine] Gemini capacity reached/limited. Routing seamlessly to NVIDIA Nemotron (${env.NVIDIA_MODEL}) for feature: ${feature}`);
+      const nemotronResult = await callNemotron({
+        prompt,
+        responseSchema,
+        model: env.NVIDIA_MODEL,
+      });
+
+      if (nemotronResult.success && (nemotronResult.data || nemotronResult.raw)) {
+        // Save to cache (Redis / L1)
+        try {
+          await redis.setex(
+            cacheKey,
+            CACHE_TTL_SECONDS,
+            JSON.stringify({ data: nemotronResult.data, raw: nemotronResult.raw })
+          );
+        } catch {
+          l1Set(cacheKey, { success: true, data: nemotronResult.data, raw: nemotronResult.raw });
+        }
+
+        await logUsage({
+          ...resultMeta,
+          model: nemotronResult.model,
+          success: true,
+          tokensEstimate: nemotronResult.tokensEstimate || 150,
+        });
+
+        return nemotronResult;
+      }
+    } catch (nemotronErr) {
+      console.warn(`[AI Engine] NVIDIA Nemotron fallback encountered error: ${nemotronErr.message}`);
+    }
+  }
+
+  // Step 5: Universal Smart Contextual Fallback Engine
   // Ensures that under high concurrency, multi-user peak load, or API limits, the feature ALWAYS works seamlessly!
   console.warn(`[AI Engine] API limits/errors encountered (${lastError?.message}). Activating smart contextual intelligence for feature: ${feature}`);
   const fallbackData = generateContextualFallback(feature, prompt, responseSchema);

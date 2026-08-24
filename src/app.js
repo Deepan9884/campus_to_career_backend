@@ -51,14 +51,50 @@ app.use(
 );
 
 // --- CORS
-const corsOrigins =
-  env.NODE_ENV === "production"
-    ? [env.CLIENT_URL]
-    : [env.CLIENT_URL, "http://localhost:8080", "http://localhost:8081", "http://localhost:5173"];
+const getAllowedOrigins = () => {
+  const allowed = new Set([
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "http://localhost:8081",
+    "http://localhost:3000",
+  ]);
+
+  if (env.CLIENT_URL) {
+    env.CLIENT_URL.split(",").forEach((url) => {
+      const trimmed = url.trim().replace(/\/$/, "");
+      if (trimmed) allowed.add(trimmed);
+    });
+  }
+
+  if (env.ADMIN_CLIENT_URL) {
+    env.ADMIN_CLIENT_URL.split(",").forEach((url) => {
+      const trimmed = url.trim().replace(/\/$/, "");
+      if (trimmed) allowed.add(trimmed);
+    });
+  }
+
+  return Array.from(allowed);
+};
+
+const allowedOriginsList = getAllowedOrigins();
+
+const vercelDomainRegex = /^https:\/\/[a-zA-Z0-9_-]+\.vercel\.app$/;
 
 app.use(
   cors({
-    origin: corsOrigins,
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, curl, server-to-server)
+      if (!origin) return callback(null, true);
+      const normalizedOrigin = origin.replace(/\/$/, "");
+      if (
+        allowedOriginsList.includes(normalizedOrigin) ||
+        vercelDomainRegex.test(normalizedOrigin) ||
+        env.NODE_ENV !== "production"
+      ) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS policy does not allow access from origin ${origin}`));
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -95,7 +131,7 @@ if (env.NODE_ENV !== "test") {
 }
 
 // --- Health check (before API routes, no auth, no sensitive error leakage)
-app.get("/api/health", (_req, res) => {
+app.get(["/api/health", "/health"], (_req, res) => {
   const db = getDbStatus();
   if (db.state === "connected") {
     return res.status(200).json({
@@ -113,8 +149,9 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-// --- API routes
+// --- API routes (mounted at /api and root fallback for cross-client resilience)
 app.use("/api", routes);
+app.use("/", routes);
 
 // --- 404 & error boundary (must be last)
 app.use(notFoundHandler);

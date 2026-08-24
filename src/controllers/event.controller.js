@@ -1,5 +1,6 @@
 const path = require("path");
 const fs = require("fs");
+const mongoose = require("mongoose");
 const Event = require("../models/Event.model");
 const UserSkill = require("../models/UserSkill.model");
 const SkillGapAnalysis = require("../models/SkillGapAnalysis.model");
@@ -10,6 +11,61 @@ const ApiResponse = require("../utils/ApiResponse");
 const aiService = require("../services/ai.service");
 const { validateFileMagicBytes } = require("../utils/fileValidation");
 const { sanitizePromptInput } = require("../utils/promptSanitizer");
+
+/**
+ * Validates magic bytes of an in-memory buffer against allowed certificate extensions.
+ * @param {Buffer} buffer
+ * @param {string[]} allowedExtensions
+ * @returns {boolean}
+ */
+function validateBufferMagicBytes(buffer, allowedExtensions = []) {
+  if (!buffer || !Buffer.isBuffer(buffer) || buffer.length < 4) return false;
+  const isPdf = buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46; // %PDF
+  const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff; // ÿØÿ
+  const isPng = buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47; // ‰PNG
+  const isWebp =
+    buffer.length >= 12 &&
+    buffer.toString("ascii", 0, 4) === "RIFF" &&
+    buffer.toString("ascii", 8, 12) === "WEBP";
+
+  const exts = allowedExtensions.map((e) => e.toLowerCase());
+  if (isPdf && exts.includes(".pdf")) return true;
+  if (isJpeg && (exts.includes(".jpg") || exts.includes(".jpeg"))) return true;
+  if (isPng && exts.includes(".png")) return true;
+  if (isWebp && exts.includes(".webp")) return true;
+
+  if (allowedExtensions.length === 0) {
+    return isPdf || isJpeg || isPng || isWebp;
+  }
+  return false;
+}
+
+/**
+ * Upload an in-memory certificate file buffer to MongoDB GridFS.
+ * @param {Express.Multer.File} file
+ * @returns {Promise<string>} Uploaded GridFS file ObjectId string
+ */
+function uploadCertificateToGridFS(file) {
+  return new Promise((resolve, reject) => {
+    const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
+      bucketName: "certificates",
+    });
+    const safeName = file.originalname.replace(/[\0\r\n]/g, "");
+    const uploadStream = bucket.openUploadStream(safeName, {
+      contentType: file.mimetype || "application/octet-stream",
+    });
+
+    uploadStream.on("finish", () => {
+      resolve(uploadStream.id.toString());
+    });
+
+    uploadStream.on("error", (err) => {
+      reject(err);
+    });
+
+    uploadStream.end(file.buffer);
+  });
+}
 
 /**
  * Task 2 — techStack → UserSkill auto-upsert (silent)
@@ -132,11 +188,8 @@ const createEvent = asyncHandler(async (req, res) => {
   }
 
   const ext = path.extname(req.file.originalname).toLowerCase();
-  if (!validateFileMagicBytes(req.file.path, [".pdf", ".jpg", ".jpeg", ".png"])) {
-    try {
-      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-    } catch {}
-    throw ApiError.badRequest("Invalid file format. The file content does not match a valid PDF, JPG, or PNG document.");
+  if (!validateBufferMagicBytes(req.file.buffer, [".pdf", ".jpg", ".jpeg", ".png", ".webp"])) {
+    throw ApiError.badRequest("Invalid file format. The file content does not match a valid PDF, JPG, PNG, or WEBP document.");
   }
 
   const {
@@ -174,7 +227,7 @@ const createEvent = asyncHandler(async (req, res) => {
   const parsedPortfolio = parsePortfolio(portfolio);
   const parsedSkillImpact = parseSkillImpact(skillImpact);
 
-  const relativeCertPath = `uploads/certificates/${req.file.filename}`;
+  const certificateUrl = await uploadCertificateToGridFS(req.file);
 
   const event = await Event.create({
     user: req.user._id,
@@ -195,7 +248,7 @@ const createEvent = asyncHandler(async (req, res) => {
     description,
     result,
     prize,
-    certificateUrl: relativeCertPath,
+    certificateUrl,
     projectLink,
     socialPostLink,
     reflection: parsedReflection,
@@ -318,19 +371,29 @@ const updateEvent = asyncHandler(async (req, res) => {
   // Handle new certificate upload
   if (req.file) {
     const ext = path.extname(req.file.originalname).toLowerCase();
-    if (!validateFileMagicBytes(req.file.path, [".pdf", ".jpg", ".jpeg", ".png"])) {
-      try {
-        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-      } catch {}
-      throw ApiError.badRequest("Invalid file format. The file content does not match a valid PDF, JPG, or PNG document.");
+    if (!validateBufferMagicBytes(req.file.buffer, [".pdf", ".jpg", ".jpeg", ".png", ".webp"])) {
+      throw ApiError.badRequest("Invalid file format. The file content does not match a valid PDF, JPG, PNG, or WEBP document.");
     }
 
-    const oldCertPath = event.certificateUrl;
-    if (oldCertPath) {
-      const fullOldPath = path.join(__dirname, "../../", oldCertPath);
-      fs.unlink(fullOldPath, () => {});
+    const oldCert = event.certificateUrl;
+    const newCertId = await uploadCertificateToGridFS(req.file);
+    event.certificateUrl = newCertId;
+
+    if (oldCert && /^[0-9a-fA-F]{24}$/.test(oldCert)) {
+      try {
+        const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
+          bucketName: "certificates",
+        });
+        await bucket.delete(new mongoose.Types.ObjectId(oldCert));
+      } catch (delErr) {
+        console.error("[events] Failed to delete old GridFS certificate:", delErr.message);
+      }
+    } else if (oldCert) {
+      try {
+        const fullOldPath = path.join(__dirname, "../../", oldCert);
+        if (fs.existsSync(fullOldPath)) fs.unlink(fullOldPath, () => {});
+      } catch {}
     }
-    event.certificateUrl = `uploads/certificates/${req.file.filename}`;
   }
 
   if (eventName !== undefined) event.eventName = eventName;
@@ -395,10 +458,23 @@ const deleteEvent = asyncHandler(async (req, res) => {
     throw ApiError.notFound("Event not found");
   }
 
-  // Delete certificate file from disk if present
+  // Delete certificate file from GridFS or disk if present
   if (event.certificateUrl) {
-    const fullPath = path.join(__dirname, "../../", event.certificateUrl);
-    fs.unlink(fullPath, () => {});
+    if (/^[0-9a-fA-F]{24}$/.test(event.certificateUrl)) {
+      try {
+        const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
+          bucketName: "certificates",
+        });
+        await bucket.delete(new mongoose.Types.ObjectId(event.certificateUrl));
+      } catch (delErr) {
+        console.error("[events] Failed to delete GridFS certificate on event delete:", delErr.message);
+      }
+    } else {
+      try {
+        const fullPath = path.join(__dirname, "../../", event.certificateUrl);
+        if (fs.existsSync(fullPath)) fs.unlink(fullPath, () => {});
+      } catch {}
+    }
   }
 
   await Event.findByIdAndDelete(req.params.id);
@@ -840,6 +916,36 @@ const getEventCertificate = asyncHandler(async (req, res) => {
     throw ApiError.forbidden("Access denied: You do not have permission to view this certificate");
   }
 
+  // Branch 1: GridFS file (24-character hex ObjectId)
+  if (/^[0-9a-fA-F]{24}$/.test(event.certificateUrl)) {
+    const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
+      bucketName: "certificates",
+    });
+    const fileObjectId = new mongoose.Types.ObjectId(event.certificateUrl);
+    const files = await bucket.find({ _id: fileObjectId }).toArray();
+
+    if (!files || files.length === 0) {
+      throw ApiError.notFound("Certificate file not found on server");
+    }
+
+    const fileDoc = files[0];
+    res.setHeader("Content-Type", fileDoc.contentType || "application/octet-stream");
+    if (fileDoc.filename) {
+      res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(fileDoc.filename)}"`);
+    }
+
+    const downloadStream = bucket.openDownloadStream(fileObjectId);
+    downloadStream.on("error", (err) => {
+      console.error("[events] GridFS certificate download stream error:", err);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, message: "Error streaming certificate file" });
+      }
+    });
+
+    return downloadStream.pipe(res);
+  }
+
+  // Branch 2: Legacy disk-based fallback
   const baseUploadDir = path.resolve(__dirname, "../../uploads/certificates");
   const certFilename = path.basename(event.certificateUrl);
   const resolvedPath = path.join(baseUploadDir, certFilename);

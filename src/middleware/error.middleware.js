@@ -9,8 +9,8 @@ const notFoundHandler = (req, res) => {
 };
 
 const errorHandler = (err, _req, res, _next) => {
-  // ApiError instances
-  if (err instanceof ApiError) {
+  // ApiError instances or any error with statusCode
+  if (err instanceof ApiError || (err && typeof err.statusCode === "number")) {
     const response = {
       success: false,
       message: err.message,

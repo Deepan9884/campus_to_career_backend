@@ -54,7 +54,12 @@ const userSchema = new mongoose.Schema(
       targetRole: { type: String },
       githubUsername: { type: String },
       bio: { type: String },
-      location: { type: String }
+      location: { type: String },
+      registerNumber: { type: String, default: "" },
+      department: { type: String, default: "" },
+      batch: { type: String, default: "" },
+      currentSemester: { type: String, default: "" },
+      facultyMentor: { type: String, default: "" },
     },
     linkedinUrl: { type: String, default: "" },
     bio: { type: String, maxlength: 500, default: "" },

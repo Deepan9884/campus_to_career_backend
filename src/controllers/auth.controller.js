@@ -10,6 +10,7 @@ const Resume = require("../models/Resume.model");
 const InterviewSession = require("../models/InterviewSession.model");
 const SkillGapAnalysis = require("../models/SkillGapAnalysis.model");
 const AIUsageLog = require("../models/AIUsageLog.model");
+const SuperDream = require("../models/SuperDream.model");
 
 const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
@@ -74,13 +75,13 @@ function getCookieValue(req, name) {
   return undefined;
 }
 
-/** Set the httpOnly `` SameSite='strict' refreshToken cookie. */
+/** Set the httpOnly refreshToken cookie with cross-origin support for production. */
 function setRefreshTokenCookie(res, token) {
   const maxAge = parseDurationToMs(env.JWT_REFRESH_EXPIRES_IN);
   res.cookie("refreshToken", token, {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
-    sameSite: "strict",
+    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
     maxAge,
   });
 }
@@ -406,7 +407,7 @@ const logout = asyncHandler(async (req, _res) => {
   _res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
-    sameSite: "strict",
+    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
   });
 
   return ApiResponse.success(null, "Logged out").send(_res);
@@ -471,7 +472,20 @@ const getMe = asyncHandler(async (req, res) => {
 const updateProfile = asyncHandler(async (req, res) => {
   // Allow only these fields — anything else is silently ignored.
   // Email and password must never be updated through this endpoint.
-  const allowed = ["name", "targetRole", "githubUsername", "linkedinUrl", "bio", "location", "avatar"];
+  const allowed = [
+    "name",
+    "targetRole",
+    "githubUsername",
+    "linkedinUrl",
+    "bio",
+    "location",
+    "avatar",
+    "registerNumber",
+    "department",
+    "batch",
+    "currentSemester",
+    "facultyMentor",
+  ];
   const update = {};
   for (const key of allowed) {
     if (req.body[key] !== undefined) {
@@ -499,25 +513,25 @@ const updateProfile = asyncHandler(async (req, res) => {
     update["profile.location"] = val;
   }
   if (req.body.profile && typeof req.body.profile === "object") {
-    if (req.body.profile.githubUsername !== undefined) {
-      const val = (req.body.profile.githubUsername || "").trim();
-      update["githubUsername"] = val;
-      update["profile.githubUsername"] = val;
-    }
-    if (req.body.profile.targetRole !== undefined) {
-      const val = (req.body.profile.targetRole || "").trim();
-      update["targetRole"] = val;
-      update["profile.targetRole"] = val;
-    }
-    if (req.body.profile.bio !== undefined) {
-      const val = (req.body.profile.bio || "").trim();
-      update["bio"] = val;
-      update["profile.bio"] = val;
-    }
-    if (req.body.profile.location !== undefined) {
-      const val = (req.body.profile.location || "").trim();
-      update["location"] = val;
-      update["profile.location"] = val;
+    const profileFields = [
+      "githubUsername",
+      "targetRole",
+      "bio",
+      "location",
+      "registerNumber",
+      "department",
+      "batch",
+      "currentSemester",
+      "facultyMentor",
+    ];
+    for (const f of profileFields) {
+      if (req.body.profile[f] !== undefined) {
+        const val = typeof req.body.profile[f] === "string" ? req.body.profile[f].trim() : req.body.profile[f];
+        update[`profile.${f}`] = val;
+        if (f === "githubUsername" || f === "targetRole") {
+          update[f] = val;
+        }
+      }
     }
   }
   if (req.body.preferences && typeof req.body.preferences === "object") {
@@ -547,6 +561,35 @@ const updateProfile = asyncHandler(async (req, res) => {
 
   if (!user) {
     throw ApiError.notFound("User not found");
+  }
+
+  // Two-way synchronization: update SuperDream profile if record exists
+  try {
+    const sdUpdate = {};
+    if (user.name) sdUpdate["checklist.profile.name"] = user.name;
+    if (user.targetRole || user.profile?.targetRole) {
+      sdUpdate["checklist.profile.targetRole"] = user.targetRole || user.profile?.targetRole;
+    }
+    if (user.profile?.registerNumber !== undefined) {
+      sdUpdate["checklist.profile.registerNumber"] = user.profile.registerNumber;
+    }
+    if (user.profile?.department !== undefined) {
+      sdUpdate["checklist.profile.department"] = user.profile.department;
+    }
+    if (user.profile?.batch !== undefined) {
+      sdUpdate["checklist.profile.batch"] = user.profile.batch;
+    }
+    if (user.profile?.currentSemester !== undefined) {
+      sdUpdate["checklist.profile.currentSemester"] = user.profile.currentSemester;
+    }
+    if (user.profile?.facultyMentor !== undefined) {
+      sdUpdate["checklist.profile.facultyMentor"] = user.profile.facultyMentor;
+    }
+    if (Object.keys(sdUpdate).length > 0) {
+      await SuperDream.findOneAndUpdate({ student: user._id }, { $set: sdUpdate });
+    }
+  } catch (err) {
+    console.error("Non-fatal: failed to sync profile to SuperDream:", err.message);
   }
 
   return ApiResponse.success(user).send(res);
@@ -700,7 +743,7 @@ const logoutAll = asyncHandler(async (req, res) => {
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
-    sameSite: "strict",
+    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
   });
   return ApiResponse.success(null, "Logged out of all sessions").send(res);
 });

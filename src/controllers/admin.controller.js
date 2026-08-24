@@ -11,6 +11,7 @@ const Notification = require("../models/Notification.model");
 const ActivityLog = require("../models/ActivityLog.model");
 const QuizAttempt = require("../models/QuizAttempt.model");
 const ProctoringViolation = require("../models/ProctoringViolation.model");
+const ExamSubmission = require("../models/ExamSubmission.model");
 const MentorTask = require("../models/MentorTask.model");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
@@ -809,6 +810,12 @@ const unblockProctoring = asyncHandler(async (req, res) => {
     { $set: { isBlocked: false, violationCount: 0, events: [], blockedAt: null } }
   );
 
+  // Reset the student's exam submissions blocked status
+  await ExamSubmission.updateMany(
+    { userId: studentId, isBlocked: true },
+    { $set: { isBlocked: false, violationsCount: 0, status: "submitted", unblockedAt: new Date(), unblockedBy: req.user._id } }
+  );
+
   // Notify the student their access is restored
   try {
     const notification = await Notification.create({
@@ -1216,6 +1223,11 @@ const batchUnblockProctoring = asyncHandler(async (req, res) => {
   await ProctoringViolation.updateMany(
     { userId: { $in: studentIds } },
     { $set: { isBlocked: false, violationCount: 0, events: [], blockedAt: null } }
+  );
+
+  await ExamSubmission.updateMany(
+    { userId: { $in: studentIds }, isBlocked: true },
+    { $set: { isBlocked: false, violationsCount: 0, status: "submitted", unblockedAt: new Date(), unblockedBy: req.user._id } }
   );
 
   // Send unblock notification to all students

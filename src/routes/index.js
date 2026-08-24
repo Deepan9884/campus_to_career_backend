@@ -17,6 +17,8 @@ const codingProfilesRoutes = require("./codingProfiles.routes");
 const eventRoutes = require("./event.routes");
 const adminRoutes = require("./admin.routes");
 const proctoringRoutes = require("./proctoring.routes");
+const superDreamRoutes = require("./superDream.routes");
+const examRoutes = require("./exam.routes");
 
 const router = Router();
 
@@ -76,5 +78,10 @@ router.use("/admin", adminRoutes);
 // Proctoring routes
 router.use("/proctoring", proctoringRoutes);
 
+// Super Dream routes
+router.use("/super-dream", superDreamRoutes);
+
+// Comprehensive Exam & Assessment routes
+router.use("/exams", examRoutes);
 
 module.exports = router;
