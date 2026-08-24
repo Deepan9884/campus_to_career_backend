@@ -175,7 +175,7 @@ const createStreamTicket = asyncHandler(async (req, res) => {
   const ticket = jwt.sign(
     { sub: req.user._id, purpose: "sse_stream" },
     env.JWT_SECRET,
-    { expiresIn: "60s" },
+    { expiresIn: "300s" }, // 5 minutes: handles Render free-tier cold-start delays (up to 50s)
   );
   return ApiResponse.success({ ticket }).send(res);
 });

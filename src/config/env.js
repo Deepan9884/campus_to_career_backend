@@ -17,7 +17,7 @@ const env = {
   MONGODB_URI: getVar("MONGODB_URI", true),
   JWT_SECRET: getVar("JWT_SECRET", true),
   JWT_REFRESH_SECRET: getVar("JWT_REFRESH_SECRET", true),
-  JWT_EXPIRES_IN: getVar("JWT_EXPIRES_IN") || "15m",
+  JWT_EXPIRES_IN: getVar("JWT_EXPIRES_IN") || "2h",
   JWT_REFRESH_EXPIRES_IN: getVar("JWT_REFRESH_EXPIRES_IN") || "7d",
   CLIENT_URL: getVar("CLIENT_URL") || "http://localhost:5173",
   ADMIN_CLIENT_URL: getVar("ADMIN_CLIENT_URL") || "http://localhost:8081",
