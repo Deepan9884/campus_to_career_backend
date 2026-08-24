@@ -11,6 +11,7 @@ const Notification = require("../models/Notification.model");
 const ActivityLog = require("../models/ActivityLog.model");
 const QuizAttempt = require("../models/QuizAttempt.model");
 const ProctoringViolation = require("../models/ProctoringViolation.model");
+const Exam = require("../models/Exam.model");
 const ExamSubmission = require("../models/ExamSubmission.model");
 const MentorTask = require("../models/MentorTask.model");
 const asyncHandler = require("../utils/asyncHandler");
@@ -1179,27 +1180,78 @@ const deleteMentorTask = asyncHandler(async (req, res) => {
 
 /**
  * GET /api/admin/proctoring/live-feed
- * Real-time institutional exam radar & live violation telemetry.
+ * Real-time institutional exam radar & multi-exam live violation telemetry.
  */
 const getLiveProctoringFeed = asyncHandler(async (_req, res) => {
-  const [blockedUsers, recentViolations, totalBlockedCount] = await Promise.all([
+  const [blockedUsers, recentViolations, totalBlockedCount, activeExams] = await Promise.all([
     User.find({ isProctoringBlocked: true })
-      .select("name email avatar targetRole proctoringBlockedAt assignedMentor")
+      .select("name email avatar targetRole proctoringBlockedAt assignedMentor profile")
       .sort({ proctoringBlockedAt: -1 })
-      .limit(30)
+      .limit(50)
       .lean(),
     ProctoringViolation.find()
       .populate("userId", "name email avatar targetRole")
       .sort({ updatedAt: -1 })
-      .limit(30)
+      .limit(40)
       .lean(),
     User.countDocuments({ isProctoringBlocked: true }),
+    Exam.find({
+      status: { $in: ["active", "scheduled"] },
+      isPublished: true,
+    })
+      .select("title examType category difficulty durationMinutes totalMarks status isScheduled scheduledStartTime scheduledEndTime")
+      .sort({ createdAt: -1 })
+      .lean(),
   ]);
+
+  const activeExamIds = activeExams.map((e) => e._id);
+  const examSubmissions = await ExamSubmission.find({
+    examId: { $in: activeExamIds },
+  })
+    .populate("userId", "name email avatar targetRole isProctoringBlocked proctoringBlockedAt profile")
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  const examsWithTakers = activeExams.map((exam) => {
+    const subs = examSubmissions.filter((s) => s.examId.toString() === exam._id.toString());
+    return {
+      examId: exam._id,
+      examTitle: exam.title,
+      examType: exam.examType,
+      category: exam.category,
+      difficulty: exam.difficulty,
+      durationMinutes: exam.durationMinutes,
+      status: exam.status,
+      activeCount: subs.length,
+      blockedCount: subs.filter((s) => s.isBlocked || s.userId?.isProctoringBlocked).length,
+      warningCount: subs.filter((s) => !s.isBlocked && (s.violationsCount || 0) > 0).length,
+      candidates: subs.map((s) => ({
+        submissionId: s._id,
+        studentId: s.userId?._id || s.userId,
+        name: s.studentName || s.userId?.name || "Student",
+        email: s.studentEmail || s.userId?.email || "",
+        avatar: s.userId?.avatar || s.studentAvatar || "",
+        registerNumber: s.registerNumber || s.userId?.profile?.registerNumber || "N/A",
+        targetRole: s.userId?.targetRole || "Candidate",
+        status: s.isBlocked || s.userId?.isProctoringBlocked ? "blocked" : (s.violationsCount || 0) > 0 ? "warning" : s.status || "in_progress",
+        violationsCount: s.violationsCount || 0,
+        violationDetails: s.violationDetails || [],
+        proctoringIntegrity: s.proctoringIntegrity || 100,
+        totalScore: s.totalScore || 0,
+        durationSeconds: s.durationSeconds || 0,
+        submittedAt: s.submittedAt,
+        updatedAt: s.updatedAt,
+      })),
+    };
+  });
 
   return ApiResponse.success({
     totalBlockedCount,
     blockedUsers,
     recentViolations,
+    activeExamsCount: activeExams.length,
+    totalActiveCandidates: examSubmissions.length,
+    examsWithTakers,
   }).send(res);
 });
 
