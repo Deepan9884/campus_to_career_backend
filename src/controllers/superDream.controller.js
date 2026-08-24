@@ -481,20 +481,23 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
   const currentUser = await User.findById(req.user._id).select("mentees role name email").lean();
   const menteeIds = (currentUser?.mentees || []).map((id) => id.toString());
 
-  // Strict Scoping: Only return assigned mentees for this mentor/admin by default
+  // Strict Scoping:
+  // Return ONLY students explicitly assigned to this mentor/admin (via assignedMentor or mentees array).
+  // If the admin/mentor has not assigned any students yet, return ZERO students (empty list).
+  const assignedConditions = [{ assignedMentor: req.user._id }];
+  if (currentUser?.mentees && currentUser.mentees.length > 0) {
+    assignedConditions.push({ _id: { $in: currentUser.mentees } });
+  }
+
   let userQuery = {};
-  if (scope === "my-mentees" || req.user.role === "mentor") {
+  if (scope === "all") {
     userQuery = {
       role: { $in: ["student", "STUDENT"] },
-      $or: [
-        { assignedMentor: req.user._id },
-        { _id: { $in: currentUser?.mentees || [] } },
-        ...(currentUser?.name ? [{ "profile.facultyMentor": new RegExp(currentUser.name, "i") }] : []),
-      ],
     };
   } else {
     userQuery = {
       role: { $in: ["student", "STUDENT"] },
+      $or: assignedConditions,
     };
   }
 

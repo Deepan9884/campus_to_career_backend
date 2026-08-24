@@ -116,14 +116,12 @@ const getStudentsList = asyncHandler(async (req, res) => {
     { role: "student" },
   ];
 
-  if (filter === "my-mentees") {
-    const menteeIds = currentUser?.mentees || [];
-    baseConds.push({
-      $or: [
-        { assignedMentor: req.user._id },
-        { _id: { $in: menteeIds } },
-      ],
-    });
+  if (filter === "my-mentees" || !filter) {
+    const assignedOr = [{ assignedMentor: req.user._id }];
+    if (currentUser?.mentees && currentUser.mentees.length > 0) {
+      assignedOr.push({ _id: { $in: currentUser.mentees } });
+    }
+    baseConds.push({ $or: assignedOr });
   } else if (filter === "blocked") {
     baseConds.push({ isProctoringBlocked: true });
   }
@@ -339,22 +337,20 @@ const getCohortAnalytics = asyncHandler(async (req, res) => {
   const scope = (req.query.scope || req.query.filter || "my-mentees").trim();
   const menteeIds = currentUser?.mentees || [];
 
+  const assignedOr = [{ assignedMentor: req.user._id }];
+  if (currentUser?.mentees && currentUser.mentees.length > 0) {
+    assignedOr.push({ _id: { $in: currentUser.mentees } });
+  }
+
   const menteeFilter = scope === "all"
     ? {
         _id: { $ne: req.user._id },
-        $or: [
-          { role: "student" },
-          { role: { $nin: ["admin", "mentor", "ADMIN", "MENTOR"] } },
-          { role: { $exists: false } },
-          { role: null },
-        ],
+        role: "student",
       }
     : {
         _id: { $ne: req.user._id },
-        $or: [
-          { assignedMentor: req.user._id },
-          { _id: { $in: menteeIds } },
-        ],
+        role: "student",
+        $or: assignedOr,
       };
 
   const users = await User.find(menteeFilter).select("_id").lean();
