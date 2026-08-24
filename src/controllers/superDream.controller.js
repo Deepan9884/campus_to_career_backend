@@ -478,46 +478,57 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
   const phaseFilter = req.query.phase;
   const scope = (req.query.scope || "my-mentees").trim();
 
-  const currentUser = await User.findById(req.user._id).select("mentees role name email").lean();
-  const menteeIds = (currentUser?.mentees || []).map((id) => id.toString());
+  const currentUser = await User.findById(req.user._id).select("mentees role name email");
+  
+  // Clean up mentor's mentees array:
+  // 1. Remove self (_id === req.user._id)
+  // 2. Validate all mentees have real student role (not mentor, admin, faculty)
+  const rawMenteeIds = (currentUser?.mentees || [])
+    .map((id) => id.toString())
+    .filter((id) => id !== req.user._id.toString());
 
-  // Strict Scoping:
-  // Return ONLY students explicitly assigned to this mentor/admin (via assignedMentor or mentees array).
-  // If the admin/mentor has not assigned any students yet, return ZERO students (empty list).
-  const assignedConditions = [{ assignedMentor: req.user._id }];
-  if (currentUser?.mentees && currentUser.mentees.length > 0) {
-    assignedConditions.push({ _id: { $in: currentUser.mentees } });
+  const validStudentMentees = await User.find({
+    _id: { $in: rawMenteeIds, $ne: req.user._id },
+    role: { $in: ["student", "STUDENT"], $nin: ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD"] },
+  }).select("_id").lean();
+
+  const validMenteeIds = validStudentMentees.map((m) => m._id);
+
+  // Auto-sync mentor's mentees field in DB if invalid IDs or self-reference existed
+  if (currentUser && Array.isArray(currentUser.mentees) && currentUser.mentees.length !== validMenteeIds.length) {
+    currentUser.mentees = validMenteeIds;
+    await currentUser.save();
   }
 
-  let userQuery = {};
-  if (scope === "all") {
-    userQuery = {
-      role: { $in: ["student", "STUDENT"] },
-    };
-  } else {
-    userQuery = {
-      role: { $in: ["student", "STUDENT"] },
-      $or: assignedConditions,
-    };
+  // Base conditions: STRICTLY exclude current user and all mentor/admin roles
+  const baseConditions = [
+    { _id: { $ne: req.user._id } },
+    { role: { $in: ["student", "STUDENT"] } },
+    { role: { $nin: ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD"] } },
+  ];
+
+  if (scope !== "all") {
+    const assignedOr = [{ assignedMentor: req.user._id }];
+    if (validMenteeIds.length > 0) {
+      assignedOr.push({ _id: { $in: validMenteeIds } });
+    }
+    baseConditions.push({ $or: assignedOr });
   }
 
   if (search) {
-    const searchRegex = new RegExp(search, "i");
-    userQuery = {
-      $and: [
-        userQuery,
-        {
-          $or: [
-            { name: searchRegex },
-            { email: searchRegex },
-            { targetRole: searchRegex },
-            { "profile.targetRole": searchRegex },
-            { "profile.registerNumber": searchRegex },
-          ],
-        },
+    const safeSearch = escapeRegex(search);
+    baseConditions.push({
+      $or: [
+        { name: new RegExp(safeSearch, "i") },
+        { email: new RegExp(safeSearch, "i") },
+        { targetRole: new RegExp(safeSearch, "i") },
+        { "profile.targetRole": new RegExp(safeSearch, "i") },
+        { "profile.registerNumber": new RegExp(safeSearch, "i") },
       ],
-    };
+    });
   }
+
+  const userQuery = baseConditions.length === 1 ? baseConditions[0] : { $and: baseConditions };
 
   const users = await User.find(userQuery)
     .select("name email avatar targetRole profile githubUsername createdAt role assignedMentor")
@@ -644,6 +655,47 @@ const assignSuperDreamMentee = asyncHandler(async (req, res) => {
       avatar: resolveCandidateAvatar(student),
       targetRole: student.targetRole || "Software Engineer",
     },
+  }).send(res);
+});
+
+/**
+ * POST /api/super-dream/unassign-mentee
+ * Unassigns a student from the mentor's Super Dream and mentee roster.
+ */
+const unassignSuperDreamMentee = asyncHandler(async (req, res) => {
+  const { studentId, studentEmail } = req.body;
+  const input = (studentId || studentEmail || "").trim();
+
+  if (!input) {
+    throw ApiError.badRequest("Student ID or email is required");
+  }
+
+  let student = null;
+  if (input.includes("@")) {
+    student = await User.findOne({ email: input.toLowerCase() });
+  } else if (input.match(/^[0-9a-fA-F]{24}$/)) {
+    student = await User.findById(input);
+  }
+
+  if (!student) {
+    throw ApiError.notFound("Student record not found");
+  }
+
+  // Remove from mentor's mentees array
+  await User.findByIdAndUpdate(req.user._id, {
+    $pull: { mentees: student._id },
+  });
+
+  // Clear assigned mentor from student
+  student.assignedMentor = null;
+  if (student.profile && student.profile.facultyMentor) {
+    student.profile.facultyMentor = null;
+  }
+  await student.save();
+
+  return ApiResponse.success({
+    message: `${student.name} (${student.email}) has been removed from your mentee and Super Dream roster.`,
+    unassignedStudentId: student._id.toString(),
   }).send(res);
 });
 
@@ -990,6 +1042,7 @@ module.exports = {
   logSuperDreamMovement,
   getAdminSuperDreamCohort,
   assignSuperDreamMentee,
+  unassignSuperDreamMentee,
   getAdminStudentSuperDream,
   mentorVerifyDeliverable,
   mentorSignoffEvaluation,
