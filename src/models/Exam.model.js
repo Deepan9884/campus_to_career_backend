@@ -87,6 +87,7 @@ const sectionSchema = new mongoose.Schema(
     },
     topics: { type: [String], default: [] },
     timeLimitMinutes: { type: Number, default: 30 },
+    targetQuestionCount: { type: Number, default: 5 },
     mcqQuestions: { type: [mcqQuestionSchema], default: [] },
     codingQuestions: { type: [codingQuestionSchema], default: [] },
   },
