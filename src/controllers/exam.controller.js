@@ -800,11 +800,19 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
 
   const subMap = {};
   submissions.forEach((s) => {
+    // Only real finished submissions count as submitted
+    const isCompleted =
+      !s.isBlocked && (s.status === "submitted" || s.status === "evaluated");
+    const isDisqualifiedOrBlocked =
+      Boolean(s.isBlocked || s.status === "disqualified" || s.status === "blocked");
+    const isInProgress = s.status === "in_progress";
+
     subMap[s.examId.toString()] = {
-      isSubmitted: true,
+      isSubmitted: isCompleted,
+      isBlocked: isDisqualifiedOrBlocked,
+      isInProgress,
       submittedAt: s.submittedAt,
       status: s.status,
-      // Note: isResultDisclosed is checked to see if score is revealed
     };
   });
 
@@ -828,9 +836,17 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
       }
     }
 
-    const hasAttempted = Boolean(subMap[exam._id.toString()]);
+    const subInfo = subMap[exam._id.toString()];
+    const hasAttempted = Boolean(subInfo?.isSubmitted);
+    const isStudentBlocked = Boolean(subInfo?.isBlocked);
+    const isStudentInProgress = Boolean(subInfo?.isInProgress);
+
+    const isExamConcluded = Boolean(computedStatus === "stopped" || computedStatus === "completed");
+
     const canStart =
+      !isExamConcluded &&
       computedStatus === "active" &&
+      !isStudentBlocked &&
       (!hasAttempted || Boolean(exam.allowRetakes));
 
     return {
@@ -852,10 +868,12 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
       scheduledEndTime: effectiveEndTime ? effectiveEndTime.toISOString() : null,
       status: computedStatus,
       isLockedBySchedule: Boolean(exam.isScheduled && exam.scheduledStartTime && new Date(exam.scheduledStartTime) > now),
-      isExamStopped: Boolean(computedStatus === "stopped"),
+      isExamStopped: isExamConcluded,
       canStart,
       hasAttempted,
-      submissionStatus: subMap[exam._id.toString()] || null,
+      isStudentBlocked,
+      isStudentInProgress,
+      submissionStatus: subInfo || null,
     };
   });
 
@@ -1293,8 +1311,14 @@ const getStudentMyResults = asyncHandler(async (req, res) => {
     .sort({ submittedAt: -1 })
     .lean();
 
-  // Strictly filter out orphaned submissions with null or deleted exams
-  const validSubmissions = submissions.filter((sub) => sub.examId && sub.examId._id && sub.examId.title);
+  // Strictly filter out orphaned submissions or non-submitted in-progress sessions
+  const validSubmissions = submissions.filter(
+    (sub) =>
+      sub.examId &&
+      sub.examId._id &&
+      sub.examId.title &&
+      sub.status !== "in_progress"
+  );
 
   const results = validSubmissions.map((sub) => {
     const exam = sub.examId;
