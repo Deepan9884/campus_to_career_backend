@@ -851,6 +851,8 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
       scheduledStartTime: exam.scheduledStartTime,
       scheduledEndTime: effectiveEndTime ? effectiveEndTime.toISOString() : null,
       status: computedStatus,
+      isLockedBySchedule: Boolean(exam.isScheduled && exam.scheduledStartTime && new Date(exam.scheduledStartTime) > now),
+      isExamStopped: Boolean(computedStatus === "stopped"),
       canStart,
       hasAttempted,
       submissionStatus: subMap[exam._id.toString()] || null,
@@ -1629,6 +1631,128 @@ const assignExamStudents = asyncHandler(async (req, res) => {
   );
 });
 
+// ── ADMIN / MENTOR: RESCHEDULE EXAM ──────────────────────────────────────────
+const rescheduleExam = asyncHandler(async (req, res) => {
+  const { examId } = req.params;
+  const {
+    isScheduled = true,
+    scheduledStartTime,
+    scheduledEndTime,
+    durationMinutes,
+    resetSubmissions = false,
+    notifyStudents = true,
+    reason = "",
+  } = req.body;
+
+  const exam = await Exam.findById(examId);
+  if (!exam) {
+    throw new ApiError(404, "Exam not found");
+  }
+
+  if (durationMinutes && Number(durationMinutes) > 0) {
+    exam.durationMinutes = Number(durationMinutes);
+  }
+
+  const durationMin = Number(exam.durationMinutes) || 60;
+
+  if (isScheduled && !scheduledStartTime) {
+    throw new ApiError(400, "Scheduled start time is required when scheduling an exam");
+  }
+
+  exam.isScheduled = Boolean(isScheduled);
+
+  if (exam.isScheduled && scheduledStartTime) {
+    const start = new Date(scheduledStartTime);
+    const end = scheduledEndTime
+      ? new Date(scheduledEndTime)
+      : new Date(start.getTime() + durationMin * 60 * 1000);
+
+    exam.scheduledStartTime = start;
+    exam.scheduledEndTime = end;
+
+    const now = new Date();
+    if (start > now) {
+      exam.status = "scheduled";
+    } else if (end < now) {
+      exam.status = "completed";
+    } else {
+      exam.status = "active";
+    }
+  } else {
+    // Immediate active test
+    exam.scheduledStartTime = null;
+    exam.scheduledEndTime = null;
+    exam.status = "active";
+  }
+
+  // Restore active published status and clear any stoppage state
+  exam.isPublished = true;
+  exam.stoppedAt = null;
+  exam.stoppedBy = null;
+
+  await exam.save();
+
+  // If mentor requests to reset past submissions so all students can take the exam freshly
+  let resetCount = 0;
+  if (resetSubmissions) {
+    const delResult = await ExamSubmission.deleteMany({ examId });
+    resetCount = delResult.deletedCount || 0;
+
+    // Also clear proctoring blocks for this exam module
+    await ProctoringViolation.updateMany(
+      { moduleId: examId },
+      { $set: { isBlocked: false, violationCount: 0, events: [], blockedAt: null } }
+    );
+  }
+
+  // Broadcast real-time notification to relevant students if requested
+  if (notifyStudents) {
+    try {
+      let recipientQuery = { role: "student" };
+      if (exam.targetAudience === "selected" && exam.assignedStudents && exam.assignedStudents.length > 0) {
+        recipientQuery = { _id: { $in: exam.assignedStudents } };
+      } else if (exam.targetAudience === "mentees") {
+        recipientQuery = { assignedMentor: req.user._id };
+      }
+
+      const targetUsers = await User.find(recipientQuery).select("_id").lean();
+      const formattedDate = exam.scheduledStartTime
+        ? new Date(exam.scheduledStartTime).toLocaleString()
+        : "Immediately";
+
+      const notifTitle = "Assessment Rescheduled";
+      const notifMessage = `The examination '${exam.title}' has been rescheduled to start at ${formattedDate}.${
+        reason ? ` Note: ${reason}` : ""
+      }`;
+
+      for (const u of targetUsers) {
+        const notif = await Notification.create({
+          user: u._id,
+          type: "exam_rescheduled",
+          title: notifTitle,
+          message: notifMessage,
+          actionUrl: "/tests",
+          read: false,
+        });
+        notificationService.pushToOpenConnections(u._id, notif);
+      }
+    } catch (notifErr) {
+      console.error("[Exam] Failed to send reschedule notifications:", notifErr);
+    }
+  }
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        exam,
+        resetSubmissionsCount: resetCount,
+      },
+      `Exam '${exam.title}' rescheduled successfully!`
+    )
+  );
+});
+
 module.exports = {
   createExam,
   getAdminExams,
@@ -1637,6 +1761,7 @@ module.exports = {
   toggleResultDisclosure,
   toggleExamRetakes,
   stopExam,
+  rescheduleExam,
   getActiveExamsWithLiveTakers,
   getExamResults,
   parseCodingLink,

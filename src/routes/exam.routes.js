@@ -11,6 +11,7 @@ const {
   toggleResultDisclosure,
   toggleExamRetakes,
   stopExam,
+  rescheduleExam,
   getActiveExamsWithLiveTakers,
   getExamResults,
   parseCodingLink,
@@ -66,6 +67,11 @@ router.patch(
   "/admin/:examId/stop",
   verifyRole(["admin", "mentor"]),
   stopExam
+);
+router.patch(
+  "/admin/:examId/reschedule",
+  verifyRole(["admin", "mentor"]),
+  rescheduleExam
 );
 router.patch(
   "/admin/:examId/toggle-disclosure",
