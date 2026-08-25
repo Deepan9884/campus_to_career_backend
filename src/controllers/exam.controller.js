@@ -919,20 +919,27 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
     userId: studentId,
   });
 
-  // Check if student is currently blocked by proctoring
-  const isStudentBlocked = Boolean(
-    req.user.isProctoringBlocked || (existingSub && existingSub.isBlocked)
+  // Check if student is currently blocked for this specific exam
+  const isExamBlocked = Boolean(
+    existingSub?.isBlocked ||
+      (existingSub?.status === "disqualified" && req.user.isProctoringBlocked)
   );
-  if (isStudentBlocked) {
-    return res.status(403).json(
+
+  if (isExamBlocked) {
+    return res.status(200).json(
       new ApiResponse(
-        403,
+        200,
         {
+          _id: exam._id,
+          title: exam.title,
+          category: exam.category,
+          durationMinutes: exam.durationMinutes,
+          sections: [],
           isBlocked: true,
           blockedReason:
             existingSub?.blockedReason ||
             "Your exam access has been locked due to proctoring policy violations. Awaiting mentor unblock authorization.",
-          blockedAt: existingSub?.blockedAt || req.user.proctoringBlockedAt,
+          blockedAt: existingSub?.blockedAt || req.user.proctoringBlockedAt || new Date(),
         },
         "Exam session locked: Awaiting mentor unblock"
       )
@@ -1703,6 +1710,24 @@ const rescheduleExam = asyncHandler(async (req, res) => {
       { moduleId: examId },
       { $set: { isBlocked: false, violationCount: 0, events: [], blockedAt: null } }
     );
+
+    // Also clear user proctoring block flags for relevant candidates so they can take the rescheduled exam
+    if (exam.targetAudience === "selected" && exam.assignedStudents && exam.assignedStudents.length > 0) {
+      await User.updateMany(
+        { _id: { $in: exam.assignedStudents } },
+        { $set: { isProctoringBlocked: false, proctoringBlockedAt: null } }
+      );
+    } else if (exam.targetAudience === "mentees") {
+      await User.updateMany(
+        { assignedMentor: req.user._id },
+        { $set: { isProctoringBlocked: false, proctoringBlockedAt: null } }
+      );
+    } else {
+      await User.updateMany(
+        { role: "student" },
+        { $set: { isProctoringBlocked: false, proctoringBlockedAt: null } }
+      );
+    }
   }
 
   // Broadcast real-time notification to relevant students if requested

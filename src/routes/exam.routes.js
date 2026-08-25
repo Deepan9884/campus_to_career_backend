@@ -122,9 +122,9 @@ router.post(
 // ── STUDENT ROUTES ──────────────────────────────────────────────────────────
 router.get("/student/available", getStudentAvailableExams);
 router.get("/student/my-results", getStudentMyResults);
-router.get("/student/:examId", checkProctoringBlock, getStudentExamForTaking);
+router.get("/student/:examId", getStudentExamForTaking);
 router.get("/student/:examId/block-status", getStudentExamBlockStatus);
 router.post("/student/:examId/report-blocked", reportBlockedLimiter, reportStudentExamBlocked);
-router.post("/student/:examId/submit", checkProctoringBlock, examSubmitLimiter, submitStudentExam);
+router.post("/student/:examId/submit", examSubmitLimiter, submitStudentExam);
 
 module.exports = router;
