@@ -138,7 +138,7 @@ function isSyntaxOrCompileError(stderr = "", lang = "") {
  */
 function isHostCompilerMissing(stderr = "") {
   if (!stderr) return false;
-  const lower = stderr.toLowerCase();
+  const lower = String(stderr).toLowerCase();
   return (
     lower.includes("not recognized as an internal or external command") ||
     lower.includes("is not recognized as an operable program") ||
@@ -149,11 +149,16 @@ function isHostCompilerMissing(stderr = "") {
     lower.includes("cannot find the path specified") ||
     lower.includes("no such file or directory") ||
     lower.includes("cannot spawn") ||
-    lower.includes("javac not found") ||
-    lower.includes("g++ not found") ||
-    lower.includes("gcc not found") ||
-    lower.includes("python not found") ||
-    lower.includes("python3 not found")
+    (lower.includes("javac") && lower.includes("not found")) ||
+    (lower.includes("g++") && lower.includes("not found")) ||
+    (lower.includes("gcc") && lower.includes("not found")) ||
+    (lower.includes("python") && lower.includes("not found")) ||
+    (lower.includes("python3") && lower.includes("not found")) ||
+    lower.includes("java compiler (javac) not available") ||
+    lower.includes("/bin/sh: 1: javac") ||
+    lower.includes("/bin/sh: 1: g++") ||
+    lower.includes("/bin/sh: 1: gcc") ||
+    lower.includes("/bin/sh: 1: python")
   );
 }
 
@@ -574,6 +579,23 @@ function runJavaScript(code, input = "") {
 function runJava(code, input = "") {
   return new Promise((resolve) => {
     const startTime = Date.now();
+
+    // Check if code has a standard main entry point
+    const hasMainMethod = /public\s+static\s+void\s+main\s*\(/i.test(code);
+    if (!hasMainMethod) {
+      // LeetCode / competitive method solution without driver scaffolding:
+      // Delegate directly to the intelligent AI sandbox evaluator
+      return resolve({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        executionTimeMs: 0,
+        compileError: false,
+        isCompileError: false,
+        hostCompilerMissing: true,
+      });
+    }
+
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-java-"));
 
     let className = "Solution";
@@ -590,7 +612,7 @@ function runJava(code, input = "") {
       const rawCompileErr = compileStderr || compileErr?.message || "";
       if (compileErr || compileStderr) {
         const cleanErr = sanitizeStderr(rawCompileErr, tempDir, `${className}.java`);
-        const isMissing = isHostCompilerMissing(rawCompileErr) || isHostCompilerMissing(cleanErr) || isHostCompilerMissing(compileErr?.message);
+        const isMissing = isHostCompilerMissing(rawCompileErr) || isHostCompilerMissing(cleanErr) || isHostCompilerMissing(compileErr?.message) || rawCompileErr.includes("javac:") || rawCompileErr.includes("javac not found");
         try {
           fs.rmSync(tempDir, { recursive: true, force: true });
         } catch {}
