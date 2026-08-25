@@ -142,11 +142,18 @@ function isHostCompilerMissing(stderr = "") {
   return (
     lower.includes("not recognized as an internal or external command") ||
     lower.includes("is not recognized as an operable program") ||
+    lower.includes("is not recognized") ||
     lower.includes("command not found") ||
+    lower.includes("not found") ||
     lower.includes("enoent") ||
     lower.includes("cannot find the path specified") ||
     lower.includes("no such file or directory") ||
-    lower.includes("cannot spawn")
+    lower.includes("cannot spawn") ||
+    lower.includes("javac not found") ||
+    lower.includes("g++ not found") ||
+    lower.includes("gcc not found") ||
+    lower.includes("python not found") ||
+    lower.includes("python3 not found")
   );
 }
 
@@ -583,13 +590,13 @@ function runJava(code, input = "") {
       const rawCompileErr = compileStderr || compileErr?.message || "";
       if (compileErr || compileStderr) {
         const cleanErr = sanitizeStderr(rawCompileErr, tempDir, `${className}.java`);
-        const isMissing = isHostCompilerMissing(rawCompileErr);
+        const isMissing = isHostCompilerMissing(rawCompileErr) || isHostCompilerMissing(cleanErr) || isHostCompilerMissing(compileErr?.message);
         try {
           fs.rmSync(tempDir, { recursive: true, force: true });
         } catch {}
         return resolve({
           stdout: "",
-          stderr: cleanErr,
+          stderr: isMissing ? "Java compiler (javac) not available on host" : cleanErr,
           exitCode: isMissing ? 127 : 1,
           executionTimeMs: Date.now() - startTime,
           compileError: !isMissing,
