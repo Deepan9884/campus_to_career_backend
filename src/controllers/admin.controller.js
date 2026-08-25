@@ -104,14 +104,14 @@ async function calculateStudentMetrics(u, menteeSet, mentorId) {
  */
 const getStudentsList = asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const limit = Math.min(1000, Math.max(1, parseInt(req.query.limit, 10) || 50));
   const search = (req.query.search || "").trim();
   const filter = (req.query.filter || "my-mentees").trim();
 
   const currentUser = await User.findById(req.user._id).select("mentees role").lean();
   const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
 
-  // Find all mentor and admin IDs to guarantee total exclusion from student list
+  // Find all mentor and admin IDs to guarantee exclusion of faculty/admin staff accounts
   const allMentorAccounts = await User.find({
     $or: [
       { role: { $in: ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD", "staff", "STAFF"] } },
@@ -121,17 +121,21 @@ const getStudentsList = asyncHandler(async (req, res) => {
   const allMentorIds = allMentorAccounts.map((m) => m._id);
 
   const nonStudentRoles = ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD", "staff", "STAFF"];
-  const nonStudentRegex = /faculty|mentor|admin|professor|prof\.|dr\.|hod|staff/i;
 
   const baseConds = [
     { _id: { $ne: req.user._id, $nin: allMentorIds } },
-    { role: { $in: ["student", "STUDENT"], $nin: nonStudentRoles } },
-    { targetRole: { $not: nonStudentRegex } },
-    { "profile.targetRole": { $not: nonStudentRegex } },
-    { name: { $not: /^(dr\.|prof\.|professor|faculty|mentor|admin|hod)/i } },
+    {
+      $or: [
+        { role: { $in: ["student", "STUDENT", "user", "candidate"] } },
+        { role: { $nin: nonStudentRoles } },
+        { role: { $exists: false } },
+        { role: null },
+        { role: "" },
+      ],
+    },
   ];
 
-  if (filter === "my-mentees" || !filter) {
+  if (filter === "my-mentees") {
     const assignedOr = [{ assignedMentor: req.user._id }];
     if (currentUser?.mentees && currentUser.mentees.length > 0) {
       assignedOr.push({ _id: { $in: currentUser.mentees } });
@@ -151,6 +155,8 @@ const getStudentsList = asyncHandler(async (req, res) => {
         { "profile.targetRole": new RegExp(safeSearch, "i") },
         { githubUsername: new RegExp(safeSearch, "i") },
         { "profile.githubUsername": new RegExp(safeSearch, "i") },
+        { "profile.registerNumber": new RegExp(safeSearch, "i") },
+        { registerNumber: new RegExp(safeSearch, "i") },
       ],
     });
   }
