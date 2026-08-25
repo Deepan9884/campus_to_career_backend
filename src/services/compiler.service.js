@@ -28,6 +28,11 @@ function getCachedResult(key) {
     executionCache.delete(key);
     return null;
   }
+  // Never serve a cached result if it recorded a host compiler absence error
+  if (entry.result && (isHostCompilerMissing(entry.result.stderr) || entry.result.hostCompilerMissing)) {
+    executionCache.delete(key);
+    return null;
+  }
   return entry.result;
 }
 
@@ -36,6 +41,34 @@ function setCachedResult(key, result) {
     executionCache.delete(executionCache.keys().next().value);
   }
   executionCache.set(key, { result, expiresAt: Date.now() + EXECUTION_CACHE_TTL_MS });
+}
+
+// ── Host Compiler Availability Prober ─────────────────────────────────────
+let hostBinaryAvailable = {
+  javac: null,
+  gpp: null,
+};
+
+function checkHostBinary(cmd) {
+  return new Promise((resolve) => {
+    exec(cmd, { timeout: 2000 }, (err) => {
+      resolve(!err);
+    });
+  });
+}
+
+async function isJavacAvailable() {
+  if (hostBinaryAvailable.javac === null) {
+    hostBinaryAvailable.javac = await checkHostBinary("javac -version");
+  }
+  return hostBinaryAvailable.javac;
+}
+
+async function isGppAvailable() {
+  if (hostBinaryAvailable.gpp === null) {
+    hostBinaryAvailable.gpp = await checkHostBinary(process.platform === "win32" ? "g++ --version" : "g++ --version || clang++ --version");
+  }
+  return hostBinaryAvailable.gpp;
 }
 
 // ── High-Concurrency Execution Queue (Semaphore) ───────────────────────────
@@ -1006,11 +1039,45 @@ async function executeCode({ code, language = "python", testCases = [], question
       hasNativeRunner = true;
       runner = runJavaScript;
     } else if (lang.includes("java")) {
-      hasNativeRunner = true;
-      runner = runJava;
+      const javacOk = await isJavacAvailable();
+      const hasMain = /public\s+static\s+void\s+main\s*\(/i.test(cleanCode);
+      if (javacOk && hasMain) {
+        hasNativeRunner = true;
+        runner = runJava;
+      } else {
+        // Missing javac or class/method without main: route directly to AI sandbox evaluator
+        hasNativeRunner = false;
+        runner = null;
+      }
     } else if (lang.includes("cpp") || lang.includes("c++") || lang === "c") {
-      hasNativeRunner = true;
-      runner = runCpp;
+      const gppOk = await isGppAvailable();
+      const hasMain = /(int|void)\s+main\s*\(/i.test(cleanCode);
+      if (gppOk && hasMain) {
+        hasNativeRunner = true;
+        runner = runCpp;
+      } else {
+        hasNativeRunner = false;
+        runner = null;
+      }
+    }
+
+    if (!hasNativeRunner || !runner) {
+      console.info(`[CompilerService] Direct AI sandbox delegation for ${lang} (compiler absent or method solution).`);
+      const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
+      const finalResult = {
+        success: aiResult.success ?? false,
+        isCompilationError: aiResult.isCompilationError ?? false,
+        compilationError: aiResult.compilationError ?? false,
+        isRuntimeError: aiResult.isRuntimeError ?? false,
+        language: lang,
+        stdout: aiResult.stdout || "",
+        stderr: aiResult.stderr || "",
+        passedCount: aiResult.passedCount ?? 0,
+        totalCount: aiResult.totalCount ?? defaultTestCases.length,
+        testCaseResults: aiResult.testCaseResults || [],
+      };
+      setCachedResult(cacheKey, finalResult);
+      return finalResult;
     }
 
     if (hasNativeRunner && runner) {
