@@ -937,10 +937,20 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
     userId: studentId,
   });
 
-  // Check if student is currently blocked for this specific exam
+  // Check if user account is globally blocked by admin OR submission is actively blocked
+  const isUserGloballyBlocked = Boolean(req.user.isProctoringBlocked);
+
+  // If user was unblocked or is not globally blocked, auto-clear any stale submission block
+  if (!isUserGloballyBlocked && existingSub && existingSub.isBlocked) {
+    existingSub.isBlocked = false;
+    if (existingSub.status === "disqualified" || existingSub.status === "blocked") {
+      existingSub.status = "in_progress";
+    }
+    await existingSub.save();
+  }
+
   const isExamBlocked = Boolean(
-    existingSub?.isBlocked ||
-      (existingSub?.status === "disqualified" && req.user.isProctoringBlocked)
+    isUserGloballyBlocked || (existingSub && existingSub.isBlocked)
   );
 
   if (isExamBlocked) {
