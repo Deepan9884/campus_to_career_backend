@@ -198,6 +198,190 @@ const PRE_DEVELOPED_MCQ_BANK = [
     negativeMarks: 0.75,
     explanation: "std::move performs an unconditional cast to an rvalue (T&&), enabling move semantics. std::forward is designed for universal references in templates to preserve the value category (lvalue vs rvalue) passed to the function.",
   },
+
+  // ── FULL STACK & WEB ARCHITECTURE ──────────────────────────────────────────
+  {
+    id: "mcq-fullstack-1",
+    topic: "Full Stack & Web Development",
+    difficulty: "easy",
+    question: "In client-server web architecture, what is the primary purpose of Cross-Origin Resource Sharing (CORS)?",
+    options: [
+      "To accelerate database queries on the server",
+      "To allow or restrict resources requested on a web page from another domain outside the domain from which the first resource was served",
+      "To compress HTTP response payloads using gzip",
+      "To encrypt passwords stored in browser localStorage"
+    ],
+    correctOptionIndex: 1,
+    correctAnswer: "To allow or restrict resources requested on a web page from another domain outside the domain from which the first resource was served",
+    positiveMarks: 1,
+    negativeMarks: 0.25,
+    explanation: "CORS is a browser security mechanism that uses HTTP headers to tell browsers whether a particular web application can access resources from a different origin.",
+  },
+  {
+    id: "mcq-fullstack-2",
+    topic: "Full Stack & Web Development",
+    difficulty: "easy",
+    question: "In Node.js/Express, what role does middleware play in the HTTP request-response cycle?",
+    options: [
+      "Functions that have access to the request object (req), the response object (res), and the next middleware function in the cycle",
+      "Hardware drivers that connect the server to the router",
+      "A database indexing engine that replaces MongoDB",
+      "A CSS compiler that executes inside the V8 engine"
+    ],
+    correctOptionIndex: 0,
+    correctAnswer: "Functions that have access to the request object (req), the response object (res), and the next middleware function in the cycle",
+    positiveMarks: 1,
+    negativeMarks: 0.25,
+    explanation: "Middleware functions execute during the lifecycle of a request to Express. Each middleware can modify req/res, end the request, or call next() to pass control.",
+  },
+  {
+    id: "mcq-fullstack-3",
+    topic: "Full Stack & Web Development",
+    difficulty: "medium",
+    question: "In modern React applications, why should you NOT directly mutate component state (e.g. state.items.push(newItem))?",
+    options: [
+      "Because JavaScript strictly forbids array modification",
+      "React relies on reference equality checks (shallow comparison) to detect state changes and trigger re-renders; mutating state directly bypasses reconciliation",
+      "Direct mutation deletes the browser cache",
+      "It causes an instant syntax error in the browser console"
+    ],
+    correctOptionIndex: 1,
+    correctAnswer: "React relies on reference equality checks (shallow comparison) to detect state changes and trigger re-renders; mutating state directly bypasses reconciliation",
+    positiveMarks: 2,
+    negativeMarks: 0.5,
+    explanation: "React relies on immutability. Creating new object/array references allows React's reconciliation engine to quickly determine when components need to re-render without expensive deep comparisons.",
+  },
+  {
+    id: "mcq-fullstack-4",
+    topic: "Full Stack & Web Development",
+    difficulty: "medium",
+    question: "In RESTful API design, what is the key difference between the HTTP PUT and PATCH methods?",
+    options: [
+      "PUT replaces the entire resource representation, while PATCH applies partial modifications to the resource",
+      "PUT is only for inserting new rows, PATCH is only for deleting rows",
+      "PUT cannot carry a request body, while PATCH must carry an XML payload",
+      "There is no difference; they are exact aliases in HTTP 1.1"
+    ],
+    correctOptionIndex: 0,
+    correctAnswer: "PUT replaces the entire resource representation, while PATCH applies partial modifications to the resource",
+    positiveMarks: 2,
+    negativeMarks: 0.5,
+    explanation: "HTTP PUT is idempotent and expects the full resource payload to replace the entity, whereas HTTP PATCH is designed for partial updates of specific fields.",
+  },
+  {
+    id: "mcq-fullstack-5",
+    topic: "Full Stack & Web Development",
+    difficulty: "hard",
+    question: "In Server-Side Rendering (SSR) with hydration (such as Next.js or Remix), what is a 'Hydration Mismatch' error?",
+    options: [
+      "When the database runs out of connection pool slots",
+      "When the pre-rendered HTML generated on the server differs from the initial DOM tree rendered by React on the client during hydration",
+      "When Redis cache fails to connect to the Node.js backend",
+      "When CSS styles fail to load over HTTPS"
+    ],
+    correctOptionIndex: 1,
+    correctAnswer: "When the pre-rendered HTML generated on the server differs from the initial DOM tree rendered by React on the client during hydration",
+    positiveMarks: 3,
+    negativeMarks: 0.75,
+    explanation: "Hydration is the process where React attaches event handlers to the server-rendered HTML. If the server output and client initial render differ (e.g. due to Date.now(), window checks, or browser-only APIs), React throws a hydration mismatch.",
+  },
+  {
+    id: "mcq-fullstack-6",
+    topic: "Full Stack & Web Development",
+    difficulty: "hard",
+    question: "Which pattern is recommended to securely store JWT (JSON Web Tokens) for user authentication against XSS and CSRF attacks?",
+    options: [
+      "Store in window.localStorage with unrestricted JavaScript access",
+      "Store the Refresh Token in an HttpOnly, Secure, SameSite=Strict cookie, and keep the short-lived Access Token in client-side memory",
+      "Write the token into the browser URL query parameters",
+      "Save the raw password in the session cookie without signing"
+    ],
+    correctOptionIndex: 1,
+    correctAnswer: "Store the Refresh Token in an HttpOnly, Secure, SameSite=Strict cookie, and keep the short-lived Access Token in client-side memory",
+    positiveMarks: 3,
+    negativeMarks: 0.75,
+    explanation: "HttpOnly cookies prevent JavaScript from accessing tokens (defending against XSS), SameSite=Strict defends against CSRF, and holding short-lived access tokens in memory limits compromise exposure.",
+  },
+  {
+    id: "mcq-fullstack-7",
+    topic: "Full Stack & Web Development",
+    difficulty: "easy",
+    question: "What HTTP status code should a server return when a resource is successfully created via a POST request?",
+    options: ["200 OK", "201 Created", "204 No Content", "301 Moved Permanently"],
+    correctOptionIndex: 1,
+    correctAnswer: "201 Created",
+    positiveMarks: 1,
+    negativeMarks: 0.25,
+    explanation: "HTTP 201 Created is the standard response indicating that the request has succeeded and led to the creation of a new resource.",
+  },
+  {
+    id: "mcq-fullstack-8",
+    topic: "Full Stack & Web Development",
+    difficulty: "easy",
+    question: "In the JavaScript Event Loop, what is the correct execution order of Microtasks (e.g. Promise.then, queueMicrotask) and Macrotasks (e.g. setTimeout, setInterval)?",
+    options: [
+      "Macrotasks execute first, followed by Microtasks only at page reload",
+      "After the currently executing synchronous script completes, ALL Microtasks are drained before the next Macrotask is processed",
+      "They run concurrently in separate OS threads",
+      "Microtasks are executed strictly after all Macrotasks in the queue finish"
+    ],
+    correctOptionIndex: 1,
+    correctAnswer: "After the currently executing synchronous script completes, ALL Microtasks are drained before the next Macrotask is processed",
+    positiveMarks: 1,
+    negativeMarks: 0.25,
+    explanation: "The JavaScript runtime processes the microtask queue to completion immediately after each task/call-stack drain, prior to picking the next macrotask.",
+  },
+  {
+    id: "mcq-fullstack-9",
+    topic: "Full Stack & Web Development",
+    difficulty: "medium",
+    question: "When should a Full-Stack application utilize WebSockets instead of standard HTTP Polling?",
+    options: [
+      "For static blog content delivery",
+      "When low-latency, bidirectional, persistent communication is required (e.g. live chat, real-time collaboration, or market tickers)",
+      "Only when the client browser does not support JavaScript",
+      "To upload large video files over FTP"
+    ],
+    correctOptionIndex: 1,
+    correctAnswer: "When low-latency, bidirectional, persistent communication is required (e.g. live chat, real-time collaboration, or market tickers)",
+    positiveMarks: 2,
+    negativeMarks: 0.5,
+    explanation: "WebSockets provide a persistent full-duplex TCP channel over a single connection, eliminating the overhead of repeated HTTP request headers in real-time scenarios.",
+  },
+  {
+    id: "mcq-fullstack-10",
+    topic: "Full Stack & Web Development",
+    difficulty: "medium",
+    question: "In MongoDB and Mongoose, what is the primary benefit of creating a Compound Index on `{ status: 1, createdAt: -1 }`?",
+    options: [
+      "It automatically encrypts the fields on disk",
+      "It allows queries filtering by status and sorting by createdAt to be resolved directly from the index without in-memory collection scans or sorting",
+      "It turns MongoDB into a relational SQL database",
+      "It eliminates the need for database backups"
+    ],
+    correctOptionIndex: 1,
+    correctAnswer: "It allows queries filtering by status and sorting by createdAt to be resolved directly from the index without in-memory collection scans or sorting",
+    positiveMarks: 2,
+    negativeMarks: 0.5,
+    explanation: "Compound indexes matching the Equality-Sort-Range (ESR) rule allow MongoDB to filter documents and satisfy sort orders directly within index memory.",
+  },
+  {
+    id: "mcq-fullstack-11",
+    topic: "Full Stack & Web Development",
+    difficulty: "hard",
+    question: "In high-traffic backend architectures, what is the purpose of implementing a Circuit Breaker pattern (e.g. using Opossum or Resilience4j)?",
+    options: [
+      "To restart the physical data center power supply",
+      "To detect downstream service failures and fail fast without overwhelming struggling dependencies with repeated requests",
+      "To automatically minify JavaScript bundle sizes",
+      "To encrypt SSL certificates on Cloudflare"
+    ],
+    correctOptionIndex: 1,
+    correctAnswer: "To detect downstream service failures and fail fast without overwhelming struggling dependencies with repeated requests",
+    positiveMarks: 3,
+    negativeMarks: 0.75,
+    explanation: "Circuit Breakers prevent cascading failures across distributed microservices by opening when error thresholds are crossed, temporarily returning fallback responses until dependencies recover.",
+  },
 ];
 
 const PRE_DEVELOPED_CODING_BANK = [
@@ -294,34 +478,52 @@ const PRE_DEVELOPED_CODING_BANK = [
  * Filter MCQs by topics, difficulty, count
  */
 function fetchMcqsFromBank({ topics = [], difficulty = "all", count = 5 }) {
-  let filtered = [...PRE_DEVELOPED_MCQ_BANK];
+  let pool = [...PRE_DEVELOPED_MCQ_BANK];
 
   if (topics && topics.length > 0) {
-    const topicKeywords = topics.map((t) => t.toLowerCase());
-    filtered = filtered.filter((q) =>
-      topicKeywords.some(
-        (kw) =>
-          q.topic.toLowerCase().includes(kw) ||
-          q.question.toLowerCase().includes(kw)
-      )
-    );
+    const rawSearch = topics.join(" ").toLowerCase();
+
+    // Determine target category
+    const isFullStack = /full[\s-]?stack|web|react|node|javascript|frontend|backend|express|html|css|api|rest/i.test(rawSearch);
+    const isDsa = /dsa|data\s*structure|algorithm|tree|graph|dp|dynamic\s*prog|binary\s*search|array|linked\s*list/i.test(rawSearch);
+    const isDb = /database|dbms|sql|mongo|nosql|postgres|mysql|query/i.test(rawSearch);
+    const isOs = /operating\s*system|network|tcp|thread|process|deadlock|concurrency/i.test(rawSearch);
+    const isLang = /python|java|cpp|c\+\+|oop|object\s*oriented|csharp|golang/i.test(rawSearch);
+
+    let topicFiltered = pool.filter((q) => {
+      const topicLower = q.topic.toLowerCase();
+      if (isFullStack && topicLower.includes("full stack")) return true;
+      if (isDsa && topicLower.includes("data structures")) return true;
+      if (isDb && topicLower.includes("database")) return true;
+      if (isOs && (topicLower.includes("operating") || topicLower.includes("network"))) return true;
+      if (isLang && topicLower.includes("programming")) return true;
+      return false;
+    });
+
+    if (topicFiltered.length === 0) {
+      // Fallback to general topic keyword search across topic names
+      const words = rawSearch.split(/\s+/).filter((w) => w.length > 2);
+      topicFiltered = pool.filter((q) =>
+        words.some((w) => q.topic.toLowerCase().includes(w))
+      );
+    }
+
+    if (topicFiltered.length > 0) {
+      pool = topicFiltered;
+    }
   }
 
   if (difficulty && difficulty !== "all") {
-    filtered = filtered.filter(
+    const diffMatches = pool.filter(
       (q) => q.difficulty.toLowerCase() === difficulty.toLowerCase()
     );
+    if (diffMatches.length > 0) {
+      pool = diffMatches;
+    }
   }
 
-  // If filtered is empty or fewer than count, fallback to general pool
-  if (filtered.length < count) {
-    const remaining = PRE_DEVELOPED_MCQ_BANK.filter(
-      (q) => !filtered.some((f) => f.id === q.id)
-    );
-    filtered = [...filtered, ...remaining];
-  }
-
-  return filtered.slice(0, count);
+  // Shuffle or slice up to count
+  return pool.slice(0, count);
 }
 
 /**
@@ -509,10 +711,12 @@ function parseLeetCodeProblemData(q, sourceUrl) {
   }
 
   if (testCases.length === 0 && q.exampleTestcaseList && q.exampleTestcaseList.length > 0) {
+    const rawOutputs = Array.from((q.content || "").matchAll(/Output:\s*([^\n\r<]+)/gi));
     q.exampleTestcaseList.forEach((inputStr, idx) => {
+      const extractedOut = rawOutputs[idx] ? unescapeHtmlEntities(rawOutputs[idx][1]).replace(/[`*"]/g, "").trim() : "";
       testCases.push({
         input: unescapeHtmlEntities(inputStr),
-        expectedOutput: "",
+        expectedOutput: extractedOut || "",
         description: `Sample case ${idx + 1}`,
         isHidden: false,
       });

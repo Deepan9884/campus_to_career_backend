@@ -1128,6 +1128,17 @@ async function executeCode({ code, language = "python", testCases = [], question
         const expectedTrimmed = String(tc.expectedOutput || "").trim().replace(/\r\n/g, "\n");
         const actualTrimmed = String(res.stdout || "").trim().replace(/\r\n/g, "\n");
 
+        const normalizeForComparison = (str = "") =>
+          String(str)
+            .trim()
+            .replace(/\r\n/g, "\n")
+            .split("\n")
+            .map((l) => l.trimEnd())
+            .join("\n")
+            .replace(/\[\s+/g, "[")
+            .replace(/\s+\]/g, "]")
+            .replace(/,\s+/g, ",");
+
         let passed = false;
         let status = "Failed";
         let actualOutput = res.stdout || (res.stderr ? `Error: ${res.stderr}` : "");
@@ -1137,7 +1148,9 @@ async function executeCode({ code, language = "python", testCases = [], question
           status = "Runtime Error";
           actualOutput = res.stderr ? `Runtime Error: ${res.stderr}` : "Runtime Error (exit code " + res.exitCode + ")";
         } else if (expectedTrimmed.length > 0) {
-          passed = actualTrimmed === expectedTrimmed;
+          passed =
+            actualTrimmed === expectedTrimmed ||
+            normalizeForComparison(actualTrimmed) === normalizeForComparison(expectedTrimmed);
           status = passed ? "Passed" : "Failed";
         } else if (res.stdout && res.exitCode === 0) {
           passed = true;

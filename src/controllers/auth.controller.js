@@ -21,7 +21,7 @@ const {
   verifyResetToken,
   getPasswordFragment,
 } = require("../utils/resetToken");
-const { sendPasswordResetEmail } = require("../services/email.service");
+const emailService = require("../services/email.service");
 const { OAuth2Client } = require("google-auth-library");
 
 const googleClient = new OAuth2Client(env.GOOGLE_CLIENT_ID);
@@ -109,6 +109,11 @@ const register = asyncHandler(async (req, res) => {
 
   setRefreshTokenCookie(res, refreshToken);
 
+  // Send branded welcome email to new student
+  emailService.sendWelcomeEmail(user).catch((e) =>
+    console.error("[Email] Failed to send welcome email:", e.message)
+  );
+
   return ApiResponse.created({
     user: {
       _id: user._id,
@@ -182,6 +187,13 @@ const login = asyncHandler(async (req, res) => {
   await user.save();
 
   setRefreshTokenCookie(res, refreshToken);
+
+  // Send security new sign-in alert email
+  emailService.sendNewLoginAlertEmail(user, {
+    ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
+    userAgent: req.headers["user-agent"],
+    loginTime: new Date(),
+  }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
 
   return ApiResponse.success({
     user: {
@@ -275,6 +287,13 @@ const googleLogin = asyncHandler(async (req, res) => {
   await user.save();
 
   setRefreshTokenCookie(res, refreshToken);
+
+  // Send security new sign-in alert email for Google OAuth
+  emailService.sendNewLoginAlertEmail(user, {
+    ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
+    userAgent: req.headers["user-agent"],
+    loginTime: new Date(),
+  }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
 
   return ApiResponse.success({
     user: {
@@ -383,6 +402,13 @@ const githubLogin = asyncHandler(async (req, res) => {
   await user.save();
 
   setRefreshTokenCookie(res, refreshToken);
+
+  // Send security new sign-in alert email for GitHub OAuth
+  emailService.sendNewLoginAlertEmail(user, {
+    ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
+    userAgent: req.headers["user-agent"],
+    loginTime: new Date(),
+  }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
 
   return ApiResponse.success({
     user: {
@@ -641,7 +667,7 @@ const forgotPassword = asyncHandler(async (req, res) => {
   if (user && user.password && user.authProvider !== "google") {
     const token = generateResetToken(user);
     const resetLink = `${env.CLIENT_URL}/reset-password?token=${token}`;
-    await sendPasswordResetEmail(email, resetLink).catch(() => {});
+    await emailService.sendPasswordResetEmail(email, resetLink).catch(() => {});
   }
 
   return ApiResponse.success(
@@ -855,6 +881,13 @@ const login2FA = asyncHandler(async (req, res) => {
   await user.save();
 
   setRefreshTokenCookie(res, refreshToken);
+
+  // Send security new sign-in alert email for 2FA login
+  emailService.sendNewLoginAlertEmail(user, {
+    ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
+    userAgent: req.headers["user-agent"],
+    loginTime: new Date(),
+  }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
 
   return ApiResponse.success({
     user: {

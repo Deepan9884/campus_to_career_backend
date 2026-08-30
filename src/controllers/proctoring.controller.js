@@ -6,6 +6,7 @@ const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 const notificationService = require("../services/notification.service");
+const emailService = require("../services/email.service");
 const { invalidateUserCache } = require("../middleware/auth.middleware");
 
 const MAX_VIOLATIONS = 3;
@@ -111,7 +112,7 @@ const reportViolation = asyncHandler(async (req, res) => {
       console.error("[Proctoring] Failed to sync ExamSubmission status:", examSubErr);
     }
 
-    // Notify the student
+    // Notify the student via in-app notification & email
     try {
       const studentNotification = await Notification.create({
         user: req.user._id,
@@ -124,6 +125,17 @@ const reportViolation = asyncHandler(async (req, res) => {
         read: false,
       });
       notificationService.pushToOpenConnections(req.user._id, studentNotification);
+
+      // Trigger high-deliverability email alert
+      const fullStudent = await User.findById(req.user._id).select("name email assignedMentor").populate("assignedMentor", "name").lean();
+      if (fullStudent) {
+        emailService.sendProctoringBlockedEmail(fullStudent, {
+          examTitle: moduleType === "exam" ? "Faculty Assessment" : moduleType === "interview" ? "AI Mock Interview" : "Skill Gap Quiz",
+          reason: isFullscreenTimeout ? "Exited fullscreen and failed to return within 15 seconds" : "Anti-cheat violations limit exceeded (3 strikes)",
+          violationCount: record.violationCount,
+          mentorName: fullStudent.assignedMentor?.name || "Your Mentor",
+        }).catch((e) => console.error("[Proctoring] Failed to send email alert:", e.message));
+      }
     } catch (err) {
       console.error("[Proctoring] Failed to send block notification to student:", err);
     }

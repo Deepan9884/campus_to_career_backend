@@ -3,6 +3,7 @@ const rateLimit = require("express-rate-limit");
 const verifyJWT = require("../middleware/auth.middleware");
 const verifyRole = require("../middleware/role.middleware");
 const checkProctoringBlock = require("../middleware/proctoringBlock.middleware");
+const { examUpload } = require("../middleware/examFileMulter");
 const {
   createExam,
   getAdminExams,
@@ -17,6 +18,8 @@ const {
   parseCodingLink,
   generateAiMcqs,
   generateAiCoding,
+  extractQuestionsFromFile,
+  extractQuestionsFromText,
   getStudentAvailableExams,
   getStudentExamForTaking,
   submitStudentExam,
@@ -117,6 +120,17 @@ router.post(
   "/admin/generate-ai-coding",
   verifyRole(["admin", "mentor"]),
   generateAiCoding
+);
+router.post(
+  "/admin/extract-questions-from-file",
+  verifyRole(["admin", "mentor"]),
+  examUpload.single("file"),
+  extractQuestionsFromFile
+);
+router.post(
+  "/admin/extract-questions-from-text",
+  verifyRole(["admin", "mentor"]),
+  extractQuestionsFromText
 );
 
 // ── STUDENT ROUTES ──────────────────────────────────────────────────────────

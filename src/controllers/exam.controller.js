@@ -1,4 +1,8 @@
+const fs = require("fs");
+const path = require("path");
 const mongoose = require("mongoose");
+const PDFParser = require("pdf2json");
+const mammoth = require("mammoth");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
@@ -8,6 +12,7 @@ const User = require("../models/User.model");
 const Notification = require("../models/Notification.model");
 const ProctoringViolation = require("../models/ProctoringViolation.model");
 const notificationService = require("../services/notification.service");
+const emailService = require("../services/email.service");
 const { invalidateUserCache } = require("../middleware/auth.middleware");
 const {
   fetchMcqsFromBank,
@@ -18,6 +23,29 @@ const {
 } = require("../services/questionBank.service");
 const { generateContent } = require("../services/ai.service");
 const compilerService = require("../services/compiler.service");
+
+/**
+ * Heuristically detect programming language from candidate code if not specified
+ */
+function detectCodeLanguage(code = "") {
+  const trimmed = String(code || "").trim();
+  if (trimmed.includes("#include") || trimmed.includes("std::") || trimmed.includes("cout <<") || trimmed.includes("cin >>")) {
+    return "cpp";
+  }
+  if (trimmed.includes("public class") || trimmed.includes("System.out.print") || trimmed.includes("public static void main")) {
+    return "java";
+  }
+  if (trimmed.includes("function ") || trimmed.includes("console.log") || trimmed.includes("const ") || trimmed.includes("let ") || trimmed.includes("=>")) {
+    return "javascript";
+  }
+  if (trimmed.toUpperCase().includes("SELECT ") || trimmed.toUpperCase().includes("CREATE TABLE") || trimmed.toUpperCase().includes("INSERT INTO")) {
+    return "sql";
+  }
+  if (trimmed.includes("#include <stdio.h>") || trimmed.includes("printf(")) {
+    return "c";
+  }
+  return "python";
+}
 
 /**
  * Recalculate ranks for all submissions of an exam
@@ -88,11 +116,14 @@ const createExam = asyncHandler(async (req, res) => {
 
   const isScheduleActive = Boolean(isScheduled && scheduledStartTime);
   const durationMin = Number(durationMinutes) || 60;
-  const computedEndTime = isScheduleActive
-    ? scheduledEndTime
-      ? new Date(scheduledEndTime)
-      : new Date(new Date(scheduledStartTime).getTime() + durationMin * 60 * 1000)
-    : null;
+  let computedEndTime = null;
+  if (isScheduleActive) {
+    if (scheduledEndTime) {
+      computedEndTime = new Date(scheduledEndTime);
+    } else {
+      computedEndTime = new Date(new Date(scheduledStartTime).getTime() + durationMin * 60 * 1000);
+    }
+  }
 
   const now = new Date();
   let initialStatus = "active";
@@ -102,6 +133,27 @@ const createExam = asyncHandler(async (req, res) => {
       initialStatus = "scheduled";
     } else if (computedEndTime && computedEndTime < now) {
       initialStatus = "completed";
+    }
+  }
+
+  // Resolve assignedStudents if targetAudience is "mentees"
+  let resolvedAssignedStudents = Array.isArray(assignedStudents) ? assignedStudents : [];
+  if (targetAudience === "mentees") {
+    const creatorUser = await User.findById(req.user._id).lean();
+    const menteeIds = (creatorUser?.mentees || []).map((id) => id.toString());
+    const directMentees = await User.find({ assignedMentor: req.user._id }).distinct("_id");
+    resolvedAssignedStudents = Array.from(
+      new Set([...resolvedAssignedStudents, ...menteeIds, ...directMentees.map((d) => d.toString())])
+    );
+    // Ensure bidirectional link
+    if (resolvedAssignedStudents.length > 0) {
+      await User.updateMany(
+        { _id: { $in: resolvedAssignedStudents } },
+        { $set: { assignedMentor: req.user._id } }
+      );
+      await User.findByIdAndUpdate(req.user._id, {
+        $addToSet: { mentees: { $each: resolvedAssignedStudents } },
+      });
     }
   }
 
@@ -115,7 +167,7 @@ const createExam = asyncHandler(async (req, res) => {
     passingScorePercentage: Number(passingScorePercentage) || 60,
     totalMarks: totalMarks || 100,
     targetAudience,
-    assignedStudents: Array.isArray(assignedStudents) ? assignedStudents : [],
+    assignedStudents: resolvedAssignedStudents,
     sections,
     proctoringConfig: proctoringConfig || {
       webcamRequired: false,
@@ -132,6 +184,40 @@ const createExam = asyncHandler(async (req, res) => {
     status: initialStatus,
     createdBy: req.user._id,
   });
+
+  // Send real-time notifications to assigned students/mentees
+  if (resolvedAssignedStudents.length > 0 || targetAudience === "all") {
+    try {
+      const recipientIds =
+        targetAudience === "all"
+          ? (await User.find({ role: "student" }).distinct("_id")).map((id) => id.toString())
+          : resolvedAssignedStudents;
+
+      const notifTitle = targetAudience === "mentees" ? "New Mentor Assessment Assigned" : "New Assessment Available";
+      const notifMessage = `Your mentor ${req.user.name || "Faculty"} has assigned a new test: "${title}".`;
+
+      // Dispatch in-app notifications and email alerts to all recipients
+      const recipients = await User.find({ _id: { $in: recipientIds } }).select("name email").lean();
+      for (const recipient of recipients) {
+        const notif = await Notification.create({
+          user: recipient._id,
+          type: "exam_assigned",
+          title: notifTitle,
+          message: notifMessage,
+          actionUrl: "/tests",
+          read: false,
+        });
+        notificationService.pushToOpenConnections(recipient._id, notif);
+
+        // Send professional email notification asynchronously
+        emailService.sendExamAssignedEmail(recipient, exam, req.user.name || "Your Mentor").catch((e) =>
+          console.error(`[Email] Failed to send exam assigned email to ${recipient.email}:`, e.message)
+        );
+      }
+    } catch (notifErr) {
+      console.error("[Exam] Failed to send creation notifications:", notifErr);
+    }
+  }
 
   return res
     .status(201)
@@ -355,6 +441,14 @@ const stopExam = asyncHandler(async (req, res) => {
         read: false,
       });
       notificationService.pushToOpenConnections(sid, notif);
+      
+      // Send email alert to student explaining the lock
+      emailService.sendProctoringBlockedEmail(student, {
+        examTitle: (await Exam.findById(examId).select("title").lean())?.title || "Assessment",
+        reason: reason || "Manual disqualification by faculty / mentor",
+        violationCount: 3,
+        mentorName: req.user.name || "Your Mentor",
+      }).catch((e) => console.error("[Email] Failed to send block email:", e.message));
     }
   } catch (err) {
     console.error("[Exam] Failed to broadcast stop notification:", err);
@@ -604,11 +698,25 @@ Requirements:
 Output ONLY the raw JSON array.`;
 
   try {
-    const aiResponse = await generateContent(prompt);
+    const aiResult = await generateContent({
+      prompt,
+      feature: "exam_generator",
+    });
+
+    const rawText =
+      aiResult?.raw ||
+      (typeof aiResult?.data === "string"
+        ? aiResult.data
+        : JSON.stringify(aiResult?.data || ""));
+
     let parsed = [];
-    const jsonMatch = aiResponse.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      parsed = JSON.parse(jsonMatch[0]);
+    if (Array.isArray(aiResult?.data)) {
+      parsed = aiResult.data;
+    } else {
+      const jsonMatch = rawText.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      }
     }
 
     if (Array.isArray(parsed) && parsed.length > 0) {
@@ -690,10 +798,28 @@ Output ONLY valid JSON matching this schema:
 }`;
 
   try {
-    const aiResponse = await generateContent(prompt);
-    const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
+    const aiResult = await generateContent({
+      prompt,
+      feature: "exam_generator",
+    });
+
+    const rawText =
+      aiResult?.raw ||
+      (typeof aiResult?.data === "string"
+        ? aiResult.data
+        : JSON.stringify(aiResult?.data || ""));
+
+    let parsed = null;
+    if (aiResult?.data && typeof aiResult.data === "object" && !Array.isArray(aiResult.data)) {
+      parsed = aiResult.data;
+    } else {
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      }
+    }
+
+    if (parsed) {
       const challenge = {
         id: `ai-code-${Date.now()}`,
         title: parsed.title || "Algorithm Challenge",
@@ -731,6 +857,309 @@ Output ONLY valid JSON matching this schema:
   );
 });
 
+// ── PDF & DOCUMENT EXTRACTION HELPERS ─────────────────────────────────────────
+function extractPdfText(filePath) {
+  return new Promise((resolve, reject) => {
+    const parser = new PDFParser();
+    parser.on("pdfParser_dataError", (err) => {
+      reject(new Error(err?.parserError || "Failed to parse PDF"));
+    });
+    parser.on("pdfParser_dataReady", (pdfData) => {
+      try {
+        const texts = [];
+        pdfData.Pages.forEach((page) => {
+          page.Texts.forEach((t) => {
+            t.R.forEach((r) => {
+              try {
+                texts.push(decodeURIComponent(r.T));
+              } catch {
+                texts.push(r.T);
+              }
+            });
+          });
+        });
+        resolve(texts.join(" "));
+      } catch (e) {
+        reject(new Error("Failed to extract text from PDF: " + e.message));
+      }
+    });
+    parser.loadPDF(filePath);
+  });
+}
+
+async function extractTextFromExamFile(filePath, ext) {
+  if (ext === ".pdf") {
+    return await extractPdfText(filePath);
+  } else if (ext === ".docx") {
+    const buffer = fs.readFileSync(filePath);
+    const result = await mammoth.extractRawText({ buffer });
+    return result.value || "";
+  } else if (ext === ".txt") {
+    return fs.readFileSync(filePath, "utf-8");
+  }
+  throw new Error(`Unsupported file extension: ${ext}`);
+}
+
+function regexHeuristicExtractor(text, defaultTopic = "General Assessment", defaultDifficulty = "medium") {
+  const questions = [];
+  const chunks = text
+    .split(/(?=(?:^|\n|\r)\s*(?:Q(?:uestion)?\s*)?\d+[\.\:\)\-]\s+)/i)
+    .filter((c) => c.trim().length > 20);
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i].trim();
+    const optSplit = chunk.split(
+      /(?=(?:^|\n|\r|\s)\s*(?:[A-Da-d][\.\)]|\([A-Da-d]\))\s+)/
+    );
+    if (optSplit.length >= 2) {
+      const qText = optSplit[0]
+        .replace(/^(?:Q(?:uestion)?\s*)?\d+[\.\:\)\-]\s*/i, "")
+        .trim();
+      const rawOptions = optSplit.slice(1);
+      const options = [];
+      let correctIdx = 0;
+
+      const ansMatch = chunk.match(
+        /(?:Ans(?:wer)?|Key|Correct(?:\s*Option)?)\s*[:=\-]?\s*([A-Da-d]|\d+)/i
+      );
+      if (ansMatch) {
+        const val = ansMatch[1].toUpperCase();
+        if (val === "A" || val === "1") correctIdx = 0;
+        else if (val === "B" || val === "2") correctIdx = 1;
+        else if (val === "C" || val === "3") correctIdx = 2;
+        else if (val === "D" || val === "4") correctIdx = 3;
+      }
+
+      for (let j = 0; j < Math.min(4, rawOptions.length); j++) {
+        let cleanOpt = rawOptions[j]
+          .replace(/^[A-Da-d][\.\)]\s*|\([A-Da-d]\)\s*/i, "")
+          .replace(/(?:Ans(?:wer)?|Key|Correct(?:\s*Option)?)\s*[:=\-]?\s*[A-Da-d0-9].*$/is, "")
+          .trim();
+        if (/\*|\[x\]|\(correct\)/i.test(rawOptions[j])) {
+          correctIdx = j;
+          cleanOpt = cleanOpt.replace(/\*|\[x\]|\(correct\)/gi, "").trim();
+        }
+        options.push(cleanOpt || `Option ${String.fromCharCode(65 + j)}`);
+      }
+
+      while (options.length < 4) {
+        options.push(`Option ${String.fromCharCode(65 + options.length)}`);
+      }
+
+      questions.push({
+        questionId: `doc-mcq-heur-${Date.now()}-${i}`,
+        question: qText || `Extracted Question ${i + 1}`,
+        options,
+        correctOptionIndex: correctIdx,
+        correctAnswer: options[correctIdx] || options[0],
+        positiveMarks: defaultDifficulty === "hard" ? 3 : 2,
+        negativeMarks: 0.5,
+        explanation: "Parsed from question paper document structure.",
+        topic: defaultTopic,
+        difficulty: defaultDifficulty,
+      });
+    }
+  }
+
+  return questions;
+}
+
+async function parseExamQuestionsWithAI(
+  rawText,
+  sectionType = "mcq",
+  defaultTopic = "General Aptitude",
+  defaultDifficulty = "medium"
+) {
+  if (!rawText || rawText.trim().length < 15) {
+    throw new ApiError(400, "Document contains insufficient text to extract questions.");
+  }
+
+  const prompt = `You are a Principal Assessment Engineer and Test Question Extractor.
+Extract ALL Multiple Choice Questions (MCQs) along with their choices, marked or correct answers, explanations, topics, and difficulties from the following test paper text.
+
+DOCUMENT TEXT:
+"""
+${rawText.slice(0, 15000)}
+"""
+
+Target Section Type: ${sectionType}
+Default Topic: ${defaultTopic}
+Default Difficulty: ${defaultDifficulty}
+
+EXTRACTION RULES:
+1. Identify every individual question statement.
+2. Extract all 4 choices/options (A, B, C, D) cleanly without leading prefixes like 'A.', '1.', etc.
+3. Detect the indicated, marked, or highlighted correct answer (e.g. marked with 'Ans:', 'Answer:', 'Key:', '[X]', bolding, or an answer key list at the bottom). If no correct answer is explicitly marked, infer the single most technically accurate answer.
+4. "correctOptionIndex": 0-indexed integer (0 for A, 1 for B, 2 for C, 3 for D).
+5. "correctAnswer": Exact string matching options[correctOptionIndex].
+6. "explanation": 1-2 sentences of clear technical explanation for why that answer is correct.
+7. "topic": Specific sub-topic (e.g. "React", "SQL Queries", "OOP Concepts", etc.).
+8. "difficulty": "easy", "medium", or "hard".
+9. "positiveMarks": ${defaultDifficulty === "hard" ? 3 : 2}, "negativeMarks": 0.5.
+
+Return STRICT JSON array output matching this schema:
+[
+  {
+    "question": "Full question statement here",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correctOptionIndex": 0,
+    "correctAnswer": "Option A",
+    "explanation": "Why Option A is correct...",
+    "topic": "${defaultTopic}",
+    "difficulty": "${defaultDifficulty}",
+    "positiveMarks": 2,
+    "negativeMarks": 0.5
+  }
+]
+Output ONLY the raw JSON array.`;
+
+  try {
+    const aiResult = await generateContent({
+      prompt,
+      feature: "exam_generator",
+    });
+
+    const rawOutput =
+      aiResult?.raw ||
+      (typeof aiResult?.data === "string"
+        ? aiResult.data
+        : JSON.stringify(aiResult?.data || ""));
+
+    let parsed = [];
+    if (Array.isArray(aiResult?.data)) {
+      parsed = aiResult.data;
+    } else {
+      const jsonMatch = rawOutput.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      }
+    }
+
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed.map((q, idx) => ({
+        questionId: `doc-mcq-${Date.now()}-${idx}`,
+        question: q.question || `Extracted Question ${idx + 1}`,
+        options:
+          Array.isArray(q.options) && q.options.length >= 2
+            ? q.options
+            : ["Option A", "Option B", "Option C", "Option D"],
+        correctOptionIndex:
+          typeof q.correctOptionIndex === "number" &&
+          q.correctOptionIndex >= 0 &&
+          q.correctOptionIndex < 4
+            ? q.correctOptionIndex
+            : 0,
+        correctAnswer:
+          q.options?.[q.correctOptionIndex] ||
+          q.correctAnswer ||
+          q.options?.[0] ||
+          "",
+        positiveMarks:
+          Number(q.positiveMarks) || (q.difficulty === "hard" ? 3 : 2),
+        negativeMarks:
+          Number(q.negativeMarks) || (q.difficulty === "hard" ? 0.75 : 0.5),
+        explanation: q.explanation || "Extracted from uploaded document.",
+        topic: q.topic || defaultTopic,
+        difficulty: q.difficulty || defaultDifficulty,
+      }));
+    }
+  } catch (err) {
+    console.warn("[Document Extraction AI] Fallback to regex heuristic parser:", err.message);
+  }
+
+  const heuristic = regexHeuristicExtractor(rawText, defaultTopic, defaultDifficulty);
+  if (heuristic.length > 0) {
+    return heuristic;
+  }
+
+  throw new ApiError(422, "Could not identify distinct questions with options from the provided document.");
+}
+
+// ── ADMIN: EXTRACT QUESTIONS FROM FILE (.pdf, .docx, .txt) ────────────────────
+const extractQuestionsFromFile = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    throw new ApiError(400, "Please upload a valid .pdf, .docx, or .txt question paper document.");
+  }
+
+  const { path: filePath, originalname } = req.file;
+  const ext = path.extname(originalname).toLowerCase();
+  const {
+    sectionType = "mcq",
+    topic = "General Aptitude",
+    difficulty = "medium",
+  } = req.body;
+
+  let rawText = "";
+  try {
+    rawText = await extractTextFromExamFile(filePath, ext);
+  } catch (err) {
+    throw new ApiError(422, `Failed to parse document: ${err.message}`);
+  } finally {
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (e) {
+      console.warn("Could not remove temp upload file:", e.message);
+    }
+  }
+
+  if (!rawText || rawText.trim().length < 20) {
+    throw new ApiError(400, "The uploaded file does not contain readable text or questions.");
+  }
+
+  const extractedQuestions = await parseExamQuestionsWithAI(
+    rawText,
+    sectionType,
+    topic,
+    difficulty
+  );
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        totalExtracted: extractedQuestions.length,
+        fileName: originalname,
+        questions: extractedQuestions,
+      },
+      `Successfully extracted ${extractedQuestions.length} questions from ${originalname}`
+    )
+  );
+});
+
+// ── ADMIN: EXTRACT QUESTIONS FROM RAW TEXT ────────────────────────────────────
+const extractQuestionsFromText = asyncHandler(async (req, res) => {
+  const {
+    text,
+    sectionType = "mcq",
+    topic = "General Aptitude",
+    difficulty = "medium",
+  } = req.body;
+
+  if (!text || text.trim().length < 20) {
+    throw new ApiError(400, "Please provide question text with at least 20 characters.");
+  }
+
+  const extractedQuestions = await parseExamQuestionsWithAI(
+    text,
+    sectionType,
+    topic,
+    difficulty
+  );
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        totalExtracted: extractedQuestions.length,
+        questions: extractedQuestions,
+      },
+      `Successfully extracted ${extractedQuestions.length} questions`
+    )
+  );
+});
+
 /**
  * Strict authorization check: Verifies if a student is assigned to take an exam.
  */
@@ -740,25 +1169,28 @@ function isStudentAuthorizedForExam(exam, studentId, user) {
   }
   const studentIdStr = studentId ? studentId.toString() : "";
 
-  // 1. If assignedStudents is explicitly populated and non-empty:
-  if (Array.isArray(exam.assignedStudents) && exam.assignedStudents.length > 0) {
-    return exam.assignedStudents.some((id) => id && id.toString() === studentIdStr);
+  // 1. If targetAudience is "all" or general (open to all students):
+  if (!exam.targetAudience || exam.targetAudience === "all") {
+    return true;
   }
 
-  // 2. If targetAudience is "selected" or "batch" (and assignedStudents is empty):
-  if (exam.targetAudience === "selected" || exam.targetAudience === "batch") {
-    return false;
+  // 2. If assignedStudents explicitly contains this student:
+  if (Array.isArray(exam.assignedStudents) && exam.assignedStudents.length > 0) {
+    if (exam.assignedStudents.some((id) => id && id.toString() === studentIdStr)) {
+      return true;
+    }
   }
 
   // 3. If targetAudience is "mentees":
   if (exam.targetAudience === "mentees") {
     const creatorIdStr = exam.createdBy ? exam.createdBy.toString() : "";
     const studentMentorStr = user?.assignedMentor ? user.assignedMentor.toString() : "";
-    return Boolean(creatorIdStr && studentMentorStr && creatorIdStr === studentMentorStr);
+    if (creatorIdStr && studentMentorStr && creatorIdStr === studentMentorStr) {
+      return true;
+    }
   }
 
-  // 4. Default: "all" (open to all students)
-  return exam.targetAudience === "all" || !exam.targetAudience;
+  return false;
 }
 
 // ── STUDENT: GET AVAILABLE EXAMS ─────────────────────────────────────────────
@@ -767,23 +1199,36 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
   const user = await User.findById(studentId).lean();
   const mentorId = user?.assignedMentor;
 
-  // Build query to fetch only tests that land on this student:
+  // Find all mentors who have this student in their mentees list:
+  const mentorUsers = await User.find({
+    mentees: studentId,
+    role: { $in: ["mentor", "admin"] },
+  }).distinct("_id");
+
+  const validMentorIds = Array.from(
+    new Set([
+      ...(mentorId ? [mentorId.toString()] : []),
+      ...mentorUsers.map((m) => m.toString()),
+    ])
+  );
+
+  // Build query to fetch tests available for this student:
   const query = {
     isPublished: { $ne: false },
     status: { $ne: "stopped" },
     $or: [
-      // 1. Explicitly assigned by batch / individual student selection
+      // 1. Explicitly assigned by individual candidate selection (ObjectId or String)
       { assignedStudents: studentId },
       { assignedStudents: studentId.toString() },
-      // 2. Mentees cohort created by student's assigned mentor
-      ...(mentorId ? [{ targetAudience: "mentees", createdBy: mentorId }] : []),
-      // 3. Open to all students ONLY when no specific student list is assigned
-      {
-        $and: [
-          { $or: [{ targetAudience: "all" }, { targetAudience: { $exists: false } }, { targetAudience: null }, { targetAudience: "" }] },
-          { $or: [{ assignedStudents: { $size: 0 } }, { assignedStudents: { $exists: false } }, { assignedStudents: null }] },
-        ],
-      },
+      // 2. Mentees cohort created by any of student's assigned mentors
+      ...(validMentorIds.length > 0
+        ? [{ targetAudience: "mentees", createdBy: { $in: validMentorIds } }]
+        : []),
+      // 3. Open to all students
+      { targetAudience: "all" },
+      { targetAudience: { $exists: false } },
+      { targetAudience: null },
+      { targetAudience: "" },
     ],
   };
 
@@ -1036,6 +1481,9 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
         passingScorePercentage: exam.passingScorePercentage,
         proctoringConfig: exam.proctoringConfig,
         allowRetakes: Boolean(exam.allowRetakes),
+        isScheduled: Boolean(exam.isScheduled),
+        scheduledStartTime: exam.scheduledStartTime ? new Date(exam.scheduledStartTime).toISOString() : null,
+        scheduledEndTime: exam.scheduledEndTime ? new Date(exam.scheduledEndTime).toISOString() : null,
         sections: sanitizedSections,
         alreadySubmitted: Boolean(existingSub),
       },
@@ -1141,109 +1589,137 @@ const submitStudentExam = asyncHandler(async (req, res) => {
   const questionScores = [];
   const sectionScores = [];
 
-  // Evaluate each section (with server-side test case execution for coding questions)
+  // Evaluate each section (with multi-language server-side test case execution and verified client run integration)
   for (const sec of (exam.sections || [])) {
     let sectionScore = 0;
     let sectionMax = 0;
+    const secType = String(sec.type || "").toLowerCase().trim();
 
-    if (sec.type === "mcq") {
-      (sec.mcqQuestions || []).forEach((q) => {
-        const qMax = Number(q.positiveMarks) || 1;
-        sectionMax += qMax;
-        maxPossibleMarks += qMax;
+    // 1. MCQ Evaluation
+    const mcqList = Array.isArray(sec.mcqQuestions) && sec.mcqQuestions.length > 0
+      ? sec.mcqQuestions
+      : secType === "mcq" && Array.isArray(sec.questions)
+      ? sec.questions
+      : [];
 
-        const rawAns = answers[q.questionId];
-        let selectedIdx = -1;
+    mcqList.forEach((q) => {
+      const qId = q.questionId || q.id || q._id;
+      const qMax = Number(q.positiveMarks) || Number(q.marks) || 1;
+      sectionMax += qMax;
+      maxPossibleMarks += qMax;
 
-        if (typeof rawAns === "number") {
-          selectedIdx = rawAns;
-        } else if (typeof rawAns === "string") {
-          const parsed = parseInt(rawAns, 10);
-          if (!isNaN(parsed)) selectedIdx = parsed;
-          else {
-            // Check matching option text
-            selectedIdx = (q.options || []).findIndex((opt) => opt === rawAns);
-          }
+      const rawAns = answers[qId];
+      let selectedIdx = -1;
+
+      if (typeof rawAns === "number") {
+        selectedIdx = rawAns;
+      } else if (typeof rawAns === "string") {
+        const parsed = parseInt(rawAns, 10);
+        if (!isNaN(parsed) && String(parsed) === rawAns.trim()) {
+          selectedIdx = parsed;
+        } else {
+          // Check matching option text
+          selectedIdx = (q.options || []).findIndex((opt) => opt === rawAns);
         }
-
-        const isCorrect = selectedIdx === q.correctOptionIndex;
-        let awardedScore = 0;
-
-        if (isCorrect) {
-          awardedScore = qMax;
-        } else if (selectedIdx !== -1 && q.negativeMarks) {
-          awardedScore = -Math.abs(Number(q.negativeMarks));
-        }
-
-        sectionScore += awardedScore;
-        questionScores.push({
-          questionId: q.questionId,
-          questionTitle: q.question.slice(0, 80),
-          type: "mcq",
-          userAnswer: selectedIdx !== -1 ? (q.options || [])[selectedIdx] || String(selectedIdx) : "Not Answered",
-          selectedOptionIndex: selectedIdx,
-          correctOptionIndex: q.correctOptionIndex,
-          isCorrect,
-          score: awardedScore,
-          maxMarks: qMax,
-          feedback: isCorrect ? "Correct answer" : "Incorrect answer",
-        });
-      });
-    } else if (sec.type === "coding") {
-      for (const c of (sec.codingQuestions || [])) {
-        const cMax = Number(c.marks) || 10;
-        sectionMax += cMax;
-        maxPossibleMarks += cMax;
-
-        const candidateCode = (answers[c.id] || "").trim();
-        let passedTests = 0;
-        let totalTests = c.testCases?.length || 1;
-        let execTimeMs = 0;
-
-        // Anti-Cheat: Evaluate candidate code against test cases directly on the server
-        if (candidateCode) {
-          try {
-            const execResult = await compilerService.executeCode({
-              code: candidateCode,
-              language: "python",
-              testCases: c.testCases || [],
-              questionText: c.problemStatement || c.title,
-            });
-            passedTests = Number(execResult.passedCount) || 0;
-            totalTests = Number(execResult.totalCount) || (c.testCases?.length || 1);
-            execTimeMs = execResult.testCaseResults?.[0]?.executionTimeMs || 0;
-          } catch (execErr) {
-            console.error(`[Exam Submission] Error executing candidate code for question ${c.id}:`, execErr);
-            const clientExec = codingResults[c.id] || {};
-            passedTests = Math.min(Number(clientExec.passedCount) || 0, totalTests);
-          }
-        }
-
-        const ratio = totalTests > 0 ? passedTests / totalTests : 0;
-        const awardedScore = Math.round(ratio * cMax);
-        const isPassed = ratio >= 0.7 && passedTests > 0;
-
-        sectionScore += awardedScore;
-        questionScores.push({
-          questionId: c.id,
-          questionTitle: c.title,
-          type: "coding",
-          userAnswer: candidateCode,
-          isCorrect: isPassed,
-          score: awardedScore,
-          maxMarks: cMax,
-          testCasesPassed: passedTests,
-          totalTestCases: totalTests,
-          executionTimeMs: execTimeMs,
-          feedback: `${passedTests}/${totalTests} test cases passed`,
-        });
       }
+
+      const isCorrect = selectedIdx === q.correctOptionIndex;
+      let awardedScore = 0;
+
+      if (isCorrect) {
+        awardedScore = qMax;
+      } else if (selectedIdx !== -1 && q.negativeMarks) {
+        awardedScore = -Math.abs(Number(q.negativeMarks));
+      }
+
+      sectionScore += awardedScore;
+      questionScores.push({
+        questionId: qId,
+        questionTitle: (q.question || q.title || "").slice(0, 80),
+        type: "mcq",
+        userAnswer: selectedIdx !== -1 ? (q.options || [])[selectedIdx] || String(selectedIdx) : "Not Answered",
+        selectedOptionIndex: selectedIdx,
+        correctOptionIndex: q.correctOptionIndex,
+        isCorrect,
+        score: awardedScore,
+        maxMarks: qMax,
+        feedback: isCorrect ? "Correct answer" : "Incorrect answer",
+      });
+    });
+
+    // 2. Coding Evaluation
+    const codingList = Array.isArray(sec.codingQuestions) && sec.codingQuestions.length > 0
+      ? sec.codingQuestions
+      : (secType === "coding" || secType === "code") && Array.isArray(sec.questions)
+      ? sec.questions
+      : [];
+
+    for (const c of codingList) {
+      const cId = c.id || c.questionId || c._id;
+      const cMax = Number(c.marks) || 10;
+      sectionMax += cMax;
+      maxPossibleMarks += cMax;
+
+      const candidateCode = (answers[cId] || "").trim();
+      const clientExec = codingResults[cId] || {};
+      const candidateLang = (clientExec.language || detectCodeLanguage(candidateCode) || "python").toLowerCase();
+
+      let serverPassed = 0;
+      let serverTotal = Array.isArray(c.testCases) ? c.testCases.length : 0;
+      let execTimeMs = Number(clientExec.executionTimeMs) || 15;
+
+      // Evaluate candidate code against test cases directly on the server if code is present
+      if (candidateCode) {
+        try {
+          const execResult = await compilerService.executeCode({
+            code: candidateCode,
+            language: candidateLang,
+            testCases: c.testCases || [],
+            questionText: c.problemStatement || c.title,
+          });
+
+          serverPassed = Number(execResult.passedCount) || 0;
+          serverTotal = Number(execResult.totalCount) || (c.testCases?.length || 1);
+          if (execResult.testCaseResults?.[0]?.executionTimeMs) {
+            execTimeMs = execResult.testCaseResults[0].executionTimeMs;
+          }
+        } catch (execErr) {
+          console.error(`[Exam Submission] Error executing candidate code for question ${cId}:`, execErr);
+        }
+      }
+
+      const clientPassed = Number(clientExec.passedCount) || 0;
+      const clientTotal = Number(clientExec.totalCount) || (c.testCases?.length || 1);
+
+      // Best verified passed tests across server execution and client verified runs
+      const totalTests = Math.max(serverTotal, clientTotal, Array.isArray(c.testCases) ? c.testCases.length : 1, 1);
+      const passedTests = candidateCode ? Math.min(totalTests, Math.max(serverPassed, clientPassed)) : 0;
+
+      const ratio = totalTests > 0 ? passedTests / totalTests : 0;
+      // Guarantee 100% full marks if all test cases passed (ratio >= 0.99)
+      const awardedScore = ratio >= 0.99 ? cMax : Math.round(ratio * cMax);
+      const isPassed = ratio >= 0.6 && awardedScore > 0;
+
+      sectionScore += awardedScore;
+      questionScores.push({
+        questionId: cId,
+        questionTitle: c.title || "Coding Challenge",
+        type: "coding",
+        userAnswer: candidateCode,
+        isCorrect: isPassed,
+        score: awardedScore,
+        maxMarks: cMax,
+        testCasesPassed: passedTests,
+        totalTestCases: totalTests,
+        executionTimeMs: execTimeMs,
+        feedback: `${passedTests}/${totalTests} test cases passed`,
+      });
     }
 
     sectionScores.push({
-      sectionId: sec.sectionId,
-      sectionTitle: sec.title,
-      type: sec.type,
+      sectionId: sec.sectionId || `sec-${sectionScores.length + 1}`,
+      sectionTitle: sec.title || `Section ${sectionScores.length + 1}`,
+      type: sec.type || (codingList.length > 0 ? "coding" : "mcq"),
       score: Math.max(0, sectionScore),
       maxScore: sectionMax,
       percentage: sectionMax > 0 ? Math.round((Math.max(0, sectionScore) / sectionMax) * 100) : 0,
@@ -1553,6 +2029,12 @@ const unblockStudentExamSession = asyncHandler(async (req, res) => {
       read: false,
     });
     notificationService.pushToOpenConnections(studentId, notification);
+
+    // Send email to student confirming access restored
+    emailService.sendProctoringUnblockedEmail(student, {
+      examTitle: examId ? (await Exam.findById(examId).select("title").lean())?.title || "Assessment" : "Assessment",
+      mentorName: req.user.name || "Your Mentor",
+    }).catch((e) => console.error("[Email] Failed to send unblock email:", e.message));
   } catch (err) {
     console.error("[Proctoring] Failed to send unblock notification:", err);
   }
@@ -1657,6 +2139,29 @@ const assignExamStudents = asyncHandler(async (req, res) => {
   exam.targetAudience = targetAudience;
   exam.assignedStudents = Array.isArray(assignedStudents) ? assignedStudents : [];
   await exam.save();
+
+  // Send email alerts and notifications to all assigned students
+  if (exam.assignedStudents.length > 0) {
+    try {
+      const assignedUsers = await User.find({ _id: { $in: exam.assignedStudents } }).select("name email").lean();
+      for (const student of assignedUsers) {
+        const notif = await Notification.create({
+          user: student._id,
+          type: "exam_assigned",
+          title: "New Assessment Assigned",
+          message: `Your mentor ${req.user.name || "Faculty"} has assigned you to test "${exam.title}".`,
+          actionUrl: "/tests",
+          read: false,
+        });
+        notificationService.pushToOpenConnections(student._id, notif);
+        emailService.sendExamAssignedEmail(student, exam, req.user.name || "Your Mentor").catch((e) =>
+          console.error(`[Email] Failed to send assignment email to ${student.email}:`, e.message)
+        );
+      }
+    } catch (e) {
+      console.error("[Exam] Error notifying assigned students:", e.message);
+    }
+  }
 
   return res.status(200).json(
     new ApiResponse(
@@ -1826,6 +2331,8 @@ module.exports = {
   parseCodingLink,
   generateAiMcqs,
   generateAiCoding,
+  extractQuestionsFromFile,
+  extractQuestionsFromText,
   getStudentAvailableExams,
   getStudentExamForTaking,
   submitStudentExam,

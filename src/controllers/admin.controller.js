@@ -18,6 +18,7 @@ const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 const notificationService = require("../services/notification.service");
+const emailService = require("../services/email.service");
 const { generateContent } = require("../services/ai.service");
 const { invalidateUserCache } = require("../middleware/auth.middleware");
 
@@ -867,6 +868,12 @@ const unblockProctoring = asyncHandler(async (req, res) => {
       read: false,
     });
     notificationService.pushToOpenConnections(studentId, notification);
+
+    // Send email alert to student confirming access restored
+    emailService.sendProctoringUnblockedEmail(student, {
+      examTitle: "Examination & Assessment Portal",
+      mentorName: req.user.name || "Your Mentor",
+    }).catch((e) => console.error("[Email] Failed to send unblock email:", e.message));
   } catch (err) {
     console.error("[Proctoring] Failed to send unblock notification:", err);
   }
@@ -1336,6 +1343,14 @@ const batchUnblockProctoring = asyncHandler(async (req, res) => {
           read: false,
         });
         notificationService.pushToOpenConnections(sid, notification);
+
+        const student = await User.findById(sid).select("name email").lean();
+        if (student) {
+          emailService.sendProctoringUnblockedEmail(student, {
+            examTitle: "Examination & Assessment Portal",
+            mentorName: req.user.name || "Your Mentor",
+          }).catch((e) => console.error("[Email] Failed to send batch unblock email:", e.message));
+        }
       } catch (err) {
         console.error(`Failed to send unblock notification to student ${sid}:`, err);
       }

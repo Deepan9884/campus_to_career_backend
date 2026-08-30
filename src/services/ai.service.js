@@ -122,6 +122,7 @@ function buildSuccessResult(response, model, isFallback = false) {
     data: null,
     raw: null,
     model,
+    aiProvider: isFallback ? "smart-fallback" : "gemini",
     tokensEstimate: null,
     isFallback,
   };
@@ -213,6 +214,7 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
       data: fallbackData,
       raw: JSON.stringify(fallbackData),
       model: "contextual-smart-engine",
+      aiProvider: "smart-fallback",
       tokensEstimate: 100,
       isFallback: true,
     };
@@ -372,6 +374,7 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
       data: fallbackData,
       raw: JSON.stringify(fallbackData),
       model: "smart-contextual-engine",
+      aiProvider: "smart-fallback",
       tokensEstimate: 150,
       isFallback: true,
     };
@@ -429,7 +432,20 @@ function extractKeywordsFromText(text) {
 function generateContextualFallback(feature, prompt, responseSchema) {
   const promptText = prompt || "";
 
-  // 1. ATS Resume Analysis Fallback
+  // 1. Resume Bullet Point Improvement
+  if (feature === "resume_improve_bullet" || feature.includes("improve_bullet")) {
+    const rawMatch = promptText.match(/"([^"]+)"/) || [null, promptText];
+    const original = (rawMatch[1] || promptText).replace(/Original bullet point:\s*/i, "").trim();
+    const techKeywords = extractKeywordsFromText(original);
+    const techPhrase = techKeywords.length > 0
+      ? `leveraging ${techKeywords.slice(0, 2).join(" and ")}`
+      : "applying modern engineering best practices";
+    return {
+      improved: `Engineered and delivered high-impact solution ${techPhrase}, achieving measurable improvements in system reliability, performance efficiency, and production-grade scalability.`,
+    };
+  }
+
+  // 2. ATS Resume Analysis Fallback
   if (feature === "resume-analysis" || feature.includes("resume")) {
     const extractedSkills = extractKeywordsFromText(promptText);
     const hasTypeScript = promptText.toLowerCase().includes("typescript");
@@ -480,18 +496,7 @@ function generateContextualFallback(feature, prompt, responseSchema) {
     };
   }
 
-  // 2. Resume Bullet Point Improvement
-  if (feature === "resume_improve_bullet" || feature.includes("improve_bullet")) {
-    const rawMatch = promptText.match(/"([^"]+)"/) || [null, promptText];
-    const original = (rawMatch[1] || promptText).replace(/Original bullet point:\s*/i, "").trim();
-    const techKeywords = extractKeywordsFromText(original);
-    const techPhrase = techKeywords.length > 0
-      ? `leveraging ${techKeywords.slice(0, 2).join(" and ")}`
-      : "applying modern engineering best practices";
-    return {
-      improved: `Engineered and delivered high-impact solution ${techPhrase}, achieving measurable improvements in system reliability, performance efficiency, and production-grade scalability.`,
-    };
-  }
+
 
   // 3. Interview Question Selection
   if (feature.includes("selection")) {
@@ -763,6 +768,7 @@ async function generateContentStream({ prompt, model, feature = "general", userI
 module.exports = {
   generateContent,
   generateContentStream,
+  generateContextualFallback,
   getQuotaStatus: rateLimiter.getQuotaStatus.bind(rateLimiter),
   getUsageSummary: rateLimiter.getUsageSummary.bind(rateLimiter),
   ERROR_TYPES,

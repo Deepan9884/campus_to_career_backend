@@ -114,12 +114,30 @@ describe("Security Hardening & Input Sanitization Tests", () => {
       expect(checkCodeSecurity("eval('process.env')", "javascript").safe).toBe(false);
     });
 
-    test("permits safe algorithmic code", () => {
+    test("blocks dangerous Java system calls and reflection", () => {
+      expect(checkCodeSecurity("Runtime.getRuntime().exec(\"calc\");", "java").safe).toBe(false);
+      expect(checkCodeSecurity("new ProcessBuilder(\"ls\").start();", "java").safe).toBe(false);
+      expect(checkCodeSecurity("System.exit(0);", "java").safe).toBe(false);
+    });
+
+    test("blocks dangerous C++ system calls and headers", () => {
+      expect(checkCodeSecurity("#include <fstream>\nint main() { std::ofstream f(\"test.txt\"); return 0; }", "cpp").safe).toBe(false);
+      expect(checkCodeSecurity("#include <iostream>\nint main() { system(\"whoami\"); return 0; }", "cpp").safe).toBe(false);
+      expect(checkCodeSecurity("#include <windows.h>\nint main() { return 0; }", "cpp").safe).toBe(false);
+    });
+
+    test("permits safe algorithmic code across languages", () => {
       const safePython = "def two_sum(nums, target):\n    seen = {}\n    for i, n in enumerate(nums):\n        if target - n in seen:\n            return [seen[target - n], i]\n        seen[n] = i\n    return []";
       expect(checkCodeSecurity(safePython, "python").safe).toBe(true);
 
       const safeJS = "function fib(n) {\n  if (n <= 1) return n;\n  return fib(n - 1) + fib(n - 2);\n}";
       expect(checkCodeSecurity(safeJS, "javascript").safe).toBe(true);
+
+      const safeCpp = "#include <iostream>\n#include <vector>\nint main() { std::vector<int> v = {1, 2, 3}; std::cout << v.size(); return 0; }";
+      expect(checkCodeSecurity(safeCpp, "cpp").safe).toBe(true);
+
+      const safeJava = "public class Solution {\n  public static int sum(int a, int b) {\n    return a + b;\n  }\n}";
+      expect(checkCodeSecurity(safeJava, "java").safe).toBe(true);
     });
   });
 
