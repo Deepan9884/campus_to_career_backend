@@ -21,6 +21,7 @@ app.disable("x-powered-by");
 // --- Security headers, HSTS, Frameguard & CSP
 app.use(
   helmet({
+    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
@@ -32,6 +33,9 @@ app.use(
           "https://api.github.com",
           "https://generativelanguage.googleapis.com",
           "https://accounts.google.com",
+          "https://www.googleapis.com",
+          "https://oauth2.googleapis.com",
+          "https://openidconnect.googleapis.com",
         ],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
         objectSrc: ["'none'"],

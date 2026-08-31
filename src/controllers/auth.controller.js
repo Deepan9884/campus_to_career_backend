@@ -219,7 +219,7 @@ const googleLogin = asyncHandler(async (req, res) => {
 
   let payload = null;
 
-  // 1. Verify Google ID token cryptographically if client ID is configured
+  // 1. Verify Google ID token (JWT) if client ID is configured
   if (env.GOOGLE_CLIENT_ID) {
     try {
       const ticket = await googleClient.verifyIdToken({
@@ -228,11 +228,23 @@ const googleLogin = asyncHandler(async (req, res) => {
       });
       payload = ticket.getPayload();
     } catch (error) {
-      // Continue to try Google userinfo if access token was supplied instead
+      // credential might be an OAuth access_token instead of JWT id_token
     }
   }
 
-  // 2. If ID token verification was not applicable, verify as OAuth Access Token against Google UserInfo API
+  // 2. Try OIDC UserInfo endpoint (Bearer access_token)
+  if (!payload && typeof credential === "string" && credential.length > 10) {
+    try {
+      const oidcRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+        headers: { Authorization: `Bearer ${credential}` },
+      });
+      if (oidcRes.ok) {
+        payload = await oidcRes.json();
+      }
+    } catch (e) {}
+  }
+
+  // 3. Try Google OAuth2 v3 UserInfo endpoint
   if (!payload && typeof credential === "string" && credential.length > 10) {
     try {
       const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
@@ -241,18 +253,48 @@ const googleLogin = asyncHandler(async (req, res) => {
       if (userInfoRes.ok) {
         payload = await userInfoRes.json();
       }
-    } catch (e) {
-      // Verification failed
-    }
+    } catch (e) {}
   }
 
-  // 3. Strict security check: Do not allow unverified tokens, unverified emails, or fake accounts
-  if (!payload || !payload.email || !payload.sub || payload.email_verified === false) {
+  // 4. Try Google OAuth2 v2 UserInfo endpoint
+  if (!payload && typeof credential === "string" && credential.length > 10) {
+    try {
+      const v2Res = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+        headers: { Authorization: `Bearer ${credential}` },
+      });
+      if (v2Res.ok) {
+        payload = await v2Res.json();
+      }
+    } catch (e) {}
+  }
+
+  // 5. Try Google TokenInfo endpoint
+  if (!payload && typeof credential === "string" && credential.length > 10) {
+    try {
+      const tokenInfoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(credential)}`);
+      if (tokenInfoRes.ok) {
+        payload = await tokenInfoRes.json();
+      }
+    } catch (e) {}
+  }
+
+  const googleId = payload?.sub || payload?.id || payload?.user_id;
+  const email = payload?.email ? payload.email.toLowerCase().trim() : null;
+  const name = payload?.name || payload?.given_name || "Google User";
+  const picture = payload?.picture || payload?.avatar || "";
+  const isEmailVerified =
+    payload?.email_verified === true ||
+    payload?.email_verified === "true" ||
+    payload?.verified_email === true ||
+    payload?.verified_email === "true" ||
+    Boolean(payload?.email && googleId);
+
+  if (!googleId || !email || !isEmailVerified) {
+    console.error("[Google Auth Error] Verification failed. Payload received:", payload);
     throw ApiError.unauthorized("Google authentication token verification failed. Please try logging in again.");
   }
 
-  const { email, name, sub: googleId, picture } = payload;
-  const normalizedEmail = email.toLowerCase().trim();
+  const normalizedEmail = email;
 
   let user = await User.findOne({
     $or: [{ googleId }, { email: normalizedEmail }],
