@@ -246,37 +246,61 @@ const googleLogin = asyncHandler(async (req, res) => {
     }
   }
 
-  // 3. Strict security check: Do not allow unverified tokens or fake accounts
-  if (!payload || !payload.email || !payload.sub) {
+  // 3. Strict security check: Do not allow unverified tokens, unverified emails, or fake accounts
+  if (!payload || !payload.email || !payload.sub || payload.email_verified === false) {
     throw ApiError.unauthorized("Google authentication token verification failed. Please try logging in again.");
   }
 
   const { email, name, sub: googleId, picture } = payload;
+  const normalizedEmail = email.toLowerCase().trim();
 
-  let user = await User.findByEmail(email).select("+password");
+  let user = await User.findOne({
+    $or: [{ googleId }, { email: normalizedEmail }],
+  }).select("+password");
 
   if (user) {
+    let modified = false;
     if (!user.googleId) {
       user.googleId = googleId;
-      if (user.authProvider === "local") {
-        user.authProvider = "both";
-      }
-      if (!user.avatar && picture) {
-        user.avatar = picture;
-      }
+      modified = true;
+    }
+    if (user.authProvider === "local") {
+      user.authProvider = "both";
+      modified = true;
+    }
+    if (!user.avatar && picture) {
+      user.avatar = picture;
+      modified = true;
+    }
+    if (!user.isEmailVerified) {
+      user.isEmailVerified = true;
+      modified = true;
+    }
+    if (user.failedLoginAttempts > 0 || user.lockUntil) {
+      user.failedLoginAttempts = 0;
+      user.lockUntil = null;
+      modified = true;
+    }
+    if (modified) {
       await user.save();
     }
   } else {
     const randomPassword = crypto.randomBytes(32).toString("hex") + "Aa1!";
     user = await User.create({
       name: name || "Google User",
-      email,
+      email: normalizedEmail,
       password: randomPassword,
       googleId,
       authProvider: "google",
       avatar: picture || "",
       role: "student",
+      isEmailVerified: true,
     });
+
+    // Send welcome email to new Google user
+    emailService.sendWelcomeEmail(user).catch((e) =>
+      console.error("[Email] Failed to send welcome email:", e.message)
+    );
   }
 
   const accessToken = user.generateAccessToken();
@@ -307,6 +331,7 @@ const googleLogin = asyncHandler(async (req, res) => {
       profile: user.profile,
       createdAt: user.createdAt,
       authProvider: user.authProvider,
+      isEmailVerified: user.isEmailVerified,
     },
     accessToken,
   }).send(res);
