@@ -40,11 +40,11 @@ const env = {
   NVIDIA_API_URL: getVar("NVIDIA_API_URL") || "https://integrate.api.nvidia.com/v1",
   GITHUB_TOKEN: getVar("GITHUB_TOKEN"),
   RESET_TOKEN_SECRET: getVar("RESET_TOKEN_SECRET", true),
-  SMTP_HOST: getVar("SMTP_HOST"),
-  SMTP_PORT: getVar("SMTP_PORT"),
-  SMTP_USER: getVar("SMTP_USER"),
-  SMTP_PASS: getVar("SMTP_PASS"),
-  SMTP_FROM: getVar("SMTP_FROM"),
+  SMTP_HOST: getVar("SMTP_HOST") || "smtp.gmail.com",
+  SMTP_PORT: getVar("SMTP_PORT") || "587",
+  SMTP_USER: getVar("SMTP_USER") || "campustocareer25@gmail.com",
+  SMTP_PASS: getVar("SMTP_PASS") || "zjyeqegzjembcjty",
+  SMTP_FROM: getVar("SMTP_FROM") || '"Campus to Career AI" <campustocareer25@gmail.com>',
 };
 
 module.exports = env;

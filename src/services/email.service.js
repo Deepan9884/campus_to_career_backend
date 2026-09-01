@@ -5,12 +5,12 @@ let transporter = null;
 let devMode = false;
 
 function initEmailService() {
-  const host = env.SMTP_HOST;
-  const port = env.SMTP_PORT;
-  const user = env.SMTP_USER;
-  const pass = env.SMTP_PASS;
+  const host = env.SMTP_HOST || "smtp.gmail.com";
+  const port = env.SMTP_PORT || "587";
+  const user = env.SMTP_USER || "campustocareer25@gmail.com";
+  const pass = env.SMTP_PASS || "zjyeqegzjembcjty";
 
-  if (!host || !port || !user || !pass) {
+  if (!user || !pass) {
     devMode = true;
     console.warn(
       "⚠️  SMTP not fully configured — emails will be logged to console instead of sent",
@@ -18,15 +18,26 @@ function initEmailService() {
     return;
   }
 
-  transporter = nodemailer.createTransport({
-    host,
-    port: parseInt(port, 10),
-    secure: parseInt(port, 10) === 465,
-    auth: { user, pass },
-    tls: {
-      rejectUnauthorized: false,
-    },
-  });
+  // Use service: 'gmail' for Gmail for maximum reliability across cloud hosts
+  if (host.includes("gmail") || user.endsWith("@gmail.com")) {
+    transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: { user, pass },
+      tls: {
+        rejectUnauthorized: false,
+      },
+    });
+  } else {
+    transporter = nodemailer.createTransport({
+      host,
+      port: parseInt(port, 10),
+      secure: parseInt(port, 10) === 465,
+      auth: { user, pass },
+      tls: {
+        rejectUnauthorized: false,
+      },
+    });
+  }
 
   devMode = false;
   console.log(`[Email Service] SMTP initialized for ${user}`);
