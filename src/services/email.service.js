@@ -70,8 +70,18 @@ function parseUserAgent(ua = "") {
  * Formats a clean sender address and anti-spam deliverability headers.
  */
 function getMailOptions({ to, subject, html, text, customHeaders = {} }) {
-  const senderEmail = env.SMTP_USER || "noreply@campustocareer.ai";
-  const from = env.SMTP_FROM || `"Campus to Career AI" <${senderEmail}>`;
+  const senderEmail = env.SMTP_USER || "campustocareer25@gmail.com";
+  let from = env.SMTP_FROM || `"Campus to Career AI" <${senderEmail}>`;
+
+  if (typeof from === "string") {
+    const clean = from.replace(/['"]/g, "").trim();
+    const match = clean.match(/^(.*?)\s*<([^>]+)>/);
+    if (match) {
+      from = `"${match[1].trim() || "Campus to Career AI"}" <${match[2].trim()}>`;
+    } else if (clean.includes("@")) {
+      from = `"Campus to Career AI" <${clean}>`;
+    }
+  }
 
   return {
     from,
@@ -487,11 +497,14 @@ async function sendProctoringUnblockedEmail(user, { examTitle = "Assessment", me
   }
 }
 
-// ── 5. SEND NEW LOGIN / SECURITY ALERT EMAIL ──────────────────────────────────
-async function sendNewLoginAlertEmail(user, { ip = "Unknown IP", userAgent = "", loginTime = null }) {
+// ── 5. SEND SECURITY NEW LOGIN ALERT EMAIL ───────────────────────────────────
+async function sendNewLoginAlertEmail(user, { ip = "Unknown IP", userAgent = "", loginTime = new Date() } = {}) {
   if (!user?.email) return;
+  if (!transporter) {
+    initEmailService();
+  }
   if (devMode || !transporter) {
-    console.log(`[DEV MODE] New Login Email to ${user.email} from IP: ${ip}`);
+    console.log(`[DEV MODE] Security Login Alert to ${user.email} (IP: ${ip})`);
     return;
   }
 
@@ -557,6 +570,9 @@ async function sendNewLoginAlertEmail(user, { ip = "Unknown IP", userAgent = "",
 // ── 6. SEND WELCOME EMAIL ─────────────────────────────────────────────────────
 async function sendWelcomeEmail(user) {
   if (!user?.email) return;
+  if (!transporter) {
+    initEmailService();
+  }
   if (devMode || !transporter) {
     console.log(`[DEV MODE] Welcome Email to ${user.email}`);
     return;
