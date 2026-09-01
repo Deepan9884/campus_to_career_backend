@@ -17,9 +17,13 @@ process.on("unhandledRejection", (reason, promise) => {
 });
 
 const start = async () => {
-  // Fire the DB connection — don't block startup on it.
-  // connectDB logs its own errors and retries via mongoose reconnection logic.
-  connectDB().catch(() => {});
+  // Fire the DB connection — intentionally non-blocking and non-fatal.
+  // If MongoDB Atlas rejects the connection (e.g. IP not whitelisted),
+  // the server still starts on the configured PORT so the proxy gets a
+  // real HTTP response (503 from health check) instead of a 502 Bad Gateway.
+  connectDB().catch((err) => {
+    console.error("[server] DB connection failed (non-fatal) —", err.message);
+  });
 
   const server = app.listen(env.PORT, () => {
     console.log(`[server] Campus to Career AI API running — http://localhost:${env.PORT}`);
