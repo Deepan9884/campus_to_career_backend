@@ -555,34 +555,71 @@ async function sendWelcomeEmail(user) {
   const clientUrl = env.CLIENT_URL || "http://localhost:8080";
 
   const html = renderBaseTemplate({
-    badgeText: "WELCOME",
+    badgeText: "WELCOME TO CAMPUS TO CAREER",
     badgeColor: "#4f46e5",
     badgeBg: "#eef2ff",
-    heading: `Welcome to Campus to Career AI, ${studentName}! 🚀`,
-    subheading: "Your AI-powered career readiness and placement acceleration platform is ready.",
+    heading: `Welcome aboard, ${studentName}! 🚀`,
+    subheading: "Your AI-powered career readiness and placement acceleration studio is now ready.",
     contentHtml: `
-      <p style="margin: 0 0 14px 0; color: #334155; font-size: 14px; line-height: 1.6;">
-        We're thrilled to have you on board! Here's how to kickstart your preparation journey:
+      <p style="margin: 0 0 16px 0; color: #334155; font-size: 14px; line-height: 1.6;">
+        Welcome to <strong>Campus to Career AI</strong> — the next-generation intelligent platform built to turn your academic knowledge into recruiter-ready internship and job offers.
       </p>
-      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 16px 0;">
-        <ul style="margin: 0; padding-left: 20px; color: #334155; font-size: 13px; line-height: 1.8;">
-          <li><strong>Complete your Profile:</strong> Add your target roles, register number, and tech stack.</li>
-          <li><strong>Connect Coding Handles:</strong> Sync LeetCode, GitHub, CodeChef, and Codeforces profiles.</li>
-          <li><strong>Take AI Skill Gap Assessments:</strong> Discover exact readiness gaps and customized roadmaps.</li>
-          <li><strong>Attempt Faculty Exams:</strong> Take proctored MCQ and coding assessments assigned by your mentors.</li>
-        </ul>
+
+      <div style="margin: 20px 0;">
+        <h3 style="margin: 0 0 12px 0; color: #0f172a; font-size: 15px; font-weight: 700;">🌟 What you can do inside your workspace:</h3>
+
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size: 13px; line-height: 1.6;">
+          <tr>
+            <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 8px;">
+              <strong style="color: #4f46e5;">📄 ATS Resume Studio:</strong> Upload your PDF/DOCX resume to receive instant ATS formatting diagnostics, keyword gap analysis, and AI bullet-point rewrites.
+            </td>
+          </tr>
+          <tr><td style="height: 8px;"></td></tr>
+          <tr>
+            <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 8px;">
+              <strong style="color: #0284c7;">🎙️ AI Voice Mock Coach:</strong> Practice live voice-driven technical, behavioral, and system design interviews tailored to your target company with STAR scorecards.
+            </td>
+          </tr>
+          <tr><td style="height: 8px;"></td></tr>
+          <tr>
+            <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 8px;">
+              <strong style="color: #7c3aed;">🚀 SuperDream DSA & Coding Arena:</strong> Solve curated coding problems with instant test case execution and compiler feedback across Python, Java, C++, and JS.
+            </td>
+          </tr>
+          <tr><td style="height: 8px;"></td></tr>
+          <tr>
+            <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 8px;">
+              <strong style="color: #059669;">📊 Skill Gap Matrix & Learning Roadmaps:</strong> Benchmark your skillset against industry standards and unlock step-by-step career roadmaps.
+            </td>
+          </tr>
+          <tr><td style="height: 8px;"></td></tr>
+          <tr>
+            <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+              <strong style="color: #d97706;">🛡️ Faculty Assessments & Live Proctoring:</strong> Attempt institute-assigned quizzes and coding rounds with anti-cheat monitoring.
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 14px 16px; margin: 20px 0;">
+        <h4 style="margin: 0 0 6px 0; color: #166534; font-size: 13px; font-weight: 700;">🎯 3 Quick Steps to Get Started:</h4>
+        <ol style="margin: 0; padding-left: 18px; color: #15803d; font-size: 12px; line-height: 1.7;">
+          <li>Select your target job role in your profile setup.</li>
+          <li>Connect your GitHub & coding handles to track progress.</li>
+          <li>Upload your resume for your first instant AI evaluation.</li>
+        </ol>
       </div>
     `,
     ctaUrl: `${clientUrl}/dashboard`,
-    ctaText: "Explore My Dashboard",
+    ctaText: "Launch My Student Dashboard",
   });
 
-  const text = `Welcome to Campus to Career AI, ${studentName}!\n\nYour account has been registered successfully.\nStart exploring your AI skill assessments, roadmap, and test console at:\n${clientUrl}/dashboard\n\nCampus to Career AI Team`;
+  const text = `Welcome to Campus to Career AI, ${studentName}!\n\nYour account has been set up successfully.\n\nKey Platform Features:\n- ATS Resume Studio: Real-time keyword scoring and ATS formatting audits\n- AI Voice Mock Coach: Live simulated voice interviews with STAR scorecards\n- SuperDream DSA Arena: Curated algorithmic prep and multi-language compiler\n- Skill Gap Roadmaps: Tailored milestones for your target role\n- Faculty Exam Console: Proctored coding and MCQ assessments\n\nStart your journey today at:\n${clientUrl}/dashboard\n\nBest regards,\nCampus to Career AI Team`;
 
   try {
     const opts = getMailOptions({
       to: user.email,
-      subject: `Welcome to Campus to Career AI, ${studentName}! 🚀`,
+      subject: `Welcome to Campus to Career AI, ${studentName}! 🚀 Your AI Preparation Studio is Ready`,
       html,
       text,
     });

@@ -70,6 +70,7 @@ const userSchema = new mongoose.Schema(
     refreshTokenVersion: { type: Number, default: 0 },
     failedLoginAttempts: { type: Number, default: 0 },
     lockUntil: { type: Date, default: null },
+    welcomeEmailSent: { type: Boolean, default: false },
     preferences: {
       theme: {
         type: String,

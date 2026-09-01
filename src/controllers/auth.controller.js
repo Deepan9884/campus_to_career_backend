@@ -98,7 +98,7 @@ const register = asyncHandler(async (req, res) => {
     throw ApiError.conflict("Email already registered");
   }
 
-  const user = await User.create({ name, email, password });
+  const user = await User.create({ name, email, password, welcomeEmailSent: true });
 
   const accessToken = user.generateAccessToken();
   const refreshToken = user.generateRefreshToken();
@@ -188,12 +188,20 @@ const login = asyncHandler(async (req, res) => {
 
   setRefreshTokenCookie(res, refreshToken);
 
-  // Send security new sign-in alert email
-  emailService.sendNewLoginAlertEmail(user, {
-    ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
-    userAgent: req.headers["user-agent"],
-    loginTime: new Date(),
-  }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
+  // Send Welcome email if this user hasn't received one yet, otherwise send security login alert
+  if (!user.welcomeEmailSent) {
+    user.welcomeEmailSent = true;
+    await user.save();
+    emailService.sendWelcomeEmail(user).catch((e) =>
+      console.error("[Email] Failed to send welcome email:", e.message)
+    );
+  } else {
+    emailService.sendNewLoginAlertEmail(user, {
+      ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
+      userAgent: req.headers["user-agent"],
+      loginTime: new Date(),
+    }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
+  }
 
   return ApiResponse.success({
     user: {
@@ -337,6 +345,7 @@ const googleLogin = asyncHandler(async (req, res) => {
       avatar: picture || "",
       role: "student",
       isEmailVerified: true,
+      welcomeEmailSent: true,
     });
 
     // Send welcome email to new Google user
@@ -354,12 +363,20 @@ const googleLogin = asyncHandler(async (req, res) => {
 
   setRefreshTokenCookie(res, refreshToken);
 
-  // Send security new sign-in alert email for Google OAuth
-  emailService.sendNewLoginAlertEmail(user, {
-    ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
-    userAgent: req.headers["user-agent"],
-    loginTime: new Date(),
-  }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
+  // Send Welcome email if this existing user hadn't received one yet, otherwise send security login alert
+  if (!user.welcomeEmailSent) {
+    user.welcomeEmailSent = true;
+    await user.save();
+    emailService.sendWelcomeEmail(user).catch((e) =>
+      console.error("[Email] Failed to send welcome email:", e.message)
+    );
+  } else {
+    emailService.sendNewLoginAlertEmail(user, {
+      ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
+      userAgent: req.headers["user-agent"],
+      loginTime: new Date(),
+    }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
+  }
 
   return ApiResponse.success({
     user: {
@@ -458,7 +475,13 @@ const githubLogin = asyncHandler(async (req, res) => {
       authProvider: "github",
       avatar: avatar || "",
       role: "student",
+      welcomeEmailSent: true,
     });
+
+    // Send welcome email to new GitHub user
+    emailService.sendWelcomeEmail(user).catch((e) =>
+      console.error("[Email] Failed to send welcome email:", e.message)
+    );
   }
 
   const accessToken = user.generateAccessToken();
@@ -470,12 +493,20 @@ const githubLogin = asyncHandler(async (req, res) => {
 
   setRefreshTokenCookie(res, refreshToken);
 
-  // Send security new sign-in alert email for GitHub OAuth
-  emailService.sendNewLoginAlertEmail(user, {
-    ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
-    userAgent: req.headers["user-agent"],
-    loginTime: new Date(),
-  }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
+  // Send Welcome email if this existing user hadn't received one yet, otherwise send security login alert
+  if (!user.welcomeEmailSent) {
+    user.welcomeEmailSent = true;
+    await user.save();
+    emailService.sendWelcomeEmail(user).catch((e) =>
+      console.error("[Email] Failed to send welcome email:", e.message)
+    );
+  } else {
+    emailService.sendNewLoginAlertEmail(user, {
+      ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
+      userAgent: req.headers["user-agent"],
+      loginTime: new Date(),
+    }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
+  }
 
   return ApiResponse.success({
     user: {
