@@ -303,6 +303,7 @@ const googleLogin = asyncHandler(async (req, res) => {
   }
 
   const normalizedEmail = email;
+  let isNewUser = false;
 
   let user = await User.findOne({
     $or: [{ googleId }, { email: normalizedEmail }],
@@ -335,6 +336,7 @@ const googleLogin = asyncHandler(async (req, res) => {
       await user.save();
     }
   } else {
+    isNewUser = true;
     const randomPassword = crypto.randomBytes(32).toString("hex") + "Aa1!";
     user = await User.create({
       name: name || "Google User",
@@ -393,6 +395,7 @@ const googleLogin = asyncHandler(async (req, res) => {
       isEmailVerified: user.isEmailVerified,
     },
     accessToken,
+    isNewUser,
   }).send(res);
 });
 
@@ -452,6 +455,7 @@ const githubLogin = asyncHandler(async (req, res) => {
   const name = githubUser.name || githubUser.login;
   const githubId = String(githubUser.id);
   const avatar = githubUser.avatar_url;
+  let isNewUser = false;
 
   let user = await User.findOne({
     $or: [{ githubId }, { email: email.toLowerCase() }],
@@ -465,6 +469,7 @@ const githubLogin = asyncHandler(async (req, res) => {
       await user.save();
     }
   } else {
+    isNewUser = true;
     const randomPassword = crypto.randomBytes(32).toString("hex") + "Aa1!";
     user = await User.create({
       name,
@@ -522,6 +527,7 @@ const githubLogin = asyncHandler(async (req, res) => {
       authProvider: user.authProvider,
     },
     accessToken,
+    isNewUser,
   }).send(res);
 });
 
