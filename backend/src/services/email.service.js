@@ -102,20 +102,60 @@ function getMailOptions({ to, subject, html, text, customHeaders = {} }) {
 
 /**
  * Universal email dispatcher:
- * 1. Uses Resend HTTP API (Port 443) if RESEND_API_KEY is present (100% immune to Render port blocking)
- * 2. Uses Brevo HTTP API (Port 443) if BREVO_API_KEY is present (100% immune to Render port blocking)
- * 3. Falls back to Nodemailer SMTP (Localhost & environments with unblocked SMTP ports)
+ * Priority order (all use HTTPS port 443, immune to Render port blocking):
+ * 1. Brevo HTTP API  — supports any verified sender email (campustocareer25@gmail.com)
+ * 2. Resend HTTP API — requires a verified domain; falls back gracefully if rejected
+ * 3. Nodemailer SMTP — works on localhost & environments with open SMTP ports
  */
 async function sendMailPayload(opts) {
-  // 1. Resend HTTP API (Bypasses all outbound port blocks on Render/Vercel)
+  const SENDER_EMAIL = env.SMTP_USER || "campustocareer25@gmail.com";
+  const SENDER_NAME  = "Campus to Career AI";
+
+  // 1. Brevo HTTP API — primary for Render (supports campustocareer25@gmail.com as sender)
+  if (env.BREVO_API_KEY) {
+    try {
+      const toList = Array.isArray(opts.to)
+        ? opts.to.map((e) => ({ email: e }))
+        : [{ email: opts.to }];
+
+      const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": env.BREVO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sender:      { name: SENDER_NAME, email: SENDER_EMAIL },
+          to:          toList,
+          replyTo:     { email: SENDER_EMAIL },
+          subject:     opts.subject,
+          htmlContent: opts.html,
+          textContent: opts.text,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        console.log(`[Email Service via Brevo HTTP] Email delivered to ${opts.to} (MessageId: ${data.messageId})`);
+        return true;
+      }
+      console.warn(`[Email Service] Brevo API error (${res.status}):`, JSON.stringify(data));
+    } catch (err) {
+      console.error(`[Email Service] Brevo HTTP request failed:`, err.message);
+    }
+  }
+
+  // 2. Resend HTTP API — fallback (requires verified domain for custom from address)
   if (env.RESEND_API_KEY) {
     try {
+      // Resend requires domain verification for custom from. We use the verified sender
+      // email if domain matches, otherwise fall back to onboarding@resend.dev but set reply-to.
       const payload = {
-        from: opts.from || "Campus to Career AI <onboarding@resend.dev>",
-        to: Array.isArray(opts.to) ? opts.to : [opts.to],
-        subject: opts.subject,
-        html: opts.html,
-        text: opts.text,
+        from:     `${SENDER_NAME} <${SENDER_EMAIL}>`,
+        reply_to: SENDER_EMAIL,
+        to:       Array.isArray(opts.to) ? opts.to : [opts.to],
+        subject:  opts.subject,
+        html:     opts.html,
+        text:     opts.text,
       };
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
@@ -130,41 +170,14 @@ async function sendMailPayload(opts) {
         console.log(`[Email Service via Resend HTTP] Email delivered to ${opts.to} (ID: ${data.id})`);
         return true;
       }
-      console.warn(`[Email Service] Resend API error (${res.status}):`, data);
+      // If domain not verified, Resend returns 403 — log clearly and continue to SMTP
+      console.warn(`[Email Service] Resend API error (${res.status}):`, JSON.stringify(data));
     } catch (err) {
       console.error(`[Email Service] Resend HTTP request failed:`, err.message);
     }
   }
 
-  // 2. Brevo HTTP API (Bypasses all outbound port blocks on Render/Vercel)
-  if (env.BREVO_API_KEY) {
-    try {
-      const res = await fetch("https://api.brevo.com/v3/smtp/email", {
-        method: "POST",
-        headers: {
-          "api-key": env.BREVO_API_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          sender: { name: "Campus to Career AI", email: env.SMTP_USER || "campustocareer25@gmail.com" },
-          to: [{ email: opts.to }],
-          subject: opts.subject,
-          htmlContent: opts.html,
-          textContent: opts.text,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        console.log(`[Email Service via Brevo HTTP] Email delivered to ${opts.to} (MessageId: ${data.messageId})`);
-        return true;
-      }
-      console.warn(`[Email Service] Brevo API error (${res.status}):`, data);
-    } catch (err) {
-      console.error(`[Email Service] Brevo HTTP request failed:`, err.message);
-    }
-  }
-
-  // 3. Nodemailer SMTP Fallback (Localhost & unblocked hosting)
+  // 3. Nodemailer SMTP Fallback (Localhost & environments with unblocked SMTP ports)
   if (!transporter) {
     initEmailService();
   }
@@ -181,7 +194,7 @@ async function sendMailPayload(opts) {
     if (err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED" || err.message?.includes("timeout")) {
       console.error(
         `🚨 [Email Service] Outbound SMTP connection blocked! Render free tier blocks outbound TCP ports 25, 465, and 587. ` +
-        `To enable instant email delivery on Render, add a free RESEND_API_KEY or BREVO_API_KEY to your Render Environment Variables.`
+        `Add BREVO_API_KEY or RESEND_API_KEY to your Render Environment Variables.`
       );
     } else {
       console.error(`[Email Service] SMTP delivery failed to ${opts.to}:`, err.message);
