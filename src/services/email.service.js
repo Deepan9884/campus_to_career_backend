@@ -101,6 +101,96 @@ function getMailOptions({ to, subject, html, text, customHeaders = {} }) {
 }
 
 /**
+ * Universal email dispatcher:
+ * 1. Uses Resend HTTP API (Port 443) if RESEND_API_KEY is present (100% immune to Render port blocking)
+ * 2. Uses Brevo HTTP API (Port 443) if BREVO_API_KEY is present (100% immune to Render port blocking)
+ * 3. Falls back to Nodemailer SMTP (Localhost & environments with unblocked SMTP ports)
+ */
+async function sendMailPayload(opts) {
+  // 1. Resend HTTP API (Bypasses all outbound port blocks on Render/Vercel)
+  if (env.RESEND_API_KEY) {
+    try {
+      const payload = {
+        from: opts.from || "Campus to Career AI <onboarding@resend.dev>",
+        to: Array.isArray(opts.to) ? opts.to : [opts.to],
+        subject: opts.subject,
+        html: opts.html,
+        text: opts.text,
+      };
+      const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        console.log(`[Email Service via Resend HTTP] Email delivered to ${opts.to} (ID: ${data.id})`);
+        return true;
+      }
+      console.warn(`[Email Service] Resend API error (${res.status}):`, data);
+    } catch (err) {
+      console.error(`[Email Service] Resend HTTP request failed:`, err.message);
+    }
+  }
+
+  // 2. Brevo HTTP API (Bypasses all outbound port blocks on Render/Vercel)
+  if (env.BREVO_API_KEY) {
+    try {
+      const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": env.BREVO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sender: { name: "Campus to Career AI", email: env.SMTP_USER || "campustocareer25@gmail.com" },
+          to: [{ email: opts.to }],
+          subject: opts.subject,
+          htmlContent: opts.html,
+          textContent: opts.text,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        console.log(`[Email Service via Brevo HTTP] Email delivered to ${opts.to} (MessageId: ${data.messageId})`);
+        return true;
+      }
+      console.warn(`[Email Service] Brevo API error (${res.status}):`, data);
+    } catch (err) {
+      console.error(`[Email Service] Brevo HTTP request failed:`, err.message);
+    }
+  }
+
+  // 3. Nodemailer SMTP Fallback (Localhost & unblocked hosting)
+  if (!transporter) {
+    initEmailService();
+  }
+  if (devMode || !transporter) {
+    console.log(`[DEV MODE] Email to ${opts.to}: ${opts.subject}`);
+    return false;
+  }
+
+  try {
+    const result = await transporter.sendMail(opts);
+    console.log(`[Email Service via SMTP] Email delivered to ${opts.to} (MessageId: ${result.messageId})`);
+    return true;
+  } catch (err) {
+    if (err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED" || err.message?.includes("timeout")) {
+      console.error(
+        `🚨 [Email Service] Outbound SMTP connection blocked! Render free tier blocks outbound TCP ports 25, 465, and 587. ` +
+        `To enable instant email delivery on Render, add a free RESEND_API_KEY or BREVO_API_KEY to your Render Environment Variables.`
+      );
+    } else {
+      console.error(`[Email Service] SMTP delivery failed to ${opts.to}:`, err.message);
+    }
+    throw err;
+  }
+}
+
+/**
  * Universal high-reputation HTML layout wrapper
  */
 function renderBaseTemplate({
@@ -275,7 +365,7 @@ async function sendPasswordResetEmail(email, resetLink) {
       html,
       text,
     });
-    await transporter.sendMail(opts);
+    await sendMailPayload(opts);
     console.log(`[Email Service] Password reset email sent to ${email}`);
   } catch (err) {
     console.error("[Email Service] Failed to send password reset email:", err.message);
@@ -365,7 +455,7 @@ async function sendExamAssignedEmail(user, exam, mentorName = "Your Mentor") {
       html,
       text,
     });
-    await transporter.sendMail(opts);
+    await sendMailPayload(opts);
     console.log(`[Email Service] Exam assigned notification email sent to ${user.email}`);
   } catch (err) {
     console.error(`[Email Service] Failed to send exam assignment email to ${user.email}:`, err.message);
@@ -436,7 +526,7 @@ async function sendProctoringBlockedEmail(user, { examTitle = "Assessment", reas
       html,
       text,
     });
-    await transporter.sendMail(opts);
+    await sendMailPayload(opts);
     console.log(`[Email Service] Proctoring blocked alert sent to ${user.email}`);
   } catch (err) {
     console.error(`[Email Service] Failed to send proctoring blocked email to ${user.email}:`, err.message);
@@ -490,7 +580,7 @@ async function sendProctoringUnblockedEmail(user, { examTitle = "Assessment", me
       html,
       text,
     });
-    await transporter.sendMail(opts);
+    await sendMailPayload(opts);
     console.log(`[Email Service] Proctoring unblocked email sent to ${user.email}`);
   } catch (err) {
     console.error(`[Email Service] Failed to send unblock email to ${user.email}:`, err.message);
@@ -560,7 +650,7 @@ async function sendNewLoginAlertEmail(user, { ip = "Unknown IP", userAgent = "",
       html,
       text,
     });
-    await transporter.sendMail(opts);
+    await sendMailPayload(opts);
     console.log(`[Email Service] Login alert sent to ${user.email}`);
   } catch (err) {
     console.error(`[Email Service] Failed to send login alert email to ${user.email}:`, err.message);
@@ -570,13 +660,6 @@ async function sendNewLoginAlertEmail(user, { ip = "Unknown IP", userAgent = "",
 // ── 6. SEND WELCOME EMAIL ─────────────────────────────────────────────────────
 async function sendWelcomeEmail(user) {
   if (!user?.email) return;
-  if (!transporter) {
-    initEmailService();
-  }
-  if (devMode || !transporter) {
-    console.log(`[DEV MODE] Welcome Email to ${user.email}`);
-    return;
-  }
 
   const studentName = user.name || "Student";
   const clientUrl = env.CLIENT_URL || "http://localhost:8080";
@@ -650,7 +733,7 @@ async function sendWelcomeEmail(user) {
       html,
       text,
     });
-    await transporter.sendMail(opts);
+    await sendMailPayload(opts);
     console.log(`[Email Service] Welcome email sent to ${user.email}`);
   } catch (err) {
     console.error(`[Email Service] Failed to send welcome email to ${user.email}:`, err.message);

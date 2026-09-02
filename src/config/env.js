@@ -45,6 +45,8 @@ const env = {
   SMTP_USER: getVar("SMTP_USER") || "campustocareer25@gmail.com",
   SMTP_PASS: getVar("SMTP_PASS") || "zjyeqegzjembcjty",
   SMTP_FROM: getVar("SMTP_FROM") || '"Campus to Career AI" <campustocareer25@gmail.com>',
+  RESEND_API_KEY: getVar("RESEND_API_KEY") || "",
+  BREVO_API_KEY: getVar("BREVO_API_KEY") || "",
 };
 
 module.exports = env;

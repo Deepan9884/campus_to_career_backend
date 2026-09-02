@@ -350,10 +350,6 @@ const googleLogin = asyncHandler(async (req, res) => {
       welcomeEmailSent: true,
     });
 
-    // Send welcome email to new Google user
-    emailService.sendWelcomeEmail(user).catch((e) =>
-      console.error("[Email] Failed to send welcome email:", e.message)
-    );
   }
 
   const accessToken = user.generateAccessToken();
@@ -365,8 +361,12 @@ const googleLogin = asyncHandler(async (req, res) => {
 
   setRefreshTokenCookie(res, refreshToken);
 
-  // Send Welcome email if this existing user hadn't received one yet, otherwise send security login alert
-  if (!user.welcomeEmailSent) {
+  if (isNewUser) {
+    // Send welcome email to new Google user
+    emailService.sendWelcomeEmail(user).catch((e) =>
+      console.error("[Email] Failed to send welcome email:", e.message)
+    );
+  } else if (!user.welcomeEmailSent) {
     user.welcomeEmailSent = true;
     await user.save();
     emailService.sendWelcomeEmail(user).catch((e) =>
@@ -483,10 +483,6 @@ const githubLogin = asyncHandler(async (req, res) => {
       welcomeEmailSent: true,
     });
 
-    // Send welcome email to new GitHub user
-    emailService.sendWelcomeEmail(user).catch((e) =>
-      console.error("[Email] Failed to send welcome email:", e.message)
-    );
   }
 
   const accessToken = user.generateAccessToken();
@@ -498,8 +494,12 @@ const githubLogin = asyncHandler(async (req, res) => {
 
   setRefreshTokenCookie(res, refreshToken);
 
-  // Send Welcome email if this existing user hadn't received one yet, otherwise send security login alert
-  if (!user.welcomeEmailSent) {
+  if (isNewUser) {
+    // Send welcome email to new GitHub user
+    emailService.sendWelcomeEmail(user).catch((e) =>
+      console.error("[Email] Failed to send welcome email:", e.message)
+    );
+  } else if (!user.welcomeEmailSent) {
     user.welcomeEmailSent = true;
     await user.save();
     emailService.sendWelcomeEmail(user).catch((e) =>
