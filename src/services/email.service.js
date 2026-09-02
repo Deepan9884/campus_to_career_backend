@@ -324,11 +324,6 @@ function renderBaseTemplate({
 
 // ── 1. SEND PASSWORD RESET EMAIL ──────────────────────────────────────────────
 async function sendPasswordResetEmail(email, resetLink) {
-  if (devMode || !transporter) {
-    console.log(`[DEV MODE] Password reset link for ${email}: ${resetLink}`);
-    return;
-  }
-
   const clientUrl = env.CLIENT_URL || "http://localhost:8080";
   const html = renderBaseTemplate({
     badgeText: "SECURITY ALERT",
@@ -375,10 +370,6 @@ async function sendPasswordResetEmail(email, resetLink) {
 // ── 2. SEND EXAM / TEST ASSIGNED EMAIL ────────────────────────────────────────
 async function sendExamAssignedEmail(user, exam, mentorName = "Your Mentor") {
   if (!user?.email) return;
-  if (devMode || !transporter) {
-    console.log(`[DEV MODE] Exam Assigned Email to ${user.email} for "${exam?.title}"`);
-    return;
-  }
 
   const clientUrl = env.CLIENT_URL || "http://localhost:8080";
   const examUrl = `${clientUrl}/tests`;
@@ -465,10 +456,6 @@ async function sendExamAssignedEmail(user, exam, mentorName = "Your Mentor") {
 // ── 3. SEND PROCTORING BLOCKED EMAIL ──────────────────────────────────────────
 async function sendProctoringBlockedEmail(user, { examTitle = "Assessment", reason = "Anti-cheat violations limit exceeded", violationCount = 3, mentorName = "Your Mentor" }) {
   if (!user?.email) return;
-  if (devMode || !transporter) {
-    console.log(`[DEV MODE] Proctoring Blocked Email to ${user.email} for "${examTitle}"`);
-    return;
-  }
 
   const studentName = user.name || "Student";
   const clientUrl = env.CLIENT_URL || "http://localhost:8080";
@@ -536,10 +523,6 @@ async function sendProctoringBlockedEmail(user, { examTitle = "Assessment", reas
 // ── 4. SEND PROCTORING UNBLOCKED EMAIL ────────────────────────────────────────
 async function sendProctoringUnblockedEmail(user, { examTitle = "Assessment", mentorName = "Your Mentor", examUrl = "" }) {
   if (!user?.email) return;
-  if (devMode || !transporter) {
-    console.log(`[DEV MODE] Proctoring Unblocked Email to ${user.email} for "${examTitle}"`);
-    return;
-  }
 
   const studentName = user.name || "Student";
   const clientUrl = env.CLIENT_URL || "http://localhost:8080";
@@ -557,7 +540,7 @@ async function sendProctoringUnblockedEmail(user, { examTitle = "Assessment", me
       </p>
       <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 14px 16px; margin: 16px 0;">
         <p style="margin: 0; color: #166534; font-size: 13px; font-weight: 600;">
-          Status: Access Active & Clean Violation Slate
+          Status: Access Active &amp; Clean Violation Slate
         </p>
         <p style="margin: 4px 0 0 0; color: #15803d; font-size: 12px;">
           Please maintain fullscreen mode and avoid background tab switching to prevent further locks.
@@ -590,13 +573,6 @@ async function sendProctoringUnblockedEmail(user, { examTitle = "Assessment", me
 // ── 5. SEND SECURITY NEW LOGIN ALERT EMAIL ───────────────────────────────────
 async function sendNewLoginAlertEmail(user, { ip = "Unknown IP", userAgent = "", loginTime = new Date() } = {}) {
   if (!user?.email) return;
-  if (!transporter) {
-    initEmailService();
-  }
-  if (devMode || !transporter) {
-    console.log(`[DEV MODE] Security Login Alert to ${user.email} (IP: ${ip})`);
-    return;
-  }
 
   const studentName = user.name || "User";
   const clientUrl = env.CLIENT_URL || "http://localhost:8080";
@@ -693,19 +669,19 @@ async function sendWelcomeEmail(user) {
           <tr><td style="height: 8px;"></td></tr>
           <tr>
             <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 8px;">
-              <strong style="color: #7c3aed;">🚀 SuperDream DSA & Coding Arena:</strong> Solve curated coding problems with instant test case execution and compiler feedback across Python, Java, C++, and JS.
+              <strong style="color: #7c3aed;">🚀 SuperDream DSA &amp; Coding Arena:</strong> Solve curated coding problems with instant test case execution and compiler feedback across Python, Java, C++, and JS.
             </td>
           </tr>
           <tr><td style="height: 8px;"></td></tr>
           <tr>
             <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 8px;">
-              <strong style="color: #059669;">📊 Skill Gap Matrix & Learning Roadmaps:</strong> Benchmark your skillset against industry standards and unlock step-by-step career roadmaps.
+              <strong style="color: #059669;">📊 Skill Gap Matrix &amp; Learning Roadmaps:</strong> Benchmark your skillset against industry standards and unlock step-by-step career roadmaps.
             </td>
           </tr>
           <tr><td style="height: 8px;"></td></tr>
           <tr>
             <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
-              <strong style="color: #d97706;">🛡️ Faculty Assessments & Live Proctoring:</strong> Attempt institute-assigned quizzes and coding rounds with anti-cheat monitoring.
+              <strong style="color: #d97706;">🛡️ Faculty Assessments &amp; Live Proctoring:</strong> Attempt institute-assigned quizzes and coding rounds with anti-cheat monitoring.
             </td>
           </tr>
         </table>
@@ -715,7 +691,7 @@ async function sendWelcomeEmail(user) {
         <h4 style="margin: 0 0 6px 0; color: #166534; font-size: 13px; font-weight: 700;">🎯 3 Quick Steps to Get Started:</h4>
         <ol style="margin: 0; padding-left: 18px; color: #15803d; font-size: 12px; line-height: 1.7;">
           <li>Select your target job role in your profile setup.</li>
-          <li>Connect your GitHub & coding handles to track progress.</li>
+          <li>Connect your GitHub &amp; coding handles to track progress.</li>
           <li>Upload your resume for your first instant AI evaluation.</li>
         </ol>
       </div>
@@ -741,6 +717,7 @@ async function sendWelcomeEmail(user) {
 }
 
 initEmailService();
+
 
 module.exports = {
   sendPasswordResetEmail,
