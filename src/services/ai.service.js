@@ -3,6 +3,8 @@ const env = require("../config/env");
 const rateLimiter = require("./aiRateLimiter.service");
 const AIUsageLog = require("../models/AIUsageLog.model");
 const { callNemotron } = require("./nvidia.service");
+const { validatePrompt, wrapPromptWithSafety } = require("./promptSecurity.service");
+const aiCostTracking = require("./aiCostTracking.service");
 const crypto = require("crypto");
 const IORedis = require("ioredis");
 
@@ -124,6 +126,9 @@ function buildSuccessResult(response, model, isFallback = false) {
     model,
     aiProvider: isFallback ? "smart-fallback" : "gemini",
     tokensEstimate: null,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
     isFallback,
   };
 
@@ -131,8 +136,12 @@ function buildSuccessResult(response, model, isFallback = false) {
 
   result.raw = response.text || null;
 
-  if (response.usageMetadata?.totalTokenCount) {
-    result.tokensEstimate = response.usageMetadata.totalTokenCount;
+  // Extract token usage metadata from response
+  if (response.usageMetadata) {
+    result.inputTokens = response.usageMetadata.promptTokenCount || 0;
+    result.outputTokens = response.usageMetadata.candidatesTokenCount || 0;
+    result.totalTokens = response.usageMetadata.totalTokenCount || 0;
+    result.tokensEstimate = result.totalTokens;
   }
 
   // Parse JSON if structured output
@@ -177,18 +186,25 @@ function buildErrorResult(errorType, message, retryable) {
   };
 }
 
-async function logUsage({ userId, feature, model, success, errorType, tokensEstimate }) {
+async function logUsage({ userId, feature, model, success, errorType, tokensEstimate, inputTokens = 0, outputTokens = 0, cached = false, isFallback = false, responseTime = null }) {
   try {
-    await AIUsageLog.create({
+    // Use enhanced cost tracking service
+    await aiCostTracking.logAIUsage({
       userId,
       feature,
       model,
       success,
       errorType: errorType || null,
-      tokensEstimate: tokensEstimate || null,
+      inputTokens,
+      outputTokens,
+      tokensEstimate: tokensEstimate || (inputTokens + outputTokens),
+      cached,
+      isFallback,
+      responseTime,
     });
   } catch (err) {
     // Non-blocking
+    console.error("[AI Service] Failed to log usage:", err.message);
   }
 }
 
@@ -202,6 +218,27 @@ async function logUsage({ userId, feature, model, success, errorType, tokensEsti
  */
 async function generateContent({ prompt, responseSchema, model, feature = "general", userId }) {
   const resultMeta = { feature, userId };
+
+  // Step 0: Validate prompt for injection attacks
+  // Use higher limits for code analysis features that need to include file contents
+  const maxLength = feature.includes("github") || feature.includes("repo-analysis") ? 50000 : 12000;
+  const isCodeAnalysis = feature.includes("github") || feature.includes("repo-analysis") || feature.includes("resume-analysis");
+  
+  const validation = validatePrompt(prompt, {
+    maxLength,
+    blockSensitiveTopics: true,
+    blockCodeExecution: false, // Don't block code patterns in code analysis
+    strictMode: false,
+    isCodeAnalysis,
+  });
+
+  if (validation.blocked) {
+    console.warn(`[AI] Blocked prompt injection attempt for user ${userId}: ${validation.risk}`);
+    throw new Error(`Prompt validation failed: ${validation.message}`);
+  }
+
+  // Use sanitized prompt
+  const safePrompt = validation.sanitized;
 
   // Step 1: Throttle & smooth bursts
   const throttle = await rateLimiter.process({ feature });
@@ -221,7 +258,7 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
   }
 
   // Step 2: Check Redis / L1 Cache (model-agnostic for high hit rate)
-  const promptHash = crypto.createHash("sha256").update(prompt).digest("hex");
+  const promptHash = crypto.createHash("sha256").update(safePrompt).digest("hex");
   const cacheKey = `ai_cache:${feature}:${promptHash}`;
 
   try {
@@ -291,7 +328,7 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
 
       const response = await clientEntry.client.models.generateContent({
         model: currentModel,
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        contents: [{ role: "user", parts: [{ text: safePrompt }] }],
         config,
       });
 
@@ -311,7 +348,16 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
         }
       }
 
-      await logUsage({ ...resultMeta, model: currentModel, success: true, tokensEstimate: result.tokensEstimate });
+      await logUsage({
+        ...resultMeta,
+        model: currentModel,
+        success: true,
+        tokensEstimate: result.tokensEstimate,
+        inputTokens: result.inputTokens || 0,
+        outputTokens: result.outputTokens || 0,
+        cached: false,
+        isFallback: false,
+      });
       return result;
     } catch (error) {
       lastError = error;
@@ -730,6 +776,26 @@ async function generateContentStream({ prompt, model, feature = "general", userI
   const modelName = model || defaultModel;
   const resultMeta = { feature, model: modelName, userId };
 
+  // Validate prompt for injection attacks
+  // Use higher limits for code analysis features
+  const maxLength = feature.includes("github") || feature.includes("repo-analysis") ? 50000 : 12000;
+  const isCodeAnalysis = feature.includes("github") || feature.includes("repo-analysis") || feature.includes("resume-analysis");
+  
+  const validation = validatePrompt(prompt, {
+    maxLength,
+    blockSensitiveTopics: true,
+    blockCodeExecution: false, // Don't block code patterns in code analysis
+    strictMode: false,
+    isCodeAnalysis,
+  });
+
+  if (validation.blocked) {
+    console.warn(`[AI] Blocked streaming prompt injection attempt for user ${userId}: ${validation.risk}`);
+    throw new Error(`Prompt validation failed: ${validation.message}`);
+  }
+
+  const safePrompt = validation.sanitized;
+
   const throttle = await rateLimiter.process({ feature });
   if (!throttle.allowed) {
     throw new Error("QUOTA_EXCEEDED");
@@ -743,7 +809,7 @@ async function generateContentStream({ prompt, model, feature = "general", userI
   try {
     const responseStream = await clientEntry.client.models.generateContentStream({
       model: modelName,
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      contents: [{ role: "user", parts: [{ text: safePrompt }] }],
     });
 
     keyPool.reportSuccess(clientEntry);

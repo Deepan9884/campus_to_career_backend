@@ -3,6 +3,7 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User.model");
 const ApiError = require("../utils/ApiError");
 const env = require("../config/env");
+const { isTokenBlacklisted } = require("../services/tokenBlacklist.service");
 
 // ── Short-lived user cache (30s TTL, max 500 entries) ─────────────────────
 // Reduces DB reads under high concurrency. Short TTL ensures role/block
@@ -60,6 +61,12 @@ const verifyJWT = async (req, _res, next) => {
     const token = extractBearerToken(req);
     if (!token) {
       throw ApiError.unauthorized("Authentication token is required");
+    }
+
+    // Check if token is blacklisted (revoked)
+    const blacklisted = await isTokenBlacklisted(token);
+    if (blacklisted) {
+      throw ApiError.unauthorized("Token has been revoked");
     }
 
     let decoded;

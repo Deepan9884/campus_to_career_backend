@@ -233,17 +233,10 @@ function renderBaseTemplate({
         <!-- Main Card -->
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width: 580px; width: 100%; background-color: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.06);">
           
-          <!-- Gradient Top Brand Header -->
+          <!-- Header -->
           <tr>
-            <td style="background: linear-gradient(135deg, #3b82f6 0%, #4f46e5 50%, #7c3aed 100%); padding: 28px 24px; text-align: center;">
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-                <tr>
-                  <td align="center">
-                    <h1 style="margin: 0; color: #ffffff; font-size: 22px; font-weight: 800; letter-spacing: -0.5px;">Campus to Career AI</h1>
-                    <p style="margin: 4px 0 0 0; color: #e0e7ff; font-size: 13px; font-weight: 500;">Next-Gen Placement & Skill Intelligence Platform</p>
-                  </td>
-                </tr>
-              </table>
+            <td style="background: linear-gradient(135deg, #3b82f6 0%, #4f46e5 100%); padding: 24px; text-align: center;">
+              <h1 style="margin: 0; color: #ffffff; font-size: 20px; font-weight: 700;">Campus to Career</h1>
             </td>
           </tr>
 
@@ -306,14 +299,11 @@ function renderBaseTemplate({
             </td>
           </tr>
 
-          <!-- Security & Footer -->
+          <!-- Footer -->
           <tr>
-            <td style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 20px 28px; text-align: center;">
-              <p style="margin: 0 0 6px 0; color: #64748b; font-size: 12px;">
-                This is an automated transactional security message from Campus to Career AI.
-              </p>
-              <p style="margin: 0; color: #94a3b8; font-size: 11px;">
-                &copy; ${year} Campus to Career AI Inc. All rights reserved. &bull; <a href="${env.CLIENT_URL || "http://localhost:8080"}" style="color: #6366f1; text-decoration: none;">Student Portal</a>
+            <td style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 20px; text-align: center;">
+              <p style="margin: 0; color: #94a3b8; font-size: 12px;">
+                &copy; ${year} Campus to Career. <a href="${env.CLIENT_URL || "http://localhost:8080"}" style="color: #6366f1; text-decoration: none;">Visit Portal</a>
               </p>
             </td>
           </tr>
@@ -330,37 +320,36 @@ function renderBaseTemplate({
 async function sendPasswordResetEmail(email, resetLink) {
   const clientUrl = env.CLIENT_URL || "http://localhost:8080";
   const html = renderBaseTemplate({
-    badgeText: "SECURITY ALERT",
+    badgeText: "PASSWORD RESET",
     badgeColor: "#4f46e5",
     badgeBg: "#eef2ff",
     heading: "Reset Your Password",
-    subheading: "We received a request to reset the password for your Campus to Career account.",
+    subheading: "You requested to reset your password.",
     contentHtml: `
-      <p style="margin: 0 0 12px 0;">
-        Click the button below to securely set a new password. If you initiated this request, you can proceed immediately.
+      <p style="margin: 0 0 16px 0;">
+        Click the button below to set a new password for your account.
       </p>
     `,
     alertHtml: `
-      <div style="background-color: #f8fafc; border-left: 4px solid #6366f1; padding: 12px 16px; border-radius: 4px;">
-        <p style="margin: 0; color: #475569; font-size: 12px; line-height: 1.5;">
-          ⏱️ <strong>Security Notice:</strong> This reset link will strictly expire in <strong>15 minutes</strong>. If you did not request this, please disregard this email.
+      <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 12px 16px; border-radius: 4px;">
+        <p style="margin: 0; color: #991b1b; font-size: 13px; line-height: 1.5;">
+          <strong>Important:</strong> This link expires in 15 minutes. If you didn't request this, ignore this email.
         </p>
       </div>
     `,
     ctaUrl: resetLink,
     ctaText: "Reset Password",
     secondaryLinkHtml: `
-      If the button above does not work, copy and paste this link into your browser:<br />
-      <a href="${resetLink}" style="color: #4f46e5; text-decoration: underline;">${resetLink}</a>
+      Or copy this link: <a href="${resetLink}" style="color: #4f46e5;">${resetLink}</a>
     `,
   });
 
-  const text = `Campus to Career AI - Password Reset\n\nYou requested a password reset for your account.\nPlease click the link below or copy it into your browser to reset your password:\n${resetLink}\n\nThis link will expire in 15 minutes.\nIf you did not request this, you can safely ignore this email.`;
+  const text = `Password Reset - Campus to Career\n\nClick this link to reset your password:\n${resetLink}\n\nThis link expires in 15 minutes.\n\nIf you didn't request this, you can ignore this email.`;
 
   try {
     const opts = getMailOptions({
       to: email,
-      subject: "Password Reset Request — Campus to Career AI",
+      subject: "Reset Your Password",
       html,
       text,
     });
@@ -379,74 +368,63 @@ async function sendExamAssignedEmail(user, exam, mentorName = "Your Mentor") {
   const examUrl = `${clientUrl}/tests`;
   const studentName = user.name || "Student";
   const examTitle = exam.title || "Assessment";
-  const duration = exam.durationMinutes ? `${exam.durationMinutes} Minutes` : "60 Minutes";
+  const duration = exam.durationMinutes ? `${exam.durationMinutes} min` : "60 min";
   const totalMarks = exam.totalMarks || 100;
-  const examType = String(exam.examType || "Assessment").toUpperCase();
+  const examType = String(exam.examType || "Assessment");
   const passingScore = exam.passingScorePercentage ? `${exam.passingScorePercentage}%` : "60%";
 
-  let scheduleInfo = "Available Now";
+  let scheduleInfo = "Available now";
   if (exam.isScheduled && exam.scheduledStartTime) {
-    scheduleInfo = `${new Date(exam.scheduledStartTime).toLocaleString()}`;
-    if (exam.scheduledEndTime) {
-      scheduleInfo += ` to ${new Date(exam.scheduledEndTime).toLocaleTimeString()}`;
-    }
+    scheduleInfo = new Date(exam.scheduledStartTime).toLocaleString('en-US', { 
+      month: 'short', 
+      day: 'numeric', 
+      hour: 'numeric', 
+      minute: '2-digit' 
+    });
   }
 
   const html = renderBaseTemplate({
-    badgeText: "NEW TEST ASSIGNED",
+    badgeText: "NEW ASSESSMENT",
     badgeColor: "#2563eb",
     badgeBg: "#eff6ff",
-    heading: `New Assessment: ${examTitle}`,
-    subheading: `Hello ${studentName}, ${mentorName} has assigned a new assessment for your cohort.`,
+    heading: examTitle,
+    subheading: `${mentorName} has assigned you a new assessment.`,
     contentHtml: `
-      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 16px 0;">
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size: 13px;">
-          <tr>
-            <td style="padding: 6px 0; color: #64748b; width: 40%;"><strong>Assessment Title:</strong></td>
-            <td style="padding: 6px 0; color: #0f172a; font-weight: 600;">${examTitle}</td>
-          </tr>
-          <tr>
-            <td style="padding: 6px 0; color: #64748b;"><strong>Exam Format:</strong></td>
-            <td style="padding: 6px 0; color: #0f172a;">${examType}</td>
-          </tr>
-          <tr>
-            <td style="padding: 6px 0; color: #64748b;"><strong>Duration:</strong></td>
-            <td style="padding: 6px 0; color: #0f172a;">${duration}</td>
-          </tr>
-          <tr>
-            <td style="padding: 6px 0; color: #64748b;"><strong>Total Marks:</strong></td>
-            <td style="padding: 6px 0; color: #0f172a;">${totalMarks} Marks (Passing: ${passingScore})</td>
-          </tr>
-          <tr>
-            <td style="padding: 6px 0; color: #64748b;"><strong>Schedule Window:</strong></td>
-            <td style="padding: 6px 0; color: #0f172a;">${scheduleInfo}</td>
-          </tr>
-        </table>
-      </div>
-      <p style="margin: 12px 0 0 0; color: #475569; font-size: 13px;">
-        Please ensure you have a stable internet connection and webcam enabled (if required) before launching the exam.
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        <tr>
+          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">Type:</td>
+          <td style="padding: 8px 0; color: #0f172a; font-size: 14px; font-weight: 500;">${examType}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">Duration:</td>
+          <td style="padding: 8px 0; color: #0f172a; font-size: 14px; font-weight: 500;">${duration}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">Marks:</td>
+          <td style="padding: 8px 0; color: #0f172a; font-size: 14px; font-weight: 500;">${totalMarks} (Pass: ${passingScore})</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">Schedule:</td>
+          <td style="padding: 8px 0; color: #0f172a; font-size: 14px; font-weight: 500;">${scheduleInfo}</td>
+        </tr>
+      </table>
+      <p style="margin: 16px 0 0 0; color: #64748b; font-size: 13px;">
+        Ensure stable internet and webcam before starting.
       </p>
     `,
-    alertHtml: `
-      <div style="background-color: #fefce8; border-left: 4px solid #eab308; padding: 12px 16px; border-radius: 4px;">
-        <p style="margin: 0; color: #854d0e; font-size: 12px; line-height: 1.5;">
-          🛡️ <strong>Anti-Cheat Active:</strong> Fullscreen enforcement and tab-switch monitoring are enabled. Please do not switch tabs or exit fullscreen mode during the exam.
-        </p>
-      </div>
-    `,
     ctaUrl: examUrl,
-    ctaText: "Launch Assessment Console",
+    ctaText: "Start Assessment",
     secondaryLinkHtml: `
-      Direct Portal Link: <a href="${examUrl}" style="color: #4f46e5;">${examUrl}</a>
+      Link: <a href="${examUrl}" style="color: #2563eb;">${examUrl}</a>
     `,
   });
 
-  const text = `Hello ${studentName},\n\n${mentorName} has assigned you a new assessment: "${examTitle}".\n\nExam Details:\n- Format: ${examType}\n- Duration: ${duration}\n- Total Marks: ${totalMarks} (Passing: ${passingScore})\n- Schedule: ${scheduleInfo}\n\nAccess the exam console at:\n${examUrl}\n\nBest of luck,\nCampus to Career AI Team`;
+  const text = `New Assessment: ${examTitle}\n\nType: ${examType}\nDuration: ${duration}\nMarks: ${totalMarks} (Pass: ${passingScore})\nSchedule: ${scheduleInfo}\n\nStart at: ${examUrl}\n\n- Campus to Career`;
 
   try {
     const opts = getMailOptions({
       to: user.email,
-      subject: `New Assessment Assigned: ${examTitle} — Campus to Career AI`,
+      subject: `New Assessment: ${examTitle}`,
       html,
       text,
     });
@@ -458,62 +436,54 @@ async function sendExamAssignedEmail(user, exam, mentorName = "Your Mentor") {
 }
 
 // ── 3. SEND PROCTORING BLOCKED EMAIL ──────────────────────────────────────────
-async function sendProctoringBlockedEmail(user, { examTitle = "Assessment", reason = "Anti-cheat violations limit exceeded", violationCount = 3, mentorName = "Your Mentor" }) {
+async function sendProctoringBlockedEmail(user, { examTitle = "Assessment", reason = "Multiple violations", violationCount = 3, mentorName = "Your Mentor" }) {
   if (!user?.email) return;
 
   const studentName = user.name || "Student";
   const clientUrl = env.CLIENT_URL || "http://localhost:8080";
 
   const html = renderBaseTemplate({
-    badgeText: "EXAM ACCESS LOCKED",
+    badgeText: "EXAM LOCKED",
     badgeColor: "#dc2626",
     badgeBg: "#fef2f2",
-    heading: "Exam Access Temporarily Locked",
-    subheading: `Hello ${studentName}, your examination session for "${examTitle}" has been locked due to proctoring policy violations.`,
+    heading: "Exam Access Locked",
+    subheading: `Your exam session for "${examTitle}" has been locked.`,
     contentHtml: `
-      <div style="background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 16px 0;">
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size: 13px;">
-          <tr>
-            <td style="padding: 6px 0; color: #991b1b; width: 40%;"><strong>Assessment:</strong></td>
-            <td style="padding: 6px 0; color: #7f1d1d; font-weight: 600;">${examTitle}</td>
-          </tr>
-          <tr>
-            <td style="padding: 6px 0; color: #991b1b;"><strong>Violation Strikes:</strong></td>
-            <td style="padding: 6px 0; color: #7f1d1d;">${violationCount} Strikes Recorded</td>
-          </tr>
-          <tr>
-            <td style="padding: 6px 0; color: #991b1b;"><strong>Trigger Reason:</strong></td>
-            <td style="padding: 6px 0; color: #7f1d1d;">${reason}</td>
-          </tr>
-          <tr>
-            <td style="padding: 6px 0; color: #991b1b;"><strong>Status:</strong></td>
-            <td style="padding: 6px 0; color: #dc2626; font-weight: 700;">Locked / Requires Mentor Unblock</td>
-          </tr>
-        </table>
-      </div>
-      <p style="margin: 12px 0 0 0; color: #475569; font-size: 13px; line-height: 1.5;">
-        To maintain strict institutional academic integrity, candidate sessions that exceed proctoring thresholds require faculty authorization to unlock.
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        <tr>
+          <td style="padding: 8px 0; color: #991b1b; font-size: 14px;">Assessment:</td>
+          <td style="padding: 8px 0; color: #7f1d1d; font-size: 14px; font-weight: 500;">${examTitle}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #991b1b; font-size: 14px;">Violations:</td>
+          <td style="padding: 8px 0; color: #7f1d1d; font-size: 14px; font-weight: 500;">${violationCount} strikes</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #991b1b; font-size: 14px;">Reason:</td>
+          <td style="padding: 8px 0; color: #7f1d1d; font-size: 14px; font-weight: 500;">${reason}</td>
+        </tr>
+      </table>
+      <p style="margin: 16px 0 0 0; color: #64748b; font-size: 14px;">
+        Contact ${mentorName} to review and unlock your access.
       </p>
     `,
     alertHtml: `
-      <div style="background-color: #f8fafc; border-left: 4px solid #3b82f6; padding: 12px 16px; border-radius: 4px;">
-        <p style="margin: 0; color: #1e293b; font-size: 13px; font-weight: 600;">Next Steps to Restore Access:</p>
-        <p style="margin: 4px 0 0 0; color: #475569; font-size: 12px; line-height: 1.5;">
-          1. Contact your assigned mentor / instructor (${mentorName}).<br />
-          2. Your faculty can review your proctoring violation logs in the Mentor Portal and restore your exam access.
+      <div style="background-color: #fef2f2; border-left: 4px solid #dc2626; padding: 12px 16px; border-radius: 4px;">
+        <p style="margin: 0; color: #991b1b; font-size: 13px;">
+          <strong>Action Required:</strong> Your mentor must review and unlock your exam before you can continue.
         </p>
       </div>
     `,
     ctaUrl: `${clientUrl}/dashboard`,
-    ctaText: "Go to Student Dashboard",
+    ctaText: "Go to Dashboard",
   });
 
-  const text = `Hello ${studentName},\n\nYour examination session for "${examTitle}" has been locked due to proctoring violations.\n\nDetails:\n- Reason: ${reason}\n- Strikes: ${violationCount}\n- Status: Locked\n\nPlease contact your mentor (${mentorName}) to review your session and restore your exam access.\n\nCampus to Career AI Security`;
+  const text = `Exam Access Locked\n\nYour exam "${examTitle}" has been locked.\n\nViolations: ${violationCount}\nReason: ${reason}\n\nContact ${mentorName} to unlock.\n\n- Campus to Career`;
 
   try {
     const opts = getMailOptions({
       to: user.email,
-      subject: `Urgent: Exam Access Temporarily Locked — Campus to Career AI`,
+      subject: `Exam Access Locked: ${examTitle}`,
       html,
       text,
     });
@@ -536,34 +506,29 @@ async function sendProctoringUnblockedEmail(user, { examTitle = "Assessment", me
     badgeText: "ACCESS RESTORED",
     badgeColor: "#16a34a",
     badgeBg: "#f0fdf4",
-    heading: "Exam Access Restored ✅",
-    subheading: `Hello ${studentName}, your exam access for "${examTitle}" has been restored by ${mentorName}.`,
+    heading: "Exam Access Restored",
+    subheading: `${mentorName} has unlocked your access to "${examTitle}".`,
     contentHtml: `
-      <p style="margin: 0 0 12px 0; color: #334155; font-size: 14px; line-height: 1.6;">
-        Your faculty mentor has reviewed your case and unlocked your examination access. You may now return to the assessment console and resume your test.
+      <p style="margin: 0 0 16px 0; color: #334155; font-size: 14px;">
+        Your exam has been reviewed and you can now resume.
       </p>
-      <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 14px 16px; margin: 16px 0;">
-        <p style="margin: 0; color: #166534; font-size: 13px; font-weight: 600;">
-          Status: Access Active &amp; Clean Violation Slate
-        </p>
-        <p style="margin: 4px 0 0 0; color: #15803d; font-size: 12px;">
-          Please maintain fullscreen mode and avoid background tab switching to prevent further locks.
-        </p>
-      </div>
+      <p style="margin: 0; color: #64748b; font-size: 13px;">
+        Stay in fullscreen mode and avoid switching tabs.
+      </p>
     `,
     ctaUrl: targetUrl,
-    ctaText: "Resume Examination Now",
+    ctaText: "Resume Exam",
     secondaryLinkHtml: `
-      Direct Link: <a href="${targetUrl}" style="color: #16a34a;">${targetUrl}</a>
+      Link: <a href="${targetUrl}" style="color: #16a34a;">${targetUrl}</a>
     `,
   });
 
-  const text = `Hello ${studentName},\n\nGreat news! Your exam access for "${examTitle}" has been unlocked by ${mentorName}.\n\nYou can resume your examination now by visiting:\n${targetUrl}\n\nCampus to Career AI`;
+  const text = `Exam Access Restored\n\nYour access to "${examTitle}" has been restored.\n\nResume at: ${targetUrl}\n\n- Campus to Career`;
 
   try {
     const opts = getMailOptions({
       to: user.email,
-      subject: `Exam Access Restored: You May Now Resume — Campus to Career AI`,
+      subject: `Exam Access Restored: ${examTitle}`,
       html,
       text,
     });
@@ -575,39 +540,42 @@ async function sendProctoringUnblockedEmail(user, { examTitle = "Assessment", me
 }
 
 // ── 5. SEND SECURITY NEW LOGIN ALERT EMAIL ───────────────────────────────────
-async function sendNewLoginAlertEmail(user, { ip = "Unknown IP", userAgent = "", loginTime = new Date() } = {}) {
+async function sendNewLoginAlertEmail(user, { ip = "Unknown", userAgent = "", loginTime = new Date() } = {}) {
   if (!user?.email) return;
 
   const studentName = user.name || "User";
   const clientUrl = env.CLIENT_URL || "http://localhost:8080";
   const device = parseUserAgent(userAgent);
-  const timeFormatted = loginTime ? new Date(loginTime).toLocaleString() : new Date().toLocaleString();
+  const timeFormatted = new Date(loginTime).toLocaleString('en-US', { 
+    month: 'short', 
+    day: 'numeric', 
+    hour: 'numeric', 
+    minute: '2-digit' 
+  });
 
   const html = renderBaseTemplate({
-    badgeText: "SECURITY ALERT",
+    badgeText: "NEW LOGIN",
     badgeColor: "#0284c7",
     badgeBg: "#e0f2fe",
-    heading: "New Sign-In Detected",
-    subheading: `Hello ${studentName}, we detected a successful sign-in to your Campus to Career account.`,
+    heading: "New Sign-In",
+    subheading: "A new sign-in to your account was detected.",
     contentHtml: `
-      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 16px 0;">
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size: 13px;">
-          <tr>
-            <td style="padding: 6px 0; color: #64748b; width: 40%;"><strong>Sign-In Time:</strong></td>
-            <td style="padding: 6px 0; color: #0f172a; font-weight: 600;">${timeFormatted}</td>
-          </tr>
-          <tr>
-            <td style="padding: 6px 0; color: #64748b;"><strong>Device / Browser:</strong></td>
-            <td style="padding: 6px 0; color: #0f172a;">${device}</td>
-          </tr>
-          <tr>
-            <td style="padding: 6px 0; color: #64748b;"><strong>IP Address:</strong></td>
-            <td style="padding: 6px 0; color: #0f172a; font-family: monospace;">${ip}</td>
-          </tr>
-        </table>
-      </div>
-      <p style="margin: 0; color: #475569; font-size: 13px; line-height: 1.5;">
-        If this was you, you can safely ignore this email. If you did <strong>not</strong> sign in recently, please secure your account immediately.
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        <tr>
+          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">Time:</td>
+          <td style="padding: 8px 0; color: #0f172a; font-size: 14px; font-weight: 500;">${timeFormatted}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">Device:</td>
+          <td style="padding: 8px 0; color: #0f172a; font-size: 14px; font-weight: 500;">${device}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">IP:</td>
+          <td style="padding: 8px 0; color: #0f172a; font-size: 14px; font-weight: 500; font-family: monospace;">${ip}</td>
+        </tr>
+      </table>
+      <p style="margin: 16px 0 0 0; color: #64748b; font-size: 13px;">
+        If this wasn't you, change your password immediately.
       </p>
     `,
     alertHtml: `
@@ -645,71 +613,36 @@ async function sendWelcomeEmail(user) {
   const clientUrl = env.CLIENT_URL || "http://localhost:8080";
 
   const html = renderBaseTemplate({
-    badgeText: "WELCOME TO CAMPUS TO CAREER",
+    badgeText: "WELCOME",
     badgeColor: "#4f46e5",
     badgeBg: "#eef2ff",
-    heading: `Welcome aboard, ${studentName}! 🚀`,
-    subheading: "Your AI-powered career readiness and placement acceleration studio is now ready.",
+    heading: `Welcome, ${studentName}!`,
+    subheading: "Your Campus to Career account is ready.",
     contentHtml: `
-      <p style="margin: 0 0 16px 0; color: #334155; font-size: 14px; line-height: 1.6;">
-        Welcome to <strong>Campus to Career AI</strong> — the next-generation intelligent platform built to turn your academic knowledge into recruiter-ready internship and job offers.
+      <p style="margin: 0 0 20px 0; color: #334155; font-size: 14px; line-height: 1.6;">
+        Get started with AI-powered career readiness tools:
       </p>
-
-      <div style="margin: 20px 0;">
-        <h3 style="margin: 0 0 12px 0; color: #0f172a; font-size: 15px; font-weight: 700;">🌟 What you can do inside your workspace:</h3>
-
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size: 13px; line-height: 1.6;">
-          <tr>
-            <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 8px;">
-              <strong style="color: #4f46e5;">📄 ATS Resume Studio:</strong> Upload your PDF/DOCX resume to receive instant ATS formatting diagnostics, keyword gap analysis, and AI bullet-point rewrites.
-            </td>
-          </tr>
-          <tr><td style="height: 8px;"></td></tr>
-          <tr>
-            <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 8px;">
-              <strong style="color: #0284c7;">🎙️ AI Voice Mock Coach:</strong> Practice live voice-driven technical, behavioral, and system design interviews tailored to your target company with STAR scorecards.
-            </td>
-          </tr>
-          <tr><td style="height: 8px;"></td></tr>
-          <tr>
-            <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 8px;">
-              <strong style="color: #7c3aed;">🚀 SuperDream DSA &amp; Coding Arena:</strong> Solve curated coding problems with instant test case execution and compiler feedback across Python, Java, C++, and JS.
-            </td>
-          </tr>
-          <tr><td style="height: 8px;"></td></tr>
-          <tr>
-            <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 8px;">
-              <strong style="color: #059669;">📊 Skill Gap Matrix &amp; Learning Roadmaps:</strong> Benchmark your skillset against industry standards and unlock step-by-step career roadmaps.
-            </td>
-          </tr>
-          <tr><td style="height: 8px;"></td></tr>
-          <tr>
-            <td style="padding: 10px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
-              <strong style="color: #d97706;">🛡️ Faculty Assessments &amp; Live Proctoring:</strong> Attempt institute-assigned quizzes and coding rounds with anti-cheat monitoring.
-            </td>
-          </tr>
-        </table>
-      </div>
-
-      <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 14px 16px; margin: 20px 0;">
-        <h4 style="margin: 0 0 6px 0; color: #166534; font-size: 13px; font-weight: 700;">🎯 3 Quick Steps to Get Started:</h4>
-        <ol style="margin: 0; padding-left: 18px; color: #15803d; font-size: 12px; line-height: 1.7;">
-          <li>Select your target job role in your profile setup.</li>
-          <li>Connect your GitHub &amp; coding handles to track progress.</li>
-          <li>Upload your resume for your first instant AI evaluation.</li>
-        </ol>
-      </div>
+      <ul style="margin: 0; padding: 0 0 0 20px; color: #475569; font-size: 14px; line-height: 1.8;">
+        <li><strong>Resume Analysis:</strong> Get ATS scores and improvement suggestions</li>
+        <li><strong>Mock Interviews:</strong> Practice with AI-powered interview coach</li>
+        <li><strong>Coding Practice:</strong> Solve DSA problems with instant feedback</li>
+        <li><strong>Skill Assessments:</strong> Take tests and track your progress</li>
+        <li><strong>GitHub Integration:</strong> Showcase your projects</li>
+      </ul>
+      <p style="margin: 20px 0 0 0; color: #64748b; font-size: 13px;">
+        Start by completing your profile and uploading your resume.
+      </p>
     `,
     ctaUrl: `${clientUrl}/dashboard`,
-    ctaText: "Launch My Student Dashboard",
+    ctaText: "Go to Dashboard",
   });
 
-  const text = `Welcome to Campus to Career AI, ${studentName}!\n\nYour account has been set up successfully.\n\nKey Platform Features:\n- ATS Resume Studio: Real-time keyword scoring and ATS formatting audits\n- AI Voice Mock Coach: Live simulated voice interviews with STAR scorecards\n- SuperDream DSA Arena: Curated algorithmic prep and multi-language compiler\n- Skill Gap Roadmaps: Tailored milestones for your target role\n- Faculty Exam Console: Proctored coding and MCQ assessments\n\nStart your journey today at:\n${clientUrl}/dashboard\n\nBest regards,\nCampus to Career AI Team`;
+  const text = `Welcome to Campus to Career, ${studentName}!\n\nYour account is ready. Here's what you can do:\n\n- Analyze your resume for ATS compatibility\n- Practice interviews with AI coach\n- Solve coding problems\n- Take skill assessments\n- Connect GitHub\n\nGet started: ${clientUrl}/dashboard\n\n- Campus to Career Team`;
 
   try {
     const opts = getMailOptions({
       to: user.email,
-      subject: `Welcome to Campus to Career AI, ${studentName}! 🚀 Your AI Preparation Studio is Ready`,
+      subject: `Welcome to Campus to Career!`,
       html,
       text,
     });
@@ -722,6 +655,54 @@ async function sendWelcomeEmail(user) {
 
 initEmailService();
 
+/**
+ * Send email verification link
+ * @param {Object} user - User object with email and name
+ * @param {string} verificationToken - Verification token
+ */
+async function sendVerificationEmail(user, verificationToken) {
+  const verificationLink = `${env.FRONTEND_URL || "http://localhost:5173"}/verify-email?token=${verificationToken}`;
+
+  const html = renderBaseTemplate({
+    title: "Verify Your Email",
+    preheader: "Complete your Campus to Career registration",
+    heroTitle: "Verify Your Email Address",
+    heroSubtitle: `Welcome ${user.name}! Please verify your email to access all features.`,
+    bodyContent: `
+      <p style="margin: 0 0 16px; font-size: 15px; line-height: 24px; color: #374151;">
+        Hi <strong>${user.name}</strong>,
+      </p>
+      <p style="margin: 0 0 16px; font-size: 15px; line-height: 24px; color: #374151;">
+        Thank you for registering with Campus to Career! To complete your registration and access all features, 
+        please verify your email address by clicking the button below.
+      </p>
+      <p style="margin: 0 0 24px; font-size: 15px; line-height: 24px; color: #374151;">
+        This verification link will expire in <strong>24 hours</strong> for security reasons.
+      </p>
+    `,
+    ctaText: "Verify Email Address",
+    ctaLink: verificationLink,
+    footerText: `
+      <p style="margin: 0 0 8px; font-size: 13px; line-height: 20px; color: #6b7280;">
+        If you didn't create an account with Campus to Career, you can safely ignore this email.
+      </p>
+      <p style="margin: 0; font-size: 13px; line-height: 20px; color: #6b7280;">
+        If the button doesn't work, copy and paste this link into your browser:<br/>
+        <a href="${verificationLink}" style="color: #6366f1; text-decoration: none; word-break: break-all;">${verificationLink}</a>
+      </p>
+    `,
+  });
+
+  const mailOptions = getMailOptions({
+    to: user.email,
+    subject: "Verify Your Email - Campus to Career",
+    html,
+    text: `Hi ${user.name},\n\nPlease verify your email by clicking this link: ${verificationLink}\n\nThis link expires in 24 hours.\n\nIf you didn't create this account, ignore this email.`,
+  });
+
+  return sendMailPayload(mailOptions);
+}
+
 
 module.exports = {
   sendPasswordResetEmail,
@@ -730,4 +711,5 @@ module.exports = {
   sendProctoringUnblockedEmail,
   sendNewLoginAlertEmail,
   sendWelcomeEmail,
+  sendVerificationEmail,
 };

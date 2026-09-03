@@ -83,6 +83,9 @@ router.post("/reset-password", validateZod(resetPasswordSchema), authController.
 
 router.get("/verify-reset-token", verifyResetTokenLimiter, authController.verifyResetTokenHandler);
 
+// Email verification routes (public for the verify endpoint, protected for send/resend)
+router.get("/verify-email/:token", authController.verifyEmail);
+
 // --- Protected routes ---
 
 router.post("/logout", verifyJWT, authController.logout);
@@ -103,5 +106,9 @@ router.get("/export", verifyJWT, authController.exportUserData);
 router.post("/2fa/generate", verifyJWT, authController.generate2FA);
 router.post("/2fa/verify", verifyJWT, authController.verify2FA);
 router.post("/2fa/disable", verifyJWT, authController.disable2FA);
+
+// Email verification (protected - requires login)
+router.post("/send-verification", verifyJWT, authController.sendVerificationEmail);
+router.post("/resend-verification", verifyJWT, authController.resendVerificationEmail);
 
 module.exports = router;

@@ -267,6 +267,42 @@ const analyzeRepo = asyncHandler(async (req, res) => {
     throw new ApiError(503, budgetCheck.message);
   }
 
+  // Check for existing analysis (completed or processing)
+  const existingAnalysis = await RepoAnalysis.findOne({
+    user: req.user._id,
+    repoFullName,
+    status: { $in: ["completed", "processing"] },
+  }).sort({ createdAt: -1 });
+
+  // If there's a recent completed analysis (within last hour), return it
+  if (existingAnalysis && existingAnalysis.status === "completed") {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    if (existingAnalysis.createdAt > oneHourAgo) {
+      return ApiResponse.success(existingAnalysis).send(res);
+    }
+  }
+
+  // If already processing, return that
+  if (existingAnalysis && existingAnalysis.status === "processing") {
+    return ApiResponse.success(existingAnalysis).send(res);
+  }
+
+  // Delete old failed analyses for this repo (cleanup)
+  await RepoAnalysis.deleteMany({
+    user: req.user._id,
+    repoFullName,
+    status: "failed",
+  });
+
+  // Delete duplicate completed analyses (keep only the latest)
+  if (existingAnalysis && existingAnalysis.status === "completed") {
+    await RepoAnalysis.deleteMany({
+      user: req.user._id,
+      repoFullName,
+      _id: { $ne: existingAnalysis._id },
+    });
+  }
+
   const analysis = await RepoAnalysis.create({
     user: req.user._id,
     repoFullName,
@@ -303,15 +339,40 @@ const getAnalysisHistory = asyncHandler(async (req, res) => {
   const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
   const skip = (page - 1) * limit;
 
-  const [analyses, total] = await Promise.all([
-    RepoAnalysis.find({ user: req.user._id })
-      .select("repoFullName status createdAt")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
-    RepoAnalysis.countDocuments({ user: req.user._id }),
-  ]);
+  // Get only completed analyses, deduplicated by repository (latest only)
+  const pipeline = [
+    { $match: { user: req.user._id, status: "completed" } },
+    { $sort: { createdAt: -1 } },
+    {
+      $group: {
+        _id: "$repoFullName",
+        doc: { $first: "$$ROOT" },
+      },
+    },
+    { $replaceRoot: { newRoot: "$doc" } },
+    { $sort: { createdAt: -1 } },
+    {
+      $facet: {
+        analyses: [
+          { $skip: skip },
+          { $limit: limit },
+          {
+            $project: {
+              _id: 1,
+              repoFullName: 1,
+              status: 1,
+              createdAt: 1,
+            },
+          },
+        ],
+        totalCount: [{ $count: "count" }],
+      },
+    },
+  ];
+
+  const results = await RepoAnalysis.aggregate(pipeline);
+  const analyses = results[0]?.analyses || [];
+  const total = results[0]?.totalCount[0]?.count || 0;
 
   return ApiResponse.success({
     analyses,

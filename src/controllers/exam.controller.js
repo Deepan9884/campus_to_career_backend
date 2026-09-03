@@ -1922,8 +1922,8 @@ const reportStudentExamBlocked = asyncHandler(async (req, res) => {
       const mentorNotification = await Notification.create({
         user: user.assignedMentor,
         type: "proctoring_blocked",
-        title: "Candidate Exam Blocked",
-        message: `${user.name} was blocked from exam '${exam.title}' due to security violations. Review and unblock from the admin portal.`,
+        title: `[Mentee Alert] Exam Blocked: ${user.name}`,
+        message: `Your mentee ${user.name} was blocked from exam '${exam.title}' due to security violations. Review and unblock from the admin portal.`,
         actionUrl: "/exams",
         read: false,
       });
