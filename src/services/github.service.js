@@ -19,7 +19,28 @@ async function githubFetch(url) {
   budget.recordResponse(res.headers);
 
   if (!res.ok) {
-    const error = new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+    let errorMessage = `GitHub API error: ${res.status} ${res.statusText}`;
+    
+    // Provide more helpful error messages
+    if (res.status === 403) {
+      const remaining = res.headers.get("x-ratelimit-remaining");
+      const resetTime = res.headers.get("x-ratelimit-reset");
+      
+      if (remaining === "0" && resetTime) {
+        const resetDate = new Date(parseInt(resetTime) * 1000);
+        errorMessage = `GitHub API rate limit exceeded. Resets at ${resetDate.toLocaleTimeString()}. ${!env.GITHUB_TOKEN ? "Configure GITHUB_TOKEN in .env for higher limits (5000/hour vs 60/hour)." : ""}`;
+      } else if (!env.GITHUB_TOKEN) {
+        errorMessage = "GitHub API access forbidden. Please configure GITHUB_TOKEN in .env file for authentication.";
+      } else {
+        errorMessage = "GitHub API access forbidden. Your token may be invalid or expired. Please check GITHUB_TOKEN in .env file.";
+      }
+    } else if (res.status === 401) {
+      errorMessage = "GitHub API authentication failed. Please check your GITHUB_TOKEN in .env file.";
+    } else if (res.status === 404) {
+      errorMessage = "Repository not found. Please check the repository name and ensure it's public.";
+    }
+    
+    const error = new Error(errorMessage);
     error.status = res.status;
     throw error;
   }

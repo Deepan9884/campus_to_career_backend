@@ -3,6 +3,7 @@ const rateLimit = require("express-rate-limit");
 
 const verifyJWT = require("../middleware/auth.middleware");
 const checkProctoringBlock = require("../middleware/proctoringBlock.middleware");
+const { createPromptValidator } = require("../services/promptSecurity.service");
 const validate = require("../middleware/validate.middleware");
 const {
   startInterviewValidators,
@@ -12,6 +13,14 @@ const {
 const interviewController = require("../controllers/interview.controller");
 
 const router = Router();
+
+// Prompt injection defense middleware
+const promptSecurityCheck = createPromptValidator({
+  fields: ["answer", "response", "input", "message"],
+  maxLength: 8000,
+  blockSensitiveTopics: true,
+  strictMode: false,
+});
 
 const startLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
@@ -44,6 +53,7 @@ router.post(
   "/:id/rounds/:roundType/answer",
   verifyJWT,
   checkProctoringBlock,
+  promptSecurityCheck,
   submitAnswerValidators,
   validate,
   interviewController.submitAnswer,

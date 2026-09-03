@@ -11,12 +11,51 @@ const getVar = (key, required = false) => {
   return (value || "").trim();
 };
 
+// Validate JWT secret strength
+const JWT_SECRET = getVar("JWT_SECRET", true);
+const JWT_REFRESH_SECRET = getVar("JWT_REFRESH_SECRET", true);
+
+if (JWT_SECRET.length < 32) {
+  throw new Error("JWT_SECRET must be at least 32 characters long for security");
+}
+
+if (JWT_REFRESH_SECRET.length < 32) {
+  throw new Error("JWT_REFRESH_SECRET must be at least 32 characters long for security");
+}
+
+// Warn if secrets don't have good complexity
+const hasComplexity = (secret) => {
+  return /[A-Z]/.test(secret) && /[a-z]/.test(secret) && /[0-9]/.test(secret);
+};
+
+if (!hasComplexity(JWT_SECRET)) {
+  console.warn("⚠️  JWT_SECRET should contain uppercase, lowercase, and numbers for better security");
+}
+
+if (!hasComplexity(JWT_REFRESH_SECRET)) {
+  console.warn("⚠️  JWT_REFRESH_SECRET should contain uppercase, lowercase, and numbers for better security");
+}
+
+// Validate encryption key for PII encryption
+let ENCRYPTION_KEY = getVar("ENCRYPTION_KEY", false);
+if (!ENCRYPTION_KEY) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Missing required environment variable: ENCRYPTION_KEY");
+  }
+  // Safe default key for development / testing (32 bytes / 64 hex chars)
+  ENCRYPTION_KEY = "c2c_dev_encryption_key_aes256_placeholder_32bytes!!";
+  console.warn("⚠️  ENCRYPTION_KEY not set in .env. Using fallback development key.");
+}
+if (ENCRYPTION_KEY.length < 32) {
+  throw new Error("ENCRYPTION_KEY must be at least 32 characters long for AES-256");
+}
+
 const env = {
   NODE_ENV: getVar("NODE_ENV") || "development",
   PORT: parseInt(getVar("PORT") || "5000", 10),
   MONGODB_URI: getVar("MONGODB_URI", true),
-  JWT_SECRET: getVar("JWT_SECRET", true),
-  JWT_REFRESH_SECRET: getVar("JWT_REFRESH_SECRET", true),
+  JWT_SECRET,
+  JWT_REFRESH_SECRET,
   JWT_EXPIRES_IN: getVar("JWT_EXPIRES_IN") || "2h",
   JWT_REFRESH_EXPIRES_IN: getVar("JWT_REFRESH_EXPIRES_IN") || "7d",
   CLIENT_URL: getVar("CLIENT_URL") || "http://localhost:5173",

@@ -16,6 +16,8 @@ const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 const env = require("../config/env");
+const { blacklistTokenWithTTL } = require("../services/tokenBlacklist.service");
+const auditLogService = require("../services/auditLog.service");
 const {
   generateResetToken,
   verifyResetToken,
@@ -100,11 +102,28 @@ const register = asyncHandler(async (req, res) => {
 
   const user = await User.create({ name, email, password, welcomeEmailSent: true });
 
+  // Audit log: User registration
+  await auditLogService.logAuth({
+    action: "USER_CREATED",
+    userId: user._id,
+    userEmail: user.email,
+    status: "SUCCESS",
+    req,
+    details: { role: user.role },
+  });
+
   const accessToken = user.generateAccessToken();
   const refreshToken = user.generateRefreshToken();
   const refreshHash = await hashToken(refreshToken);
 
   user.refreshToken = refreshHash;
+  
+  // Generate email verification token
+  const verificationToken = crypto.randomBytes(32).toString("hex");
+  const hashedToken = crypto.createHash("sha256").update(verificationToken).digest("hex");
+  user.emailVerificationToken = hashedToken;
+  user.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+  
   await user.save();
 
   setRefreshTokenCookie(res, refreshToken);
@@ -112,6 +131,11 @@ const register = asyncHandler(async (req, res) => {
   // Send branded welcome email to new student
   emailService.sendWelcomeEmail(user).catch((e) =>
     console.error("[Email] Failed to send welcome email:", e.message)
+  );
+
+  // Send email verification link
+  emailService.sendVerificationEmail(user, verificationToken).catch((e) =>
+    console.error("[Email] Failed to send verification email:", e.message)
   );
 
   return ApiResponse.created({
@@ -124,6 +148,7 @@ const register = asyncHandler(async (req, res) => {
       targetRole: user.targetRole,
       githubUsername: user.githubUsername,
       profile: user.profile,
+      isEmailVerified: user.isEmailVerified,
       createdAt: user.createdAt,
     },
     accessToken,
@@ -139,23 +164,96 @@ const login = asyncHandler(async (req, res) => {
 
   const user = await User.findByEmail(email).select("+password");
   if (!user) {
+    // Audit log: Failed login attempt
+    await auditLogService.logAuth({
+      action: "LOGIN_FAILED",
+      userId: null,
+      userEmail: email,
+      status: "FAILURE",
+      req,
+      details: { reason: "User not found" },
+    });
     throw ApiError.unauthorized("Invalid credentials");
   }
 
   // Account Lockout check (5 failed attempts locks for 15 minutes)
   if (user.lockUntil && user.lockUntil > new Date()) {
+    // Audit log: Account locked attempt
+    await auditLogService.logSecurity({
+      action: "ACCOUNT_LOCKED",
+      userId: user._id,
+      userEmail: user.email,
+      severity: "MEDIUM",
+      status: "BLOCKED",
+      req,
+      details: { lockUntil: user.lockUntil },
+    });
+
     const remainingMinutes = Math.ceil((user.lockUntil.getTime() - Date.now()) / (60 * 1000));
+    const remainingHours = remainingMinutes >= 60 ? Math.ceil(remainingMinutes / 60) : null;
     throw ApiError.unauthorized(
-      `Account is temporarily locked due to consecutive failed login attempts. Please try again in ${remainingMinutes} minute${remainingMinutes === 1 ? "" : "s"}.`,
+      `Account is temporarily locked due to consecutive failed login attempts. Please try again in ${remainingHours ? `${remainingHours} hour${remainingHours > 1 ? 's' : ''}` : `${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''}`}.`,
     );
+  }
+
+  // Auto-reset failed attempts if lock period has expired
+  if (user.lockUntil && user.lockUntil <= new Date()) {
+    user.failedLoginAttempts = 0;
+    user.lockUntil = null;
+  }
+
+  // Auto-reset failed attempts if last failed login was more than 24 hours ago
+  if (user.lastFailedLogin && user.failedLoginAttempts > 0) {
+    const hoursSinceLastFail = (Date.now() - user.lastFailedLogin.getTime()) / (60 * 60 * 1000);
+    if (hoursSinceLastFail > 24) {
+      user.failedLoginAttempts = 0;
+      user.lockUntil = null;
+    }
   }
 
   const isMatch = await user.comparePassword(password);
   if (!isMatch) {
     user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
-    if (user.failedLoginAttempts >= 5) {
-      user.lockUntil = new Date(Date.now() + 15 * 60 * 1000); // 15-minute lock
+    user.lastFailedLogin = new Date();
+    
+    // Exponential backoff: progressively longer lockout periods
+    // 3 attempts: 5 min, 4: 15 min, 5: 1 hour, 6: 4 hours, 7+: 24 hours
+    const lockoutDurations = {
+      3: 5 * 60 * 1000,        // 5 minutes
+      4: 15 * 60 * 1000,       // 15 minutes
+      5: 60 * 60 * 1000,       // 1 hour
+      6: 4 * 60 * 60 * 1000,   // 4 hours
+      7: 24 * 60 * 60 * 1000,  // 24 hours
+    };
+    
+    const attempts = user.failedLoginAttempts;
+    if (attempts >= 3) {
+      const lockDuration = lockoutDurations[Math.min(attempts, 7)] || lockoutDurations[7];
+      user.lockUntil = new Date(Date.now() + lockDuration);
+      
+      // Track lockout history for security monitoring
+      if (!user.lockoutHistory) user.lockoutHistory = [];
+      user.lockoutHistory.push({
+        lockedAt: new Date(),
+        attempts,
+        duration: lockDuration,
+      });
+      
+      // Keep only last 10 lockouts
+      if (user.lockoutHistory.length > 10) {
+        user.lockoutHistory = user.lockoutHistory.slice(-10);
+      }
+      
+      const lockMinutes = Math.ceil(lockDuration / (60 * 1000));
+      const lockHours = lockMinutes >= 60 ? Math.ceil(lockMinutes / 60) : null;
+      
+      await user.save();
+      
+      throw ApiError.unauthorized(
+        `Too many failed login attempts. Account locked for ${lockHours ? `${lockHours} hour${lockHours > 1 ? 's' : ''}` : `${lockMinutes} minute${lockMinutes > 1 ? 's' : ''}`}.`
+      );
     }
+    
     await user.save();
     throw ApiError.unauthorized("Invalid credentials");
   }
@@ -187,6 +285,19 @@ const login = asyncHandler(async (req, res) => {
   await user.save();
 
   setRefreshTokenCookie(res, refreshToken);
+
+  // Audit log: Successful login
+  await auditLogService.logAuth({
+    action: "LOGIN_SUCCESS",
+    userId: user._id,
+    userEmail: user.email,
+    status: "SUCCESS",
+    req,
+    details: {
+      method: "password",
+      is2FAEnabled: user.is2FAEnabled,
+    },
+  });
 
   // Send Welcome email if this user hasn't received one yet, otherwise send security login alert
   if (!user.welcomeEmailSent) {
@@ -531,16 +642,34 @@ const githubLogin = asyncHandler(async (req, res) => {
   }).send(res);
 });
 
-const logout = asyncHandler(async (req, _res) => {
+const logout = asyncHandler(async (req, res) => {
+  // Get the current access token from request
+  const token = req.headers.authorization?.split(" ")[1];
+
+  // Blacklist the access token if present
+  if (token) {
+    await blacklistTokenWithTTL(token, env.JWT_SECRET);
+  }
+
+  // Clear refresh token from database
   await User.findByIdAndUpdate(req.user._id, { refreshToken: "" });
 
-  _res.clearCookie("refreshToken", {
+  // Audit log: Logout
+  await auditLogService.logAuth({
+    action: "LOGOUT",
+    userId: req.user._id,
+    userEmail: req.user.email,
+    status: "SUCCESS",
+    req,
+  });
+
+  res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
     sameSite: env.NODE_ENV === "production" ? "none" : "lax",
   });
 
-  return ApiResponse.success(null, "Logged out").send(_res);
+  return ApiResponse.success(null, "Logged out successfully").send(res);
 });
 
 const refreshToken = asyncHandler(async (req, res) => {
@@ -1043,6 +1172,104 @@ const disable2FA = asyncHandler(async (req, res) => {
   return ApiResponse.success({ is2FAEnabled: false }, "2FA has been disabled").send(res);
 });
 
+/**
+ * Send email verification
+ * POST /api/auth/send-verification
+ */
+const sendVerificationEmail = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id);
+
+  if (!user) {
+    throw ApiError.notFound("User not found");
+  }
+
+  if (user.isEmailVerified) {
+    return ApiResponse.success(null, "Email is already verified").send(res);
+  }
+
+  // Generate verification token (valid for 24 hours)
+  const verificationToken = crypto.randomBytes(32).toString("hex");
+  const hashedToken = crypto.createHash("sha256").update(verificationToken).digest("hex");
+
+  // Store hashed token with expiry
+  user.emailVerificationToken = hashedToken;
+  user.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+  await user.save();
+
+  // Send verification email
+  await emailService.sendVerificationEmail(user, verificationToken);
+
+  return ApiResponse.success(null, "Verification email sent successfully").send(res);
+});
+
+/**
+ * Verify email with token
+ * GET /api/auth/verify-email/:token
+ */
+const verifyEmail = asyncHandler(async (req, res) => {
+  const { token } = req.params;
+
+  if (!token) {
+    throw ApiError.badRequest("Verification token is required");
+  }
+
+  // Hash the token to compare with stored hash
+  const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+
+  const user = await User.findOne({
+    emailVerificationToken: hashedToken,
+    emailVerificationExpires: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw ApiError.badRequest("Invalid or expired verification token");
+  }
+
+  // Mark email as verified
+  user.isEmailVerified = true;
+  user.emailVerificationToken = undefined;
+  user.emailVerificationExpires = undefined;
+  await user.save();
+
+  return ApiResponse.success(
+    { email: user.email, isEmailVerified: true },
+    "Email verified successfully"
+  ).send(res);
+});
+
+/**
+ * Resend verification email
+ * POST /api/auth/resend-verification
+ */
+const resendVerificationEmail = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id);
+
+  if (!user) {
+    throw ApiError.notFound("User not found");
+  }
+
+  if (user.isEmailVerified) {
+    return ApiResponse.success(null, "Email is already verified").send(res);
+  }
+
+  // Check if last email was sent less than 5 minutes ago (rate limiting)
+  if (user.emailVerificationExpires && user.emailVerificationExpires > Date.now() + 23.92 * 60 * 60 * 1000) {
+    throw ApiError.tooManyRequests("Please wait at least 5 minutes before requesting another verification email");
+  }
+
+  // Generate new verification token
+  const verificationToken = crypto.randomBytes(32).toString("hex");
+  const hashedToken = crypto.createHash("sha256").update(verificationToken).digest("hex");
+
+  user.emailVerificationToken = hashedToken;
+  user.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
+  await user.save();
+
+  await emailService.sendVerificationEmail(user, verificationToken);
+
+  return ApiResponse.success(null, "Verification email resent successfully").send(res);
+});
+
 module.exports = {
   register,
   login,
@@ -1062,4 +1289,7 @@ module.exports = {
   generate2FA,
   verify2FA,
   disable2FA,
+  sendVerificationEmail,
+  verifyEmail,
+  resendVerificationEmail,
 };

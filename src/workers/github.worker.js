@@ -8,19 +8,129 @@ const activityLogService = require("../services/activityLog.service");
 const badgeService = require("../services/badge.service");
 const RepoAnalysis = require("../models/RepoAnalysis.model");
 
-const MAX_FILE_LINES = 500;
+const MAX_FILE_LINES = 200;
+const MAX_PROMPT_LENGTH = 45000;
 
-function buildAnalysisPrompt(repoMeta, readme, fileContents) {
-  let prompt = `You are an expert code reviewer and technical writer. Analyze the following GitHub repository and provide a structured assessment.\n\nRepository: ${repoMeta.full_name}\nDescription: ${repoMeta.description || "No description provided"}\nLanguage: ${repoMeta.language || "Unknown"}\nStars: ${repoMeta.stargazers_count || 0}\nLast updated: ${repoMeta.updated_at || "Unknown"}\n\n`;
+function buildAnalysisPrompt(repoMeta, readme, fileContents, tree) {
+  const hasTests = tree.some(f => f.path.includes('test') || f.path.includes('spec') || f.path.includes('__tests__'));
+  const hasCI = tree.some(f => f.path.includes('.github/workflows') || f.path.includes('.gitlab-ci') || f.path.includes('ci.yml'));
+  const hasDocs = tree.some(f => f.path.includes('docs/') || f.path.toLowerCase().includes('documentation'));
+  
+  let prompt = `You are a senior technical recruiter and engineering manager conducting a comprehensive GitHub repository evaluation. Your goal is to provide an honest, detailed analysis from an HR and hiring perspective.
+
+**REPOSITORY INFORMATION:**
+- Name: ${repoMeta.full_name}
+- Description: ${repoMeta.description || "No description provided"}
+- Primary Language: ${repoMeta.language || "Unknown"}
+- Stars: ${repoMeta.stargazers_count || 0}
+- Forks: ${repoMeta.forks_count || 0}
+- Last Updated: ${repoMeta.updated_at || "Unknown"}
+- Has Tests: ${hasTests ? "Yes" : "No"}
+- Has CI/CD: ${hasCI ? "Yes" : "No"}
+- Has Documentation: ${hasDocs ? "Yes" : "No"}
+
+`;
+  
   if (readme) {
-    prompt += `README:\n\`\`\`\n${readme}\n\`\`\`\n\n`;
+    const readmeLines = readme.split("\n");
+    const truncatedReadme = readmeLines.length > 100 ? readmeLines.slice(0, 100).join("\n") + "\n[README truncated...]" : readme;
+    prompt += `**README CONTENT:**\n\`\`\`markdown\n${truncatedReadme}\n\`\`\`\n\n`;
   }
-  prompt += `Files analyzed (you only have access to these — do NOT make claims about files not listed here):\n`;
+  
+  prompt += `**SOURCE CODE FILES ANALYZED:**\n`;
+  
+  let currentLength = prompt.length;
+  let filesAdded = 0;
+  
   for (const fc of fileContents) {
-    prompt += `\n--- ${fc.path} (${fc.lines} lines${fc.truncated ? ", truncated" : ""}) ---\n`;
-    prompt += `\`\`\`\n${fc.content}\n\`\`\`\n`;
+    const fileSection = `\n--- ${fc.path} (${fc.lines} lines${fc.truncated ? ", truncated" : ""}) ---\n\`\`\`\n${fc.content}\n\`\`\`\n`;
+    
+    if (currentLength + fileSection.length > MAX_PROMPT_LENGTH) {
+      prompt += `\n[Note: ${fileContents.length - filesAdded} additional files omitted due to size constraints]\n`;
+      break;
+    }
+    
+    prompt += fileSection;
+    currentLength += fileSection.length;
+    filesAdded++;
   }
-  prompt += `\nProvide your evaluation as a JSON object with these exact fields:\n- "overview" (string): 2-3 sentences on what the repo does and how it's built. Base this ONLY on the files you were shown.\n- "quality" (string): Code organization, readability, notable patterns observed — ONLY from what was actually fetched. Do not guess about files you did not see.\n- "security" (string): Any concerns visible in what was fetched (hardcoded secrets, missing input validation, etc.). If no obvious issues, say "No obvious security issues in the files reviewed."\n- "resumeImpact" (array of strings): 2-4 resume-bullet-style strings a candidate could use to describe this project.\n\nBe honest and specific — highlight genuine strengths but also identify concrete gaps. Only base your assessment on the files shown above.`;
+  
+  prompt += `\n**YOUR TASK:**
+Provide a comprehensive, HR-focused analysis as a JSON object. Be honest, specific, and actionable. Base EVERYTHING on the actual code you see above.
+
+**REQUIRED JSON STRUCTURE:**
+{
+  "overview": "string - 3-4 sentences: What does this project do? What problem does it solve? What's the technical approach?",
+  "projectType": "string - Category: 'Full-Stack Web App', 'API Service', 'Mobile App', 'CLI Tool', 'Library/Package', 'Data Pipeline', 'DevOps Tool', etc.",
+  "primaryTechStack": ["array of strings - Main technologies: e.g., 'React', 'Node.js', 'MongoDB', 'Python', 'Django'"],
+  
+  "quality": {
+    "overallScore": number (0-100) - Overall code quality score,
+    "codeOrganization": "string - Is the code well-structured? Clear separation of concerns? Proper file organization?",
+    "readability": "string - Is the code clean and easy to understand? Good naming conventions? Comments where needed?",
+    "bestPractices": "string - Follows language/framework conventions? Modern patterns? Error handling? Input validation?",
+    "documentation": "string - Quality of README, inline comments, API documentation",
+    "testing": "string - Test coverage, quality of tests, testing approach (if tests exist)",
+    "strengths": ["array of strings - Specific things done well"],
+    "improvements": ["array of strings - Specific areas that need improvement"]
+  },
+  
+  "technicalSkills": {
+    "languages": ["array - Programming languages used"],
+    "frameworks": ["array - Frameworks/libraries used"],
+    "tools": ["array - Development tools (Git, Docker, etc.)"],
+    "patterns": ["array - Design patterns, architectures (REST API, MVC, Microservices, etc.)"],
+    "databases": ["array - Databases used (if any)"],
+    "cloudServices": ["array - Cloud platforms/services (AWS, Vercel, Firebase, etc.)"]
+  },
+  
+  "security": {
+    "overallRating": "string - 'Excellent', 'Good', 'Fair', or 'Needs Attention'",
+    "issues": ["array - Specific security concerns found (hardcoded secrets, SQL injection risks, XSS vulnerabilities, etc.)"],
+    "goodPractices": ["array - Security measures properly implemented"],
+    "recommendations": ["array - Security improvements to make"]
+  },
+  
+  "professionalReadiness": {
+    "overallScore": number (0-100) - Production readiness score,
+    "productionReady": boolean - Is this production-quality code?,
+    "teamCollaboration": "string - Evidence of professional development practices (commits, branches, code organization)",
+    "projectComplexity": "string - 'Beginner', 'Intermediate', 'Advanced', or 'Expert'",
+    "businessValue": "string - Real-world applicability, solves actual problems?",
+    "scalability": "string - Can this handle growth? Performant design?"
+  },
+  
+  "resumeImpact": {
+    "bullets": ["array - 3-5 resume bullet points in action-verb format, quantify impact where possible"],
+    "interviewTalkingPoints": ["array - 3-4 key points to discuss in technical interviews"],
+    "uniqueSellingPoints": ["array - 2-3 things that make this project stand out"],
+    "improvementSuggestions": ["array - 2-3 ways to make this project more impressive"]
+  },
+  
+  "recruiterView": {
+    "hiringPotential": "string - 'High', 'Medium', or 'Low'",
+    "standoutFeatures": ["array - What would impress a hiring manager?"],
+    "redFlags": ["array - Concerns a recruiter might have (be honest but constructive)"],
+    "idealRoles": ["array - 3-5 job titles this project qualifies for: e.g., 'Junior Full-Stack Developer', 'Backend Engineer', 'DevOps Engineer'"],
+    "experienceLevel": "string - 'Entry', 'Mid', or 'Senior' - What level does this work demonstrate?"
+  },
+  
+  "benchmarks": {
+    "peerComparison": "string - How does this compare to typical projects from candidates at this experience level?",
+    "industryStandards": "string - Does this meet current industry standards and expectations?",
+    "competitiveAdvantage": "string - What gives this candidate an edge over other applicants?"
+  }
+}
+
+**IMPORTANT GUIDELINES:**
+- Be honest and constructive - this helps the developer improve
+- Base everything on actual code shown above - no assumptions
+- For scores, use the full 0-100 range (don't default to 70-80)
+- In "improvements" and "redFlags", be specific and actionable
+- In "resumeImpact.bullets", use action verbs and quantify when possible (e.g., "Built RESTful API serving 10+ endpoints")
+- Consider what a hiring manager actually looks for: problem-solving, code quality, business value, team-readiness
+`;
+  
   return prompt;
 }
 
@@ -28,11 +138,81 @@ const analysisResponseSchema = {
   type: "object",
   properties: {
     overview: { type: "string" },
-    quality: { type: "string" },
-    security: { type: "string" },
-    resumeImpact: { type: "array", items: { type: "string" } },
+    projectType: { type: "string" },
+    primaryTechStack: { type: "array", items: { type: "string" } },
+    quality: {
+      type: "object",
+      properties: {
+        overallScore: { type: "number" },
+        codeOrganization: { type: "string" },
+        readability: { type: "string" },
+        bestPractices: { type: "string" },
+        documentation: { type: "string" },
+        testing: { type: "string" },
+        strengths: { type: "array", items: { type: "string" } },
+        improvements: { type: "array", items: { type: "string" } },
+      },
+    },
+    technicalSkills: {
+      type: "object",
+      properties: {
+        languages: { type: "array", items: { type: "string" } },
+        frameworks: { type: "array", items: { type: "string" } },
+        tools: { type: "array", items: { type: "string" } },
+        patterns: { type: "array", items: { type: "string" } },
+        databases: { type: "array", items: { type: "string" } },
+        cloudServices: { type: "array", items: { type: "string" } },
+      },
+    },
+    security: {
+      type: "object",
+      properties: {
+        overallRating: { type: "string" },
+        issues: { type: "array", items: { type: "string" } },
+        goodPractices: { type: "array", items: { type: "string" } },
+        recommendations: { type: "array", items: { type: "string" } },
+      },
+    },
+    professionalReadiness: {
+      type: "object",
+      properties: {
+        overallScore: { type: "number" },
+        productionReady: { type: "boolean" },
+        teamCollaboration: { type: "string" },
+        projectComplexity: { type: "string" },
+        businessValue: { type: "string" },
+        scalability: { type: "string" },
+      },
+    },
+    resumeImpact: {
+      type: "object",
+      properties: {
+        bullets: { type: "array", items: { type: "string" } },
+        interviewTalkingPoints: { type: "array", items: { type: "string" } },
+        uniqueSellingPoints: { type: "array", items: { type: "string" } },
+        improvementSuggestions: { type: "array", items: { type: "string" } },
+      },
+    },
+    recruiterView: {
+      type: "object",
+      properties: {
+        hiringPotential: { type: "string" },
+        standoutFeatures: { type: "array", items: { type: "string" } },
+        redFlags: { type: "array", items: { type: "string" } },
+        idealRoles: { type: "array", items: { type: "string" } },
+        experienceLevel: { type: "string" },
+      },
+    },
+    benchmarks: {
+      type: "object",
+      properties: {
+        peerComparison: { type: "string" },
+        industryStandards: { type: "string" },
+        competitiveAdvantage: { type: "string" },
+      },
+    },
   },
-  required: ["overview", "quality", "security", "resumeImpact"],
+  required: ["overview", "quality", "security", "resumeImpact", "recruiterView"],
 };
 
 async function processGithubAnalysis(data) {
@@ -73,7 +253,7 @@ async function processGithubAnalysis(data) {
         const content = await githubService.getFileContent(owner, repo, filePath);
         const lines = content.split("\n");
         const truncated = lines.length > MAX_FILE_LINES;
-        const truncatedContent = truncated ? lines.slice(0, MAX_FILE_LINES).join("\n") : content;
+        const truncatedContent = truncated ? lines.slice(0, MAX_FILE_LINES).join("\n") + "\n[... truncated]" : content;
         fileContents.push({
           path: filePath,
           content: truncatedContent,
@@ -88,7 +268,7 @@ async function processGithubAnalysis(data) {
     analysis.filesAnalyzed = ["README.md", ...fileContents.map((f) => f.path)];
     await analysis.save();
 
-    const prompt = buildAnalysisPrompt(repoMeta, readme, fileContents);
+    const prompt = buildAnalysisPrompt(repoMeta, readme, fileContents, tree);
     const aiResult = await aiService.generateContent({
       prompt,
       responseSchema: analysisResponseSchema,
@@ -103,11 +283,33 @@ async function processGithubAnalysis(data) {
       throw new Error(aiResult.message);
     }
 
-    const scores = aiResult.data;
-    analysis.overview = scores.overview || null;
-    analysis.quality = scores.quality || null;
-    analysis.security = scores.security || null;
-    analysis.resumeImpact = scores.resumeImpact || [];
+    const data = aiResult.data;
+    
+    // Save all comprehensive analysis data
+    analysis.overview = data.overview || null;
+    analysis.projectType = data.projectType || null;
+    analysis.primaryTechStack = data.primaryTechStack || [];
+    analysis.quality = data.quality || {};
+    analysis.technicalSkills = data.technicalSkills || {};
+    analysis.security = data.security || {};
+    analysis.professionalReadiness = data.professionalReadiness || {};
+    analysis.resumeImpact = data.resumeImpact || {};
+    analysis.recruiterView = data.recruiterView || {};
+    analysis.benchmarks = data.benchmarks || {};
+    
+    // Save repo stats
+    analysis.repoStats = {
+      stars: repoMeta.stargazers_count || 0,
+      forks: repoMeta.forks_count || 0,
+      language: repoMeta.language || "Unknown",
+      size: repoMeta.size || 0,
+      lastUpdated: repoMeta.updated_at ? new Date(repoMeta.updated_at) : null,
+      hasReadme: !!readme && readme !== "(No README found)",
+      hasTests: tree.some(f => f.path.includes('test') || f.path.includes('spec') || f.path.includes('__tests__')),
+      hasCI: tree.some(f => f.path.includes('.github/workflows') || f.path.includes('.gitlab-ci') || f.path.includes('ci.yml')),
+      hasDocumentation: tree.some(f => f.path.includes('docs/') || f.path.toLowerCase().includes('documentation')),
+    };
+    
     analysis.status = "completed";
     await analysis.save();
 

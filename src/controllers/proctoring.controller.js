@@ -147,10 +147,10 @@ const reportViolation = asyncHandler(async (req, res) => {
         const mentorNotification = await Notification.create({
           user: fullUser.assignedMentor,
           type: "proctoring_blocked",
-          title: "Student Exam Blocked",
+          title: `[Mentee Alert] Exam Blocked: ${fullUser.name}`,
           message: isFullscreenTimeout
-            ? `${fullUser.name} has been blocked from exam access after failing to re-enter fullscreen within 15 seconds. Review and unblock from the admin portal.`
-            : `${fullUser.name} has been blocked from exam access after 3 proctoring violations. Review and unblock from the admin portal.`,
+            ? `Your mentee ${fullUser.name} was blocked from exam access after failing to re-enter fullscreen within 15 seconds. Review and unblock from the admin portal.`
+            : `Your mentee ${fullUser.name} was blocked from exam access after 3 proctoring violations. Review and unblock from the admin portal.`,
           actionUrl: "/students",
           read: false,
         });

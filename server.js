@@ -1,4 +1,5 @@
 const connectDB = require("./src/config/db");
+const { connectRedis } = require("./src/config/redis");
 const env = require("./src/config/env");
 const app = require("./src/app");
 
@@ -18,12 +19,19 @@ process.on("unhandledRejection", (reason, promise) => {
 
 const start = async () => {
   // Fire the DB connection — intentionally non-blocking and non-fatal.
-  // If MongoDB Atlas rejects the connection (e.g. IP not whitelisted),
-  // the server still starts on the configured PORT so the proxy gets a
-  // real HTTP response (503 from health check) instead of a 502 Bad Gateway.
   connectDB().catch((err) => {
     console.error("[server] DB connection failed (non-fatal) —", err.message);
   });
+
+  // Connect to Redis for caching and token blacklist (graceful degradation if unavailable)
+  connectRedis();
+  // Wait a moment for connection status
+  setTimeout(() => {
+    const { isRedisAvailable } = require("./src/config/redis");
+    if (!isRedisAvailable()) {
+      console.log("[server] ℹ Using in-memory caching (Redis not available)");
+    }
+  }, 500);
 
   const server = app.listen(env.PORT, () => {
     console.log(`[server] Campus to Career AI API running — http://localhost:${env.PORT}`);

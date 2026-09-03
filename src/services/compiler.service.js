@@ -1,4 +1,4 @@
-const { spawn, exec } = require("child_process");
+const { spawn, execFile } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -641,7 +641,7 @@ function runJava(code, input = "") {
     const filePath = path.join(tempDir, `${className}.java`);
     fs.writeFileSync(filePath, cleanedCode, { encoding: "utf8", mode: 0o600 });
 
-    exec(`javac "${filePath}"`, { cwd: tempDir, env: getSafeSubprocessEnv(), timeout: COMPILE_TIMEOUT_MS }, (compileErr, _compileStdout, compileStderr) => {
+    execFile("javac", [filePath], { cwd: tempDir, env: getSafeSubprocessEnv(), timeout: COMPILE_TIMEOUT_MS }, (compileErr, _compileStdout, compileStderr) => {
       const rawCompileErr = compileStderr || compileErr?.message || "";
       if (compileErr || compileStderr) {
         const cleanErr = sanitizeStderr(rawCompileErr, tempDir, `${className}.java`);
@@ -749,7 +749,7 @@ async function runCpp(code, input = "") {
 
   for (const bin of compilerBinaries) {
     const res = await new Promise((resolve) => {
-      exec(`${bin} -O2 "${srcPath}" -o "${exePath}"`, { cwd: tempDir, env: getSafeSubprocessEnv(), timeout: COMPILE_TIMEOUT_MS }, (err, _stdout, stderr) => {
+      execFile(bin, ["-O2", srcPath, "-o", exePath], { cwd: tempDir, env: getSafeSubprocessEnv(), timeout: COMPILE_TIMEOUT_MS }, (err, _stdout, stderr) => {
         if (err || stderr) {
           const rawErr = stderr || err?.message || "";
           const isMissing = isHostCompilerMissing(rawErr);
