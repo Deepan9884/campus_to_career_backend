@@ -106,8 +106,8 @@ function decrypt(encryptedText) {
 
     return decrypted;
   } catch (err) {
-    console.error("[Encryption] Error decrypting data:", err.message);
-    throw new Error("Decryption failed");
+    console.warn("[Encryption] Decryption failed (key mismatch or corrupt data):", err.message);
+    return encryptedText;
   }
 }
 

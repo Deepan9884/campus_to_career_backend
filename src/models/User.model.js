@@ -182,38 +182,55 @@ userSchema.pre("save", async function (next) {
   next();
 });
 
+// Safe helper to decrypt a single user document's PII fields without crashing
+function safeDecryptUserDoc(doc) {
+  if (!doc) return;
+  try {
+    if (doc.name && isEncrypted(doc.name)) {
+      const dec = decrypt(doc.name);
+      // If decryption returned the encrypted string (due to key mismatch), fall back to email username
+      doc.name = isEncrypted(dec)
+        ? (doc.email ? doc.email.split("@")[0] : "Student")
+        : dec;
+    }
+    if (doc.githubUsername && isEncrypted(doc.githubUsername)) {
+      const dec = decrypt(doc.githubUsername);
+      doc.githubUsername = isEncrypted(dec) ? "" : dec;
+    }
+    if (doc.linkedinUrl && isEncrypted(doc.linkedinUrl)) {
+      const dec = decrypt(doc.linkedinUrl);
+      doc.linkedinUrl = isEncrypted(dec) ? "" : dec;
+    }
+    if (doc.bio && isEncrypted(doc.bio)) {
+      const dec = decrypt(doc.bio);
+      doc.bio = isEncrypted(dec) ? "" : dec;
+    }
+    if (doc.profile?.registerNumber && isEncrypted(doc.profile.registerNumber)) {
+      const dec = decrypt(doc.profile.registerNumber);
+      doc.profile.registerNumber = isEncrypted(dec) ? "" : dec;
+    }
+    if (doc.profile?.location && isEncrypted(doc.profile.location)) {
+      const dec = decrypt(doc.profile.location);
+      doc.profile.location = isEncrypted(dec) ? "" : dec;
+    }
+  } catch (err) {
+    console.warn("[User.model] Safe decryption error:", err.message);
+  }
+}
+
 // Post-find hook: Decrypt PII fields after retrieval
 userSchema.post("find", function (docs) {
   if (!docs) return;
-
-  docs.forEach((doc) => {
-    if (doc.name && isEncrypted(doc.name)) doc.name = decrypt(doc.name);
-    if (doc.githubUsername && isEncrypted(doc.githubUsername)) doc.githubUsername = decrypt(doc.githubUsername);
-    if (doc.linkedinUrl && isEncrypted(doc.linkedinUrl)) doc.linkedinUrl = decrypt(doc.linkedinUrl);
-    if (doc.bio && isEncrypted(doc.bio)) doc.bio = decrypt(doc.bio);
-    if (doc.profile?.registerNumber && isEncrypted(doc.profile.registerNumber)) {
-      doc.profile.registerNumber = decrypt(doc.profile.registerNumber);
-    }
-    if (doc.profile?.location && isEncrypted(doc.profile.location)) {
-      doc.profile.location = decrypt(doc.profile.location);
-    }
-  });
+  if (Array.isArray(docs)) {
+    docs.forEach(safeDecryptUserDoc);
+  } else {
+    safeDecryptUserDoc(docs);
+  }
 });
 
 // Post-findOne hook: Decrypt PII fields
 userSchema.post("findOne", function (doc) {
-  if (!doc) return;
-
-  if (doc.name && isEncrypted(doc.name)) doc.name = decrypt(doc.name);
-  if (doc.githubUsername && isEncrypted(doc.githubUsername)) doc.githubUsername = decrypt(doc.githubUsername);
-  if (doc.linkedinUrl && isEncrypted(doc.linkedinUrl)) doc.linkedinUrl = decrypt(doc.linkedinUrl);
-  if (doc.bio && isEncrypted(doc.bio)) doc.bio = decrypt(doc.bio);
-  if (doc.profile?.registerNumber && isEncrypted(doc.profile.registerNumber)) {
-    doc.profile.registerNumber = decrypt(doc.profile.registerNumber);
-  }
-  if (doc.profile?.location && isEncrypted(doc.profile.location)) {
-    doc.profile.location = decrypt(doc.profile.location);
-  }
+  safeDecryptUserDoc(doc);
 });
 
 // Instance method: Compare password
