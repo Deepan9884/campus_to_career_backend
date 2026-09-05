@@ -57,7 +57,7 @@ const quizAttemptSchema = new mongoose.Schema(
     roadmapItemId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "LearningRoadmap",
-      required: [true, "Roadmap item ID is required"],
+      required: false,
     },
     skillName: {
       type: String,

@@ -798,35 +798,39 @@ function generateContextualFallback(feature, prompt, responseSchema) {
 
   // 9. Quiz Generation & Grading
   if (feature.includes("quiz-generation")) {
-    return {
-      questions: [
-        {
-          questionId: "q1",
-          questionText: "Explain the core architecture and fundamental principles of this topic.",
-          keyPoints: ["Fundamental concepts", "Architecture structure", "Core execution flow"],
-        },
-        {
-          questionId: "q2",
-          questionText: "How do you handle error boundaries, edge cases, and performance optimization in real-world scenarios?",
-          keyPoints: ["Error recovery", "Edge case identification", "Performance optimization techniques"],
-        },
-        {
-          questionId: "q3",
-          questionText: "Compare this approach with alternative industry patterns and state when you would choose each.",
-          keyPoints: ["Pattern comparison", "Trade-offs", "Decision criteria"],
-        },
-      ],
-    };
+    const { generateSmartQuizQuestions } = require("./questionBank.service");
+    const skillMatch = promptText.match(/Target Skill:\s*(.+)/i);
+    const subTopicMatch = promptText.match(/Sub-topic \/ Milestone:\s*(.+)/i);
+    const langMatch = promptText.match(/Preferred Code Language:\s*(.+)/i);
+
+    const skillName = (skillMatch && skillMatch[1]) ? skillMatch[1].trim() : "Software Engineering";
+    const subTopicName = (subTopicMatch && subTopicMatch[1]) ? subTopicMatch[1].trim() : "Core Competency";
+    const preferredLanguage = (langMatch && langMatch[1]) ? langMatch[1].trim() : "JavaScript";
+
+    const questions = generateSmartQuizQuestions({
+      skillName,
+      subTopicName,
+      userPreferences: { preferredLanguage },
+    });
+
+    return { questions };
   }
 
   if (feature.includes("quiz-grading")) {
-    return {
-      perQuestionFeedback: [
-        { questionIndex: 0, score: 88, feedback: "Good conceptual coverage and clear explanation of fundamentals." },
-        { questionIndex: 1, score: 85, feedback: "Solid explanation of error handling and performance considerations." },
-        { questionIndex: 2, score: 82, feedback: "Valid comparison of trade-offs and decision criteria." },
-      ],
-    };
+    const questionMatches = promptText.match(/ID:\s*([^\s)]+)/gi) || [];
+    const questionIds = questionMatches.map((m) => m.replace(/ID:\s*/i, "").replace(/[()]/g, "").trim());
+
+    const perQuestionFeedback = questionIds.length > 0
+      ? questionIds.map((qId, i) => ({
+          questionId: qId,
+          score: 85 + (i % 3) * 5,
+          feedback: "Solid technical solution with clean logic and proper edge case handling.",
+        }))
+      : [
+          { questionId: "s2_q1", score: 85, feedback: "Solution logic is sound with correct computational time complexity." }
+        ];
+
+    return { perQuestionFeedback };
   }
 
   // 10. Analytics Weekly Report

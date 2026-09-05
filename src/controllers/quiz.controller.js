@@ -161,7 +161,7 @@ Return ONLY raw, valid JSON matching this schema.`;
 }
 
 const generateQuiz = asyncHandler(async (req, res) => {
-  const { roadmapItemId } = req.body;
+  const { roadmapItemId, subTopicName: reqSubTopicName, skillName: reqSkillName } = req.body;
 
   let roadmap = null;
   let milestone = null;
@@ -183,7 +183,7 @@ const generateQuiz = asyncHandler(async (req, res) => {
     });
   }
 
-  if (!roadmap) {
+  if (!roadmap && roadmapItemId) {
     roadmap = await LearningRoadmap.findOne({
       "milestones.subTopicId": roadmapItemId,
       user: req.user._id,
@@ -219,25 +219,41 @@ const generateQuiz = asyncHandler(async (req, res) => {
       skill = await UserSkill.findOne({ _id: roadmapItemId, user: req.user._id });
     }
 
-    if (!skill) {
+    if (!skill && roadmapItemId) {
       skill = await UserSkill.findOne({
         user: req.user._id,
         name: { $regex: new RegExp(`^${roadmapItemId}$`, "i") },
       });
     }
 
-    if (!skill) {
-      throw ApiError.notFound("Roadmap milestone or skill not found");
+    if (!skill && reqSkillName) {
+      skill = await UserSkill.findOne({
+        user: req.user._id,
+        name: { $regex: new RegExp(`^${reqSkillName}$`, "i") },
+      });
     }
 
-    isStandaloneSkill = true;
-    skillName = skill.name;
-    subTopicId = `skill_${skill._id}`;
-    subTopic = {
-      subTopicId: subTopicId,
-      name: `${skill.name} Core Competency`,
-    };
-    resources = [];
+    if (skill) {
+      isStandaloneSkill = true;
+      skillName = skill.name;
+      subTopicId = `skill_${skill._id}`;
+      subTopic = {
+        subTopicId: subTopicId,
+        name: `${skill.name} Core Competency`,
+      };
+      resources = [];
+    } else if (reqSkillName || reqSubTopicName || (roadmapItemId && typeof roadmapItemId === "string")) {
+      isStandaloneSkill = true;
+      skillName = reqSkillName || reqSubTopicName || roadmapItemId;
+      subTopicId = `skill_${Date.now()}`;
+      subTopic = {
+        subTopicId: subTopicId,
+        name: reqSubTopicName || `${skillName} Core Competency`,
+      };
+      resources = [];
+    } else {
+      throw ApiError.notFound("Roadmap milestone or skill not found");
+    }
   }
 
   // 3. Determine attempt count
@@ -297,21 +313,35 @@ const generateQuiz = asyncHandler(async (req, res) => {
   const userPrefs = req.user?.preferences || {};
   const prompt = buildQuizPrompt(subTopic.name, skillName, resources, attemptSeed, userPrefs);
 
-  const aiResult = await aiService.generateContent({
-    prompt,
-    responseSchema,
-    feature: "quiz-generation",
-    userId: req.user._id,
-  });
+  const { generateSmartQuizQuestions } = require("../services/questionBank.service");
 
-  if (!aiResult.success || !aiResult.data) {
-    throw ApiError.internal(aiResult.message || "AI service failed to generate quiz");
+  let aiData = null;
+  try {
+    const aiResult = await aiService.generateContent({
+      prompt,
+      responseSchema,
+      feature: "quiz-generation",
+      userId: req.user._id,
+    });
+
+    if (aiResult.success && aiResult.data && Array.isArray(aiResult.data.questions) && aiResult.data.questions.length >= 5) {
+      aiData = aiResult.data;
+    } else {
+      console.warn("[Quiz Controller] AI service did not return sufficient questions. Utilizing smart question generator.");
+    }
+  } catch (aiErr) {
+    console.warn("[Quiz Controller] AI service error during quiz generation:", aiErr?.message);
   }
 
-  const aiData = aiResult.data;
-
-  if (!aiData.questions || !Array.isArray(aiData.questions) || aiData.questions.length === 0) {
-    throw ApiError.internal("AI service returned no questions");
+  // If AI generation didn't return valid questions, engage smart question generator
+  if (!aiData || !Array.isArray(aiData.questions) || aiData.questions.length < 5) {
+    aiData = {
+      questions: generateSmartQuizQuestions({
+        skillName,
+        subTopicName: subTopic.name,
+        userPreferences: userPrefs,
+      }),
+    };
   }
 
   // Normalize questions across the 3 sections
@@ -347,9 +377,11 @@ const generateQuiz = asyncHandler(async (req, res) => {
     };
   });
 
+  const safeRoadmapItemId = (roadmap && roadmap._id) || (isValidObjectId ? roadmapItemId : new mongoose.Types.ObjectId());
+
   const attempt = await QuizAttempt.create({
     userId: req.user._id,
-    roadmapItemId: isStandaloneSkill ? roadmapItemId : roadmap._id,
+    roadmapItemId: safeRoadmapItemId,
     skillName: skillName,
     subTopicId: subTopicId,
     questions: normalizedQuestions,
