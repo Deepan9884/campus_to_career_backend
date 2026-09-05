@@ -851,6 +851,7 @@ const unblockProctoring = asyncHandler(async (req, res) => {
   // Unblock the student unconditionally
   student.isProctoringBlocked = false;
   student.proctoringBlockedAt = null;
+  student.proctoringBlockTrack = "classic";
   await student.save();
   invalidateUserCache(studentId);
 
@@ -1323,7 +1324,7 @@ const batchUnblockProctoring = asyncHandler(async (req, res) => {
 
   await User.updateMany(
     { _id: { $in: studentIds } },
-    { $set: { isProctoringBlocked: false, proctoringBlockedAt: null } }
+    { $set: { isProctoringBlocked: false, proctoringBlockedAt: null, proctoringBlockTrack: "classic" } }
   );
   studentIds.forEach((sid) => invalidateUserCache(sid));
 

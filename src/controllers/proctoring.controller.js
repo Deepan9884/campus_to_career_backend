@@ -18,10 +18,12 @@ const MAX_VIOLATIONS = 3;
 /**
  * POST /api/proctoring/violation
  * Student reports a proctoring violation event.
- * Increments count, blocks user for 30 minutes on 3rd strike or fullscreen timeout.
+ * Increments count, blocks user:
+ *   - Classic: 30 minutes with classic auto-unblock
+ *   - Super Dream: No timer; only mentor unblocks
  */
 const reportViolation = asyncHandler(async (req, res) => {
-  const { moduleType, moduleId, violationType, forceBlock } = req.body;
+  const { moduleType, moduleId, violationType, forceBlock, track, isSuperDream } = req.body;
 
   if (!moduleType || !moduleId || !violationType) {
     throw ApiError.badRequest("moduleType, moduleId, and violationType are required");
@@ -46,7 +48,13 @@ const reportViolation = asyncHandler(async (req, res) => {
     throw ApiError.badRequest("Invalid violationType");
   }
 
-  // 1. Check if user is currently globally blocked (and evaluate 30-min auto-unblock)
+  const isSuperDreamTrack = Boolean(
+    isSuperDream ||
+    track === "super_dream" ||
+    (typeof moduleId === "string" && moduleId.includes("super-dream"))
+  );
+
+  // 1. Check if user is currently globally blocked (and evaluate 30-min auto-unblock if Classic)
   const currentBlockStatus = await evaluateAndAutoUnblockUser(req.user);
 
   // 2. Upsert: find or create violation record for this attempt/session
@@ -68,7 +76,7 @@ const reportViolation = asyncHandler(async (req, res) => {
     });
   }
 
-  // If user is already blocked in 30-minute lockout, return 403 immediately
+  // If user is already blocked, return 403 immediately
   if (currentBlockStatus.isBlocked || record.isBlocked) {
     let mentorName = "your assigned mentor";
     let mentorEmail = null;
@@ -82,10 +90,25 @@ const reportViolation = asyncHandler(async (req, res) => {
       } catch {}
     }
 
+    if (currentBlockStatus.isSuperDream || isSuperDreamTrack) {
+      return res.status(403).json({
+        success: false,
+        violationCount: record.violationCount || MAX_VIOLATIONS,
+        isProctoringBlocked: true,
+        isSuperDream: true,
+        hasTimer: false,
+        blockedAt: currentBlockStatus.blockedAt || record.blockedAt,
+        mentor: { name: mentorName, email: mentorEmail },
+        message: `Your Super Dream assessment access is suspended. In Super Dream, auto-unblock timers are disabled. Only ${mentorName} can unblock your access.`,
+      });
+    }
+
     return res.status(403).json({
       success: false,
       violationCount: record.violationCount || MAX_VIOLATIONS,
       isProctoringBlocked: true,
+      isSuperDream: false,
+      hasTimer: true,
       remainingMs: currentBlockStatus.remainingMs,
       remainingSeconds: currentBlockStatus.remainingSeconds,
       remainingMinutes: currentBlockStatus.remainingMinutes,
@@ -109,8 +132,11 @@ const reportViolation = asyncHandler(async (req, res) => {
     record.isBlocked = true;
     record.blockedAt = new Date();
 
-    // Block candidate for 30 minutes in DB and invalidate session cache
-    blockInfo = await blockUserForProctoring(req.user._id);
+    // Block candidate: Classic = 30m with auto-unblock; Super Dream = No timer, mentor unblocks
+    blockInfo = await blockUserForProctoring(
+      req.user._id,
+      isSuperDreamTrack ? "super_dream" : "classic"
+    );
 
     // Synchronize ExamSubmission if candidate is taking an exam
     try {
@@ -153,8 +179,12 @@ const reportViolation = asyncHandler(async (req, res) => {
       const studentNotification = await Notification.create({
         user: req.user._id,
         type: "proctoring_blocked",
-        title: "Test Access Suspended (30 Minutes)",
-        message: isFullscreenTimeout
+        title: isSuperDreamTrack
+          ? "Super Dream Access Suspended (Mentor Review Required)"
+          : "Test Access Suspended (30 Minutes)",
+        message: isSuperDreamTrack
+          ? `Your Super Dream test access has been suspended due to proctoring violations. Auto-unblock timers are disabled for Super Dream. Only ${mentorName} can unblock your access.`
+          : isFullscreenTimeout
           ? `Your test access has been suspended for 30 minutes because you did not return to fullscreen within 15 seconds. Only ${mentorName} can unblock you early, or access will auto-restore in 30 minutes.`
           : `Your test access has been suspended for 30 minutes due to 3 proctoring violations. Only ${mentorName} can unblock you early, or access will auto-restore in 30 minutes.`,
         actionUrl: "/dashboard",
@@ -165,12 +195,13 @@ const reportViolation = asyncHandler(async (req, res) => {
       if (fullStudent) {
         emailService
           .sendProctoringBlockedEmail(fullStudent, {
-            examTitle:
-              moduleType === "exam"
-                ? "Faculty Assessment"
-                : moduleType === "interview"
-                ? "AI Mock Interview"
-                : "Skill Gap / Roadmap Quiz",
+            examTitle: isSuperDreamTrack
+              ? "Super Dream Assessment / Interview"
+              : moduleType === "exam"
+              ? "Faculty Assessment"
+              : moduleType === "interview"
+              ? "AI Mock Interview"
+              : "Skill Gap / Roadmap Quiz",
             reason: isFullscreenTimeout
               ? "Exited fullscreen and failed to return within 15 seconds"
               : "Anti-cheat violations limit exceeded (3 strikes)",
@@ -190,8 +221,12 @@ const reportViolation = asyncHandler(async (req, res) => {
         const mentorNotification = await Notification.create({
           user: mentorId,
           type: "proctoring_blocked",
-          title: `[Mentee Alert] Test Blocked (30m): ${fullStudent.name}`,
-          message: isFullscreenTimeout
+          title: isSuperDreamTrack
+            ? `[Super Dream Alert] Test Blocked (Mentor Unblock Required): ${fullStudent.name}`
+            : `[Mentee Alert] Test Blocked (30m): ${fullStudent.name}`,
+          message: isSuperDreamTrack
+            ? `Your mentee ${fullStudent.name} was blocked during a Super Dream assessment. Auto-unblock is disabled. Review telemetry and unblock from the admin portal.`
+            : isFullscreenTimeout
             ? `Your mentee ${fullStudent.name} was blocked from tests for 30 minutes after failing to re-enter fullscreen within 15 seconds. You can review and unblock early from the admin portal.`
             : `Your mentee ${fullStudent.name} was blocked from tests for 30 minutes after 3 proctoring violations. You can review and unblock early from the admin portal.`,
           actionUrl: "/students",
@@ -219,10 +254,25 @@ const reportViolation = asyncHandler(async (req, res) => {
       } catch {}
     }
 
+    if (isSuperDreamTrack) {
+      return res.status(403).json({
+        success: false,
+        violationCount: record.violationCount,
+        isProctoringBlocked: true,
+        isSuperDream: true,
+        hasTimer: false,
+        blockedAt: blockInfo?.blockedAt || new Date(),
+        mentor: { name: mentorName, email: mentorEmail },
+        message: `Super Dream assessment access suspended. Auto-unblock timers are disabled for Super Dream. Only ${mentorName} can unblock your access.`,
+      });
+    }
+
     return res.status(403).json({
       success: false,
       violationCount: record.violationCount,
       isProctoringBlocked: true,
+      isSuperDream: false,
+      hasTimer: true,
       remainingMs: blockInfo?.remainingMs || 30 * 60 * 1000,
       remainingSeconds: blockInfo?.remainingSeconds || 1800,
       remainingMinutes: blockInfo?.remainingMinutes || 30,
@@ -259,6 +309,8 @@ const getViolationStatus = asyncHandler(async (req, res) => {
     return ApiResponse.success({
       violationCount: 0,
       isBlocked: userBlockStatus.isBlocked,
+      isSuperDream: Boolean(userBlockStatus.isSuperDream),
+      hasTimer: Boolean(userBlockStatus.hasTimer),
       remainingSeconds: userBlockStatus.remainingSeconds,
       remainingMinutes: userBlockStatus.remainingMinutes,
       events: [],
@@ -268,6 +320,8 @@ const getViolationStatus = asyncHandler(async (req, res) => {
   return ApiResponse.success({
     violationCount: record.violationCount,
     isBlocked: Boolean(userBlockStatus.isBlocked || record.isBlocked),
+    isSuperDream: Boolean(userBlockStatus.isSuperDream),
+    hasTimer: Boolean(userBlockStatus.hasTimer),
     blockedAt: record.blockedAt || userBlockStatus.blockedAt,
     remainingSeconds: userBlockStatus.remainingSeconds,
     remainingMinutes: userBlockStatus.remainingMinutes,
@@ -278,7 +332,7 @@ const getViolationStatus = asyncHandler(async (req, res) => {
 /**
  * GET /api/proctoring/check-status
  * Dedicated lightweight query for the student frontend to inspect real-time block state,
- * countdown seconds, and assigned mentor info.
+ * countdown seconds (Classic) or mentor-only status (Super Dream), and assigned mentor info.
  */
 const checkMyProctoringStatus = asyncHandler(async (req, res) => {
   const status = await evaluateAndAutoUnblockUser(req.user);
@@ -298,6 +352,8 @@ const checkMyProctoringStatus = asyncHandler(async (req, res) => {
   return ApiResponse.success({
     isBlocked: status.isBlocked,
     autoUnblocked: status.autoUnblocked,
+    isSuperDream: Boolean(status.isSuperDream),
+    hasTimer: Boolean(status.hasTimer),
     remainingMs: status.remainingMs,
     remainingSeconds: status.remainingSeconds,
     remainingMinutes: status.remainingMinutes,

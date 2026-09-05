@@ -144,6 +144,11 @@ const userSchema = new mongoose.Schema(
     },
     isProctoringBlocked: { type: Boolean, default: false },
     proctoringBlockedAt: { type: Date, default: null },
+    proctoringBlockTrack: {
+      type: String,
+      enum: ["classic", "super_dream"],
+      default: "classic",
+    },
     isDeleted: { type: Boolean, default: false, index: true },
     deletedAt: { type: Date, default: null },
   },
