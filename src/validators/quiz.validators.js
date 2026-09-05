@@ -2,9 +2,21 @@ const { body } = require("express-validator");
 
 const generateQuizValidators = [
   body("roadmapItemId")
-    .trim()
-    .notEmpty()
-    .withMessage("roadmapItemId is required"),
+    .optional({ checkFalsy: true })
+    .trim(),
+  body("skillName")
+    .optional({ checkFalsy: true })
+    .trim(),
+  body("subTopicName")
+    .optional({ checkFalsy: true })
+    .trim(),
+  body()
+    .custom((val, { req }) => {
+      if (!req.body?.roadmapItemId && !req.body?.skillName && !req.body?.subTopicName) {
+        throw new Error("At least one of roadmapItemId, skillName, or subTopicName is required");
+      }
+      return true;
+    }),
 ];
 
 const submitQuizValidators = [

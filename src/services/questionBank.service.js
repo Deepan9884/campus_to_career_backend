@@ -957,10 +957,415 @@ async function parseCodingProblemFromUrl(urlOrTitle) {
   };
 }
 
+/**
+ * Generate a complete, schema-compliant 3-section technical assessment for any skill/subtopic.
+ * Guarantees Section 1 (5 MCQs), Section 2 (1 Coding Challenge), Section 3 (3 Advanced MCQs).
+ */
+function generateSmartQuizQuestions({ skillName = "Software Engineering", subTopicName = "Core Competency", userPreferences = {} }) {
+  const targetSkill = (skillName || "Software Engineering").trim();
+  const targetSubTopic = (subTopicName || `${targetSkill} Fundamentals`).trim();
+  const prefLang = userPreferences?.preferredLanguage || "JavaScript";
+
+  const lowerSkill = targetSkill.toLowerCase();
+  const lowerSub = targetSubTopic.toLowerCase();
+  const combined = `${lowerSkill} ${lowerSub}`;
+
+  const isJs = /javascript|typescript|react|next|node|express|vue|angular|frontend|web/i.test(combined);
+  const isPython = /python|django|fastapi|pandas|numpy|data\s*science|machine\s*learning|ai/i.test(combined);
+  const isJava = /java\b|spring|springboot|hibernate|jvm/i.test(combined);
+  const isCpp = /c\+\+|cpp|\bc\b|rust|golang|go\b/i.test(combined);
+  const isSql = /sql|database|dbms|postgres|mysql|mongo|nosql|redis/i.test(combined);
+  const isDsa = /dsa|data\s*structure|algorithm|binary\s*tree|graph|dp|sorting/i.test(combined);
+
+  // Section 1: 5 Foundational MCQs
+  let s1Questions = [];
+  if (isJs) {
+    s1Questions = [
+      {
+        questionId: "s1_q1",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "easy",
+        questionText: `In ${targetSkill}, what is the primary distinction between '==' and '===' comparison operators?`,
+        options: [
+          "A) '==' performs type coercion before comparison, while '===' checks both value and type strictly",
+          "B) '===' performs type coercion, while '==' checks strict identity",
+          "C) '===' is only for comparing numbers, while '==' is for strings",
+          "D) They are completely identical in ES6 and modern engines",
+        ],
+        correctAnswer: "A) '==' performs type coercion before comparison, while '===' checks both value and type strictly",
+        explanation: "Strict equality (===) does not perform type conversion and requires both operands to share the same type and value.",
+        keyPoints: ["Strict equality vs type coercion in JavaScript", "Value comparison best practices"],
+      },
+      {
+        questionId: "s1_q2",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "easy",
+        questionText: `Which array method creates a new array populated with the results of calling a provided function on every element in the calling array?`,
+        options: ["A) Array.prototype.forEach()", "B) Array.prototype.map()", "C) Array.prototype.filter()", "D) Array.prototype.reduce()"],
+        correctAnswer: "B) Array.prototype.map()",
+        explanation: "map() transforms elements into a newly returned array without mutating the source array.",
+        keyPoints: ["Immutable functional programming patterns", "Array transformation methods"],
+      },
+      {
+        questionId: "s1_q3",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `In asynchronous ${targetSkill}, how does the Event Loop handle Promise resolution (.then callbacks / async-await) relative to setTimeout callbacks?`,
+        options: [
+          "A) setTimeout callbacks execute before Promise microtasks",
+          "B) Promise callbacks enter the Microtask queue and execute immediately after the current call stack drains before the next Macrotask",
+          "C) They execute in parallel across separate operating system threads",
+          "D) Promises only resolve after the browser window is reloaded",
+        ],
+        correctAnswer: "B) Promise callbacks enter the Microtask queue and execute immediately after the current call stack drains before the next Macrotask",
+        explanation: "The JavaScript runtime drains all Microtasks (Promises) before advancing to the next Macrotask (setTimeout, setInterval).",
+        keyPoints: ["Event Loop microtask vs macrotask queuing", "Asynchronous non-blocking concurrency"],
+      },
+      {
+        questionId: "s1_q4",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `What is a Closure in ${targetSkill}?`,
+        options: [
+          "A) A function that has access to variables in its outer lexical scope even after that outer function has returned",
+          "B) A method that closes open file descriptors and database connections",
+          "C) An automatic destructor that frees memory in C-style languages",
+          "D) A syntax error that prevents function execution",
+        ],
+        correctAnswer: "A) A function that has access to variables in its outer lexical scope even after that outer function has returned",
+        explanation: "Closures capture their surrounding lexical environment, allowing inner functions to reference outer variables even after the outer scope exits.",
+        keyPoints: ["Lexical scope retention", "Functional encapsulation"],
+      },
+      {
+        questionId: "s1_q5",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `What HTTP response status code indicates that a client request lacks valid authentication credentials?`,
+        options: ["A) 200 OK", "B) 401 Unauthorized", "C) 403 Forbidden", "D) 404 Not Found"],
+        correctAnswer: "B) 401 Unauthorized",
+        explanation: "401 Unauthorized specifically means authentication credentials are required and either missing or invalid.",
+        keyPoints: ["HTTP status standards", "API authentication vs authorization"],
+      },
+    ];
+  } else if (isPython) {
+    s1Questions = [
+      {
+        questionId: "s1_q1",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "easy",
+        questionText: `In ${targetSkill}, what is the key difference between a list and a tuple?`,
+        options: [
+          "A) Lists are mutable, while tuples are immutable",
+          "B) Tuples can only store integers, while lists store any type",
+          "C) Lists do not allow indexing, while tuples do",
+          "D) Tuples require manual memory deallocation via delete()",
+        ],
+        correctAnswer: "A) Lists are mutable, while tuples are immutable",
+        explanation: "Lists can be modified in-place (mutable), whereas tuples cannot be altered after creation (immutable).",
+        keyPoints: ["Mutability vs immutability in Python", "Data structure trade-offs"],
+      },
+      {
+        questionId: "s1_q2",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "easy",
+        questionText: `What is the output of 'bool([])' in Python?`,
+        options: ["A) True", "B) False", "C) None", "D) Raises TypeError"],
+        correctAnswer: "B) False",
+        explanation: "Empty collections in Python (like [], {}, '') evaluate to falsy values in boolean contexts.",
+        keyPoints: ["Truthiness in Python", "Empty sequence evaluation"],
+      },
+      {
+        questionId: "s1_q3",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `What keyword is used to write a Generator function in ${targetSkill} that produces values on-demand lazily?`,
+        options: ["A) return", "B) yield", "C) emit", "D) await"],
+        correctAnswer: "B) yield",
+        explanation: "The 'yield' keyword pauses execution and yields a value back to the caller, resuming state on subsequent iterations.",
+        keyPoints: ["Generators and lazy evaluation", "Memory-efficient iteration"],
+      },
+      {
+        questionId: "s1_q4",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `What is the primary role of Python's Global Interpreter Lock (GIL)?`,
+        options: [
+          "A) Prevents race conditions by ensuring only one native thread executes Python bytecode at a time in CPython",
+          "B) Encrypts source code before compiling into .pyc bytecode",
+          "C) Restricts file system access to root directories",
+          "D) Enforces single-instance singleton patterns for class definitions",
+        ],
+        correctAnswer: "A) Prevents race conditions by ensuring only one native thread executes Python bytecode at a time in CPython",
+        explanation: "CPython uses the GIL as a mutex to synchronize memory management and reference counting across threads.",
+        keyPoints: ["CPython runtime architecture", "Threading vs multiprocessing"],
+      },
+      {
+        questionId: "s1_q5",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `Which dictionary method returns a value for a specified key if the key is in dictionary, else returns a default value without raising KeyError?`,
+        options: ["A) dict.pop()", "B) dict.get(key, default)", "C) dict.fetch()", "D) dict.find()"],
+        correctAnswer: "B) dict.get(key, default)",
+        explanation: "dict.get(key, default) safely retrieves values without raising KeyError if the key is missing.",
+        keyPoints: ["Dictionary operations", "Graceful exception prevention"],
+      },
+    ];
+  } else if (isSql) {
+    s1Questions = [
+      {
+        questionId: "s1_q1",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "easy",
+        questionText: `Which SQL statement is used to extract records from a database table?`,
+        options: ["A) EXTRACT", "B) SELECT", "C) GET", "D) QUERY"],
+        correctAnswer: "B) SELECT",
+        explanation: "The SELECT statement is the fundamental DML command used to query and retrieve data from database relations.",
+        keyPoints: ["Core SQL syntax", "Data retrieval commands"],
+      },
+      {
+        questionId: "s1_q2",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "easy",
+        questionText: `Which SQL keyword is used to eliminate duplicate rows from query results?`,
+        options: ["A) UNIQUE", "B) DISTINCT", "C) DIFFERENT", "D) NO_DUPLICATE"],
+        correctAnswer: "B) DISTINCT",
+        explanation: "SELECT DISTINCT removes duplicate records, returning only unique value combinations.",
+        keyPoints: ["Deduplication in queries", "Relational algebra projection"],
+      },
+      {
+        questionId: "s1_q3",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `What is the key difference between WHERE and HAVING clauses in SQL?`,
+        options: [
+          "A) WHERE filters individual rows before aggregation; HAVING filters aggregated groups after GROUP BY",
+          "B) HAVING is only for numeric columns, WHERE is for text",
+          "C) WHERE is only used in subqueries, HAVING is used in outer queries",
+          "D) They are completely interchangeable synonyms in ANSI SQL",
+        ],
+        correctAnswer: "A) WHERE filters individual rows before aggregation; HAVING filters aggregated groups after GROUP BY",
+        explanation: "WHERE filters raw rows prior to group calculation; HAVING filters the groups produced by aggregate functions.",
+        keyPoints: ["Aggregation execution order", "Group filtering rules"],
+      },
+      {
+        questionId: "s1_q4",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `Which index type is commonly used as the default in relational databases (PostgreSQL, MySQL) for fast equality and range queries?`,
+        options: ["A) Hash Index", "B) B-Tree (B+ Tree) Index", "C) Bitmap Index", "D) Spatial R-Tree Index"],
+        correctAnswer: "B) B-Tree (B+ Tree) Index",
+        explanation: "B+ Tree indexes keep data sorted in balanced tree structures, supporting O(log N) equality searches as well as range scans.",
+        keyPoints: ["Database indexing data structures", "B+ Tree properties and range query support"],
+      },
+      {
+        questionId: "s1_q5",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `In relational database design, what does Third Normal Form (3NF) guarantee?`,
+        options: [
+          "A) Every table must have at least 3 foreign keys",
+          "B) The relation is in 2NF and has no transitive functional dependencies of non-prime attributes on the primary key",
+          "C) Data is replicated across 3 separate server nodes",
+          "D) All columns contain comma-separated arrays",
+        ],
+        correctAnswer: "B) The relation is in 2NF and has no transitive functional dependencies of non-prime attributes on the primary key",
+        explanation: "3NF eliminates transitive dependencies where non-key attributes depend on other non-key attributes.",
+        keyPoints: ["Database normalization principles", "Transitive dependency elimination"],
+      },
+    ];
+  } else {
+    // General Engineering / Core Tech
+    s1Questions = [
+      {
+        questionId: "s1_q1",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "easy",
+        questionText: `In software engineering for ${targetSkill}, what is the primary benefit of modular code design?`,
+        options: [
+          "A) High cohesion within modules, loose coupling between modules, and improved maintainability",
+          "B) Guarantees the application runs in zero CPU clock cycles",
+          "C) Eliminates all need for automated testing",
+          "D) Prevents multiple developers from working on the repository simultaneously",
+        ],
+        correctAnswer: "A) High cohesion within modules, loose coupling between modules, and improved maintainability",
+        explanation: "Modularity separates concerns into distinct components, making software easier to test, refactor, and scale.",
+        keyPoints: ["Coupling and cohesion", "Software architectural fundamentals"],
+      },
+      {
+        questionId: "s1_q2",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "easy",
+        questionText: `What is the worst-case time complexity of searching for an item in an unsorted array of N elements?`,
+        options: ["A) O(1)", "B) O(log N)", "C) O(N)", "D) O(N^2)"],
+        correctAnswer: "C) O(N)",
+        explanation: "Linear search requires checking each of the N elements in the worst case when the target is at the end or absent.",
+        keyPoints: ["Asymptotic notation", "Linear search complexity"],
+      },
+      {
+        questionId: "s1_q3",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `What principle of OOP states that internal object state should be hidden and accessible only through public methods?`,
+        options: ["A) Inheritance", "B) Encapsulation", "C) Polymorphism", "D) Abstraction"],
+        correctAnswer: "B) Encapsulation",
+        explanation: "Encapsulation bundles data with methods that operate on that data and restricts direct access to internal components.",
+        keyPoints: ["Object-oriented principles", "Information hiding"],
+      },
+      {
+        questionId: "s1_q4",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `In distributed systems, what does the CAP theorem assert about a network partition?`,
+        options: [
+          "A) A system can simultaneously guarantee Consistency, Availability, and Partition Tolerance",
+          "B) When a network partition occurs, a system must choose between Consistency and Availability",
+          "C) Partitions can always be prevented with faster network switches",
+          "D) Availability is never affected by network partitions",
+        ],
+        correctAnswer: "B) When a network partition occurs, a system must choose between Consistency and Availability",
+        explanation: "In the presence of a network partition (P), a distributed system must trade off either linearizable Consistency (C) or Availability (A).",
+        keyPoints: ["CAP theorem trade-offs", "Distributed systems resilience"],
+      },
+      {
+        questionId: "s1_q5",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: `Which data structure offers average O(1) time complexity for insertion, deletion, and search operations?`,
+        options: ["A) Singly Linked List", "B) Hash Table / Map", "C) Binary Search Tree", "D) Sorted Array"],
+        correctAnswer: "B) Hash Table / Map",
+        explanation: "Hash tables map keys to bucket indices using a hash function, achieving constant average time complexity O(1).",
+        keyPoints: ["Hash table mechanics", "Time complexity trade-offs"],
+      },
+    ];
+  }
+
+  // Section 2: 1 Practical Coding Challenge
+  const codingProblem = {
+    questionId: "s2_q1",
+    section: 2,
+    sectionTitle: "Section 2: Coding Challenge",
+    type: "coding",
+    difficulty: "medium",
+    questionText: `Problem Statement:\nImplement an efficient algorithm for ${targetSkill} (${targetSubTopic}) to find two numbers in an array that sum to a specific target integer.\n\nInput Format:\nFirst line contains two space-separated integers: N (size of array) and Target.\nSecond line contains N space-separated integers.\n\nOutput Format:\nPrint the 0-based indices of the two numbers separated by a space (smaller index first).\n\nConstraints:\n2 <= N <= 10^5\n-10^9 <= elements, Target <= 10^9\nExactly one valid solution exists.\n\nExample 1:\nInput:\n4 9\n2 7 11 15\nOutput:\n0 1\nExplanation: nums[0] + nums[1] = 2 + 7 = 9.`,
+    starterCode: prefLang.toLowerCase().includes("python")
+      ? `# Write your Python solution here\nimport sys\n\ndef solve():\n    lines = sys.stdin.read().split()\n    if not lines:\n        return\n    n, target = int(lines[0]), int(lines[1])\n    nums = [int(x) for x in lines[2:2+n]]\n    \n    seen = {}\n    for i, num in enumerate(nums):\n        diff = target - num\n        if diff in seen:\n            print(f"{seen[diff]} {i}")\n            return\n        seen[num] = i\n\nif __name__ == '__main__':\n    solve()\n`
+      : `// Write your JavaScript solution here\nconst fs = require('fs');\nconst input = fs.readFileSync(0, 'utf-8').trim().split(/\\s+/);\nif (input.length >= 2) {\n  const n = parseInt(input[0], 10);\n  const target = parseInt(input[1], 10);\n  const nums = input.slice(2, 2 + n).map(Number);\n  \n  const map = new Map();\n  for (let i = 0; i < nums.length; i++) {\n    const diff = target - nums[i];\n    if (map.has(diff)) {\n      console.log(map.get(diff) + " " + i);\n      break;\n    }\n    map.set(nums[i], i);\n  }\n}\n`,
+    keyPoints: [
+      "Optimal O(N) time complexity using Hash Table lookup",
+      "O(N) space complexity",
+      "Correct index output and edge case handling",
+    ],
+    testCases: [
+      { input: "4 9\n2 7 11 15", expectedOutput: "0 1", description: "Standard basic test case" },
+      { input: "3 6\n3 2 4", expectedOutput: "1 2", description: "Target pair in non-consecutive indices" },
+      { input: "2 6\n3 3", expectedOutput: "0 1", description: "Duplicate values matching target" },
+    ],
+  };
+
+  // Section 3: 3 Advanced/Tough MCQs
+  const s3Questions = [
+    {
+      questionId: "s3_q1",
+      section: 3,
+      sectionTitle: "Section 3: Advanced MCQs (Tough)",
+      type: "mcq",
+      difficulty: "hard",
+      questionText: `In high-throughput architectures related to ${targetSkill}, how do Memory Leaks typically manifest and how are they effectively mitigated?`,
+      options: [
+        "A) Through unintended references held in global variables, uncleaned event listeners, or uncleared intervals; mitigated by heap snapshot profiling and lifecycle cleanup",
+        "B) By using too many comments in source code",
+        "C) Automatically cleaned by browser window minimization",
+        "D) Only occurring when running on 32-bit operating systems",
+      ],
+      correctAnswer: "A) Through unintended references held in global variables, uncleaned event listeners, or uncleared intervals; mitigated by heap snapshot profiling and lifecycle cleanup",
+      explanation: "Memory leaks occur when objects are no longer needed by application logic but remain reachable from the GC root due to lingering closures, event listeners, or caches.",
+      keyPoints: ["Garbage collection mechanics", "Memory leak profiling and lifecycle mitigation"],
+    },
+    {
+      questionId: "s3_q2",
+      section: 3,
+      sectionTitle: "Section 3: Advanced MCQs (Tough)",
+      type: "mcq",
+      difficulty: "hard",
+      questionText: `Under high concurrency, what technique prevents the 'Thundering Herd' (Cache Stampede) problem when a hot cache key expires?`,
+      options: [
+        "A) Mutex / Distributed locking with probabilistic early recomputation (XFetch) or background refresh",
+        "B) Setting all cache expiration TTLs to 0 seconds",
+        "C) Disabling the database completely",
+        "D) Increasing CPU voltage dynamically",
+      ],
+      correctAnswer: "A) Mutex / Distributed locking with probabilistic early recomputation (XFetch) or background refresh",
+      explanation: "Cache stampedes are prevented by ensuring only one worker recomputes the expired cache entry while other incoming requests await the result or receive stale data.",
+      keyPoints: ["Cache stampede mitigation", "Distributed locking and probabilistic recomputation"],
+    },
+    {
+      questionId: "s3_q3",
+      section: 3,
+      sectionTitle: "Section 3: Advanced MCQs (Tough)",
+      type: "mcq",
+      difficulty: "hard",
+      questionText: `When designing resilient microservices communicating asynchronously, what is the primary purpose of an Idempotency Key in API requests?`,
+      options: [
+        "A) Ensures that retried requests (e.g. following network timeouts) execute side-effects exactly once without duplicate processing or charging",
+        "B) Encrypts HTTPS traffic using AES-256",
+        "C) Compresses JSON payloads over TCP",
+        "D) Bypasses rate limiting for all admin users",
+      ],
+      correctAnswer: "A) Ensures that retried requests (e.g. following network timeouts) execute side-effects exactly once without duplicate processing or charging",
+      explanation: "Idempotency keys allow clients to safely retry requests across intermittent network disconnects without executing side-effects (like payments or record creations) more than once.",
+      keyPoints: ["Idempotent API design", "Distributed transaction safety"],
+    },
+  ];
+
+  return [...s1Questions, codingProblem, ...s3Questions];
+}
+
 module.exports = {
   PRE_DEVELOPED_MCQ_BANK,
   PRE_DEVELOPED_CODING_BANK,
   fetchMcqsFromBank,
   parseCodingProblemFromUrl,
   getEmptyStarterCodes,
+  generateSmartQuizQuestions,
 };
+
