@@ -561,6 +561,17 @@ const addMentee = asyncHandler(async (req, res) => {
     throw ApiError.badRequest("Student email or ID is required");
   }
 
+  // Check max mentee limit for the mentor
+  const MAX_MENTEES_PER_MENTOR = 25;
+  const mentor = await User.findById(req.user._id);
+  if (!mentor) {
+    throw ApiError.notFound("Mentor account not found");
+  }
+  
+  if (mentor.mentees && mentor.mentees.length >= MAX_MENTEES_PER_MENTOR) {
+    throw ApiError.badRequest(`Maximum mentee limit reached (${MAX_MENTEES_PER_MENTOR}). Please contact administration if you need to manage more students.`);
+  }
+
   let student;
   if (input.includes("@")) {
     student = await User.findOne({ email: input.toLowerCase() });
@@ -595,8 +606,6 @@ const addMentee = asyncHandler(async (req, res) => {
   ) {
     throw ApiError.badRequest("Selected account is a faculty/mentor account and cannot be added as a mentee.");
   }
-
-  const mentor = await User.findById(req.user._id);
 
   // Link student to mentor
   const menteeIds = (mentor.mentees || []).map((id) => id.toString());

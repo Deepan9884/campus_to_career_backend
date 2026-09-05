@@ -33,7 +33,10 @@ function buildAnalysisPrompt(repoMeta, readme, fileContents, tree) {
   
   if (readme) {
     const readmeLines = readme.split("\n");
-    const truncatedReadme = readmeLines.length > 100 ? readmeLines.slice(0, 100).join("\n") + "\n[README truncated...]" : readme;
+    let truncatedReadme = readmeLines.length > 100 ? readmeLines.slice(0, 100).join("\n") + "\n[README truncated...]" : readme;
+    if (truncatedReadme.length > 8000) {
+      truncatedReadme = truncatedReadme.slice(0, 8000) + "\n[...README truncated]";
+    }
     prompt += `**README CONTENT:**\n\`\`\`markdown\n${truncatedReadme}\n\`\`\`\n\n`;
   }
   
@@ -274,6 +277,7 @@ async function processGithubAnalysis(data) {
       responseSchema: analysisResponseSchema,
       feature: "github-repo-analysis",
       userId,
+      maxLength: 65000,
     });
 
     if (!aiResult.success) {

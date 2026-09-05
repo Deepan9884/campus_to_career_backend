@@ -38,17 +38,15 @@ if (!hasComplexity(JWT_REFRESH_SECRET)) {
 }
 
 // Validate encryption key for PII encryption
-let ENCRYPTION_KEY = getVar("ENCRYPTION_KEY", false);
-if (!ENCRYPTION_KEY) {
-  // Deterministically derive a secure 32-byte (64 hex) key from JWT_SECRET or fallback seed
-  const seed = JWT_SECRET || "c2c_default_secure_encryption_seed_2026";
-  ENCRYPTION_KEY = crypto.createHash("sha256").update(seed).digest("hex");
-  process.env.ENCRYPTION_KEY = ENCRYPTION_KEY;
-  console.warn("⚠️  ENCRYPTION_KEY not set in environment. Auto-derived 32-byte key from JWT_SECRET to ensure continuous uptime.");
+const ENCRYPTION_KEY = getVar("ENCRYPTION_KEY", true); // REQUIRED - fail fast if missing
+
+if (ENCRYPTION_KEY.length < 64) {
+  throw new Error("ENCRYPTION_KEY must be at least 64 characters (32 bytes hex). Generate with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"");
 }
-if (ENCRYPTION_KEY.length < 32) {
-  ENCRYPTION_KEY = crypto.createHash("sha256").update(ENCRYPTION_KEY).digest("hex");
-  process.env.ENCRYPTION_KEY = ENCRYPTION_KEY;
+
+// Validate it's a valid hex string
+if (!/^[0-9a-fA-F]{64,}$/.test(ENCRYPTION_KEY)) {
+  throw new Error("ENCRYPTION_KEY must be a valid hexadecimal string (64+ characters). Generate with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"");
 }
 
 const env = {
@@ -57,7 +55,7 @@ const env = {
   MONGODB_URI: getVar("MONGODB_URI", true),
   JWT_SECRET,
   JWT_REFRESH_SECRET,
-  JWT_EXPIRES_IN: getVar("JWT_EXPIRES_IN") || "2h",
+  JWT_EXPIRES_IN: getVar("JWT_EXPIRES_IN") || "15m", // Reduced from 2h to 15m for security
   JWT_REFRESH_EXPIRES_IN: getVar("JWT_REFRESH_EXPIRES_IN") || "7d",
   CLIENT_URL: getVar("CLIENT_URL") || "http://localhost:5173",
   ADMIN_CLIENT_URL: getVar("ADMIN_CLIENT_URL") || "http://localhost:8081",

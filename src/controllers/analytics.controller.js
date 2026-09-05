@@ -264,19 +264,108 @@ function formatRelativeTime(date) {
   return d.toLocaleDateString();
 }
 
+function buildPersonalizedWeeklyReport({ resumes, interviews, repos, aiDifficulty, preferredLanguage, resumePrivacy }) {
+  const resumeCount = resumes.length;
+  const avgAts = resumeCount > 0 ? Math.round(resumes.reduce((acc, r) => acc + (r.atsScore || 0), 0) / resumeCount) : 0;
+  const interviewCount = interviews.length;
+  const avgInterview = interviewCount > 0 ? Math.round(interviews.reduce((acc, i) => acc + (i.overallScore || 0), 0) / interviewCount) : 0;
+  const repoCount = repos.length;
+  const repoList = repos.map((r) => r.repoFullName).filter(Boolean);
+
+  const summaryParts = [];
+
+  if (resumeCount > 0 || interviewCount > 0 || repoCount > 0) {
+    summaryParts.push("Great progress this week across your career preparation milestones.");
+    if (resumeCount > 0) {
+      if (resumePrivacy) {
+        summaryParts.push(`You evaluated ${resumeCount} resume draft${resumeCount > 1 ? "s" : ""} in privacy mode.`);
+      } else {
+        summaryParts.push(`You refined ${resumeCount} resume iteration${resumeCount > 1 ? "s" : ""}, maintaining an average ATS benchmark score of ${avgAts}/100.`);
+      }
+    }
+    if (interviewCount > 0) {
+      summaryParts.push(`You completed ${interviewCount} mock interview session${interviewCount > 1 ? "s" : ""} with an average performance score of ${avgInterview}%.`);
+    }
+    if (repoCount > 0) {
+      summaryParts.push(`You also analyzed ${repoCount} GitHub repositor${repoCount > 1 ? "ies" : "y"}${repoList.length > 0 ? ` (${repoList.slice(0, 2).join(", ")})` : ""}.`);
+    }
+    summaryParts.push("Maintaining this deliberate consistency will rapidly compound your readiness for upcoming placement drives.");
+  } else {
+    summaryParts.push(`Welcome to your new weekly sprint! You haven't recorded any mock interviews or resume evaluations in the past 7 days, making this the perfect time to build strong preparation momentum.`);
+    summaryParts.push(`Consistent weekly coding drills in ${preferredLanguage} and mock interview practice will build measurable confidence for campus placements.`);
+  }
+
+  const recommendations = [];
+
+  // Recommendation 1: Technical / Language focus
+  if (repoCount > 0 && repoList[0]) {
+    recommendations.push(
+      `Deepen ${preferredLanguage} patterns in ${repoList[0]} by adding modular error handling, unit tests, and production-grade README architecture documentation.`
+    );
+  } else {
+    recommendations.push(
+      `Solve 3 ${aiDifficulty.toLowerCase()}-level problem-solving challenges in ${preferredLanguage} focusing on core data structures and algorithm time complexity.`
+    );
+  }
+
+  // Recommendation 2: Interview / Communication focus
+  if (interviewCount === 0) {
+    recommendations.push(
+      `Schedule your first 15-minute AI mock interview round in ${aiDifficulty} difficulty to benchmark technical explanation and communication skills.`
+    );
+  } else if (avgInterview < 70) {
+    recommendations.push(
+      `Review feedback from your recent mock sessions and practice structuring answers using the STAR framework to lift your score above 75%.`
+    );
+  } else {
+    recommendations.push(
+      `Challenge yourself with a System Design or Behavioral mock interview round to prepare for comprehensive final evaluation rounds.`
+    );
+  }
+
+  // Recommendation 3: Resume / Profile / Roadmap focus
+  if (resumeCount === 0) {
+    recommendations.push(
+      `Upload your latest resume to the Resume Analyzer to identify missing keywords and optimize your ATS scoring for targeted tech roles.`
+    );
+  } else if (avgAts < 80 && !resumePrivacy) {
+    recommendations.push(
+      `Refine your resume's bullet points with quantifiable engineering metrics and key skills to boost your ATS score beyond the 80+ target.`
+    );
+  } else {
+    recommendations.push(
+      `Explore the Skill Gap Analysis and complete at least one targeted learning roadmap topic module to close pending competencies.`
+    );
+  }
+
+  return {
+    summary: summaryParts.join(" "),
+    recommendations: recommendations.slice(0, 3),
+  };
+}
+
 const generateWeeklyReport = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const oneWeekAgo = new Date();
   oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
 
   const [resumes, interviews, repos] = await Promise.all([
-    Resume.find({ user: userId, status: "completed", createdAt: { $gte: oneWeekAgo } }).select("atsScore").lean(),
-    InterviewSession.find({ user: userId, status: "completed", createdAt: { $gte: oneWeekAgo } }).select("overallScore").lean(),
-    RepoAnalysis.find({ user: userId, status: "completed", createdAt: { $gte: oneWeekAgo } }).select("repoFullName").lean(),
+    Resume.find({ user: userId, status: { $ne: "failed" }, createdAt: { $gte: oneWeekAgo } }).select("atsScore").lean(),
+    InterviewSession.find({ user: userId, status: { $ne: "failed" }, createdAt: { $gte: oneWeekAgo } }).select("overallScore").lean(),
+    RepoAnalysis.find({ user: userId, status: { $ne: "failed" }, createdAt: { $gte: oneWeekAgo } }).select("repoFullName").lean(),
   ]);
 
   const userPrefs = req.user?.preferences || {};
   const { aiDifficulty = "Intermediate", preferredLanguage = "Python", resumePrivacy = false } = userPrefs;
+
+  const fallbackReport = buildPersonalizedWeeklyReport({
+    resumes,
+    interviews,
+    repos,
+    aiDifficulty,
+    preferredLanguage,
+    resumePrivacy,
+  });
 
   const prompt = `You are an expert AI Career Coach. Generate a highly personalized and motivating weekly report for the user.
 Candidate Experience Level: ${aiDifficulty}
@@ -284,9 +373,9 @@ Preferred Language: ${preferredLanguage}
 ${resumePrivacy ? "Note: Resume Privacy Mode is active. Focus recommendations strictly on coding drills, system design, and project architecture without exposing resume details." : ""}
   
 Here is the user's activity in the past 7 days:
-${resumePrivacy ? `- Resumes uploaded: ${resumes.length} (Private Mode)` : `- Resumes uploaded: ${resumes.length} (Average score: ${resumes.length ? Math.round(resumes.reduce((a, b) => a + b.atsScore, 0) / resumes.length) : 0})`}
+${resumePrivacy ? `- Resumes uploaded: ${resumes.length} (Private Mode)` : `- Resumes uploaded: ${resumes.length} (Average score: ${resumes.length ? Math.round(resumes.reduce((a, b) => a + (b.atsScore || 0), 0) / resumes.length) : 0})`}
 - Mock interviews completed: ${interviews.length} (Average score: ${interviews.length ? Math.round(interviews.reduce((a, b) => a + (b.overallScore || 0), 0) / interviews.length) : 0})
-- GitHub Repositories analyzed: ${repos.length} (${repos.map(r => r.repoFullName).join(", ")})
+- GitHub Repositories analyzed: ${repos.length} (${repos.map(r => r.repoFullName).filter(Boolean).join(", ")})
 
 Based on this data, provide:
 1. A short, encouraging summary of their week (2-3 sentences).
@@ -298,27 +387,47 @@ Return your response as a JSON object matching this schema exactly:
   "recommendations": ["string", "string", "string"]
 }`;
 
-  const result = await aiService.generateContent({
-    prompt,
-    responseSchema: {
-      type: "object",
-      properties: {
-        summary: { type: "string" },
-        recommendations: { type: "array", items: { type: "string" } },
+  try {
+    const aiPromise = aiService.generateContent({
+      prompt,
+      responseSchema: {
+        type: "object",
+        properties: {
+          summary: { type: "string" },
+          recommendations: { type: "array", items: { type: "string" } },
+        },
+        required: ["summary", "recommendations"],
       },
-      required: ["summary", "recommendations"],
-    },
-    feature: "analytics_weekly_report",
-    userId,
-  });
+      feature: "analytics_weekly_report",
+      userId,
+    });
 
-  if (!result.success || !result.data) {
-    throw ApiError.internal(result.message || "Failed to generate Weekly Report");
+    // 12s timeout guard to protect user experience against network or model stalls
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("AI response timeout")), 12000)
+    );
+
+    const result = await Promise.race([aiPromise, timeoutPromise]);
+
+    if (result && result.success && result.data && typeof result.data === "object") {
+      const summary = typeof result.data.summary === "string" && result.data.summary.trim()
+        ? result.data.summary.trim()
+        : fallbackReport.summary;
+      const rawRecs = Array.isArray(result.data.recommendations) ? result.data.recommendations : [];
+      const validRecs = rawRecs.filter((r) => typeof r === "string" && r.trim()).slice(0, 3);
+      const recommendations = validRecs.length > 0 ? validRecs : fallbackReport.recommendations;
+
+      return ApiResponse.success({
+        summary,
+        recommendations,
+      }).send(res);
+    }
+  } catch (error) {
+    console.warn(`[Analytics] Weekly report AI call failed/timed out: ${error.message}. Serving personalized fallback report.`);
   }
 
-  const parsed = typeof result.data === "object" ? result.data : { summary: "", recommendations: [] };
-
-  return ApiResponse.success(parsed).send(res);
+  // Guaranteed fallback ensures zero failed requests for the student
+  return ApiResponse.success(fallbackReport).send(res);
 });
 
 module.exports = { getAnalyticsOverview, generateWeeklyReport };

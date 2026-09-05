@@ -12,6 +12,8 @@ const routes = require("./routes");
 const { errorHandler, notFoundHandler } = require("./middleware/error.middleware");
 const { mongoSanitize } = require("./middleware/sanitize.middleware");
 const { getDbStatus } = require("./config/db");
+const verifyJWT = require("./middleware/auth.middleware");
+const verifyRole = require("./middleware/role.middleware");
 
 const app = express();
 
@@ -51,6 +53,13 @@ app.use(
     dnsPrefetchControl: { allow: false },
     frameguard: { action: "deny" },
     crossOriginEmbedderPolicy: false,
+    permissionsPolicy: {
+      camera: ["self"],
+      microphone: ["self"],
+      geolocation: ["none"],
+      payment: ["none"],
+      usb: ["none"]
+    }
   }),
 );
 
@@ -92,11 +101,19 @@ app.use(
       const normalizedOrigin = origin.replace(/\/$/, "");
       if (
         allowedOriginsList.includes(normalizedOrigin) ||
-        vercelDomainRegex.test(normalizedOrigin) ||
-        env.NODE_ENV !== "production"
+        vercelDomainRegex.test(normalizedOrigin)
       ) {
         return callback(null, true);
       }
+      
+      // In development, only allow localhost patterns
+      if (env.NODE_ENV !== "production") {
+        if (/^http:\/\/localhost:\d+$/.test(normalizedOrigin) || 
+            /^http:\/\/127\.0\.0\.1:\d+$/.test(normalizedOrigin)) {
+          return callback(null, true);
+        }
+      }
+      
       return callback(new Error(`CORS policy does not allow access from origin ${origin}`));
     },
     credentials: true,
@@ -134,21 +151,38 @@ if (env.NODE_ENV !== "test") {
   );
 }
 
-// --- Health check (before API routes, no auth, no sensitive error leakage)
+// --- Health check (public for basic status, detailed for admins only)
 app.get(["/api/health", "/health"], (_req, res) => {
+  // Public health check - minimal information
+  return res.status(200).json({
+    success: true,
+    status: "ok",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// --- Detailed health check (admin only)
+app.get(["/api/health/detailed", "/health/detailed"], verifyJWT, verifyRole(["admin"]), (_req, res) => {
   const db = getDbStatus();
-  if (db.state === "connected") {
-    return res.status(200).json({
-      success: true,
-      status: "ok",
-      db: "connected",
-      timestamp: new Date().toISOString(),
-    });
-  }
-  return res.status(503).json({
-    success: false,
-    status: "degraded",
-    db: db.state,
+  const { isRedisAvailable } = require("./config/redis");
+  
+  return res.status(db.state === "connected" ? 200 : 503).json({
+    success: db.state === "connected",
+    status: db.state === "connected" ? "healthy" : "degraded",
+    components: {
+      database: {
+        status: db.state,
+        type: "MongoDB"
+      },
+      cache: {
+        status: isRedisAvailable() ? "connected" : "degraded",
+        type: "Redis",
+        fallback: !isRedisAvailable() ? "in-memory" : null
+      },
+      api: {
+        status: "operational"
+      }
+    },
     timestamp: new Date().toISOString(),
   });
 });
