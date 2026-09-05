@@ -36,10 +36,14 @@ function connectRedis() {
     });
 
     redis.on("error", (err) => {
-      // Silently handle Redis errors - services will fall back to in-memory
-      // Only log critical errors in production
+      // Alert on Redis failures in production
       if (process.env.NODE_ENV === "production") {
-        console.error("[Redis] Connection error:", err.message);
+        console.error("[Redis] CRITICAL ERROR - Cache and token blacklist unavailable:", err.message);
+        console.error("[Redis] System will continue with in-memory fallback but may have issues in multi-server deployments");
+        // TODO: Integrate with your alerting system (PagerDuty, Slack, etc.)
+        // alerting.sendCritical("Redis connection lost", err);
+      } else {
+        console.warn("[Redis] Connection error (development mode):", err.message);
       }
     });
 

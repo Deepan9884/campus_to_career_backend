@@ -158,51 +158,58 @@ function validatePrompt(prompt, options = {}) {
     };
   }
 
+  let activePrompt = prompt;
+
   // Length check
-  if (prompt.length > maxLength) {
-    return {
-      safe: false,
-      risk: "excessive_length",
-      blocked: true,
-      message: `Prompt exceeds maximum length of ${maxLength} characters`,
-      sanitized: prompt.slice(0, maxLength),
-    };
+  if (activePrompt.length > maxLength) {
+    if (isCodeAnalysis) {
+      console.warn(`[PromptSecurity] Truncating code analysis prompt from ${activePrompt.length} to ${maxLength} characters`);
+      activePrompt = activePrompt.slice(0, maxLength);
+    } else {
+      return {
+        safe: false,
+        risk: "excessive_length",
+        blocked: true,
+        message: `Prompt exceeds maximum length of ${maxLength} characters`,
+        sanitized: prompt.slice(0, maxLength),
+      };
+    }
   }
 
   // Check for excessive repetition (potential DOS)
   // Skip repetition check entirely for code analysis to avoid false positives
-  if (!isCodeAnalysis && hasExcessiveRepetition(prompt, isCodeAnalysis)) {
+  if (!isCodeAnalysis && hasExcessiveRepetition(activePrompt, isCodeAnalysis)) {
     return {
       safe: false,
       risk: "excessive_repetition",
       blocked: true,
       message: "Prompt contains excessive repetition",
-      sanitized: sanitizeInput(prompt),
+      sanitized: sanitizeInput(activePrompt),
     };
   }
 
   // Check entropy (very high entropy might indicate encoded payload)
-  const entropy = calculateEntropy(prompt);
-  if (entropy > 7.5 && prompt.length > 100) {
+  const entropy = calculateEntropy(activePrompt);
+  if (entropy > 7.5 && activePrompt.length > 100) {
     return {
       safe: false,
       risk: "high_entropy",
       blocked: strictMode,
       message: "Prompt appears to contain encoded or obfuscated content",
-      sanitized: sanitizeInput(prompt),
+      sanitized: sanitizeInput(activePrompt),
       severity: "medium",
     };
   }
 
   // Check for prompt injection patterns
   for (const pattern of INJECTION_PATTERNS) {
-    if (pattern.test(prompt)) {
+    if (pattern.test(activePrompt)) {
       return {
         safe: false,
         risk: "prompt_injection",
         blocked: true,
         message: "Prompt contains potential injection attempt",
-        sanitized: sanitizeInput(prompt),
+        sanitized: sanitizeInput(activePrompt),
         severity: "high",
       };
     }
@@ -211,13 +218,13 @@ function validatePrompt(prompt, options = {}) {
   // Check for sensitive topics
   if (blockSensitiveTopics) {
     for (const pattern of SENSITIVE_TOPICS) {
-      if (pattern.test(prompt)) {
+      if (pattern.test(activePrompt)) {
         return {
           safe: false,
           risk: "sensitive_topic",
           blocked: true,
           message: "Prompt contains sensitive or prohibited content",
-          sanitized: sanitizeInput(prompt),
+          sanitized: sanitizeInput(activePrompt),
           severity: "high",
         };
       }
@@ -227,13 +234,13 @@ function validatePrompt(prompt, options = {}) {
   // Check for code execution attempts
   if (blockCodeExecution) {
     for (const pattern of CODE_EXECUTION_PATTERNS) {
-      if (pattern.test(prompt)) {
+      if (pattern.test(activePrompt)) {
         return {
           safe: false,
           risk: "code_execution_attempt",
           blocked: strictMode,
           message: "Prompt contains potential code execution patterns",
-          sanitized: sanitizeInput(prompt),
+          sanitized: sanitizeInput(activePrompt),
           severity: "medium",
         };
       }
@@ -241,7 +248,7 @@ function validatePrompt(prompt, options = {}) {
   }
 
   // Sanitize even if safe (defense in depth)
-  const sanitized = sanitizeInput(prompt);
+  const sanitized = sanitizeInput(activePrompt);
 
   return {
     safe: true,

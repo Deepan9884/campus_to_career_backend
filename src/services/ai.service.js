@@ -4,6 +4,7 @@ const rateLimiter = require("./aiRateLimiter.service");
 const AIUsageLog = require("../models/AIUsageLog.model");
 const { callNemotron } = require("./nvidia.service");
 const { validatePrompt, wrapPromptWithSafety } = require("./promptSecurity.service");
+const { secureAIOutput } = require("../utils/aiOutputSanitizer");
 const aiCostTracking = require("./aiCostTracking.service");
 const crypto = require("crypto");
 const IORedis = require("ioredis");
@@ -118,6 +119,53 @@ function classifyError(error) {
   return { type: ERROR_TYPES.UNKNOWN, retryable: false };
 }
 
+function repairTruncatedJson(str) {
+  let cleaned = str.trim();
+  cleaned = cleaned.replace(/,\s*$/, "");
+  let openBraces = 0;
+  let openBrackets = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < cleaned.length; i++) {
+    const char = cleaned[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === "\\") {
+      escape = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (char === "{") openBraces++;
+      else if (char === "}") openBraces--;
+      else if (char === "[") openBrackets++;
+      else if (char === "]") openBrackets--;
+    }
+  }
+
+  if (inString) {
+    cleaned += '"';
+  }
+  cleaned = cleaned.replace(/,\s*$/, "");
+
+  while (openBrackets > 0) {
+    cleaned += "]";
+    openBrackets--;
+  }
+  while (openBraces > 0) {
+    cleaned += "}";
+    openBraces--;
+  }
+
+  return cleaned;
+}
+
 function buildSuccessResult(response, model, isFallback = false) {
   const result = {
     success: true,
@@ -164,8 +212,13 @@ function buildSuccessResult(response, model, isFallback = false) {
           .replace(/,\s*([\]}])/g, "$1");
         result.data = JSON.parse(fixedText);
       } catch (e2) {
-        // Raw text mode
-        result.data = text;
+        try {
+          const repaired = repairTruncatedJson(text);
+          result.data = JSON.parse(repaired);
+        } catch (e3) {
+          // Raw text mode
+          result.data = text;
+        }
       }
     }
   }
@@ -216,13 +269,22 @@ async function logUsage({ userId, feature, model, success, errorType, tokensEsti
  * - Multi-model failover chain on model congestion
  * - Universal smart contextual fallback engine (guaranteeing zero failed user features)
  */
-async function generateContent({ prompt, responseSchema, model, feature = "general", userId }) {
+async function generateContent({ prompt, responseSchema, model, feature = "general", userId, maxLength: customMaxLength }) {
   const resultMeta = { feature, userId };
 
   // Step 0: Validate prompt for injection attacks
-  // Use higher limits for code analysis features that need to include file contents
-  const maxLength = feature.includes("github") || feature.includes("repo-analysis") ? 50000 : 12000;
-  const isCodeAnalysis = feature.includes("github") || feature.includes("repo-analysis") || feature.includes("resume-analysis");
+  // Use higher limits for code analysis and repository evaluation features
+  let maxLength = customMaxLength;
+  if (!maxLength) {
+    if (feature.includes("github") || feature.includes("repo-analysis")) {
+      maxLength = 65000;
+    } else if (feature.includes("resume") || feature.includes("code") || feature.includes("compiler")) {
+      maxLength = 35000;
+    } else {
+      maxLength = 15000;
+    }
+  }
+  const isCodeAnalysis = feature.includes("github") || feature.includes("repo-analysis") || feature.includes("resume") || feature.includes("code") || feature.includes("compiler");
   
   const validation = validatePrompt(prompt, {
     maxLength,
@@ -333,10 +395,17 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
       });
 
       keyPool.reportSuccess(clientEntry);
-      const result = buildSuccessResult(response, currentModel);
+      let result = buildSuccessResult(response, currentModel);
+
+      // SECURITY: Sanitize AI output to prevent XSS, injection, data exfiltration
+      result = secureAIOutput(result, {
+        schema: responseSchema,
+        strict: false, // Don't block on validation errors, just sanitize
+        logViolations: true
+      });
 
       // Save to cache (Redis with fallback to L1 in-memory cache)
-      if (result.success && (result.data || result.raw)) {
+      if (result.success && (result.data || result.raw) && !result.securityBlocked) {
         try {
           await redis.setex(
             cacheKey,
@@ -378,13 +447,20 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
   if (env.NVIDIA_API_KEY) {
     try {
       console.info(`[AI Engine] Gemini capacity reached/limited. Routing seamlessly to NVIDIA Nemotron (${env.NVIDIA_MODEL}) for feature: ${feature}`);
-      const nemotronResult = await callNemotron({
+      let nemotronResult = await callNemotron({
         prompt,
         responseSchema,
         model: env.NVIDIA_MODEL,
       });
 
-      if (nemotronResult.success && (nemotronResult.data || nemotronResult.raw)) {
+      // SECURITY: Sanitize NVIDIA output
+      nemotronResult = secureAIOutput(nemotronResult, {
+        schema: responseSchema,
+        strict: false,
+        logViolations: true
+      });
+
+      if (nemotronResult.success && (nemotronResult.data || nemotronResult.raw) && !nemotronResult.securityBlocked) {
         // Save to cache (Redis / L1)
         try {
           await redis.setex(
@@ -614,7 +690,7 @@ function generateContextualFallback(feature, prompt, responseSchema) {
         .split("\n")
         .map((l) => l.match(/"([^"]+)"/)?.[1])
         .filter(Boolean);
-      if (parsedGaps.length > 0) gapSkills = parsedGaps.slice(0, 5);
+      if (parsedGaps.length > 0) gapSkills = parsedGaps;
     }
 
     const skills = gapSkills.map((skillName, sIdx) => {
@@ -665,21 +741,7 @@ function generateContextualFallback(feature, prompt, responseSchema) {
     };
   }
 
-  // 7. GitHub Repository Analysis
-  if (feature === "github-repo-analysis" || feature.includes("github")) {
-    return {
-      overview: "Well-architected project implementing modular software patterns with clear separation of concerns.",
-      quality: "Clean modular architecture, consistent conventions, and intuitive folder hierarchy observed across reviewed components.",
-      security: "No obvious security vulnerabilities or exposed secrets found in reviewed files. Proper environment encapsulation observed.",
-      resumeImpact: [
-        "Architected full-stack web application with responsive client layer and scalable RESTful backend services",
-        "Engineered secure authentication, rigorous request validation, and centralized error handling middleware",
-        "Optimized query performance and data serialization to reduce network transfer latency",
-      ],
-    };
-  }
-
-  // 8. LinkedIn Post Generator
+  // 7. LinkedIn Post Generator (Evaluated before general github)
   if (feature === "github-linkedin-post" || feature.includes("linkedin")) {
     let title = "Engineering Project";
     let tech = "React, TypeScript, Node.js, MongoDB";
@@ -720,6 +782,20 @@ function generateContextualFallback(feature, prompt, responseSchema) {
     };
   }
 
+  // 8. GitHub Repository Analysis
+  if (feature === "github-repo-analysis" || (feature.includes("github") && !feature.includes("linkedin"))) {
+    return {
+      overview: "Well-architected project implementing modular software patterns with clear separation of concerns.",
+      quality: "Clean modular architecture, consistent conventions, and intuitive folder hierarchy observed across reviewed components.",
+      security: "No obvious security vulnerabilities or exposed secrets found in reviewed files. Proper environment encapsulation observed.",
+      resumeImpact: [
+        "Architected full-stack web application with responsive client layer and scalable RESTful backend services",
+        "Engineered secure authentication, rigorous request validation, and centralized error handling middleware",
+        "Optimized query performance and data serialization to reduce network transfer latency",
+      ],
+    };
+  }
+
   // 9. Quiz Generation & Grading
   if (feature.includes("quiz-generation")) {
     return {
@@ -753,6 +829,52 @@ function generateContextualFallback(feature, prompt, responseSchema) {
     };
   }
 
+  // 10. Analytics Weekly Report
+  if (
+    feature === "analytics_weekly_report" ||
+    feature.includes("weekly_report") ||
+    (feature.includes("analytics") && feature.includes("report"))
+  ) {
+    const expMatch = promptText.match(/Candidate Experience Level:\s*([^\n]+)/i);
+    const langMatch = promptText.match(/Preferred Language:\s*([^\n]+)/i);
+    const resumeMatch = promptText.match(/Resumes uploaded:\s*(\d+)(?:\s*\(Average score:\s*(\d+)\))?/i);
+    const interviewMatch = promptText.match(/Mock interviews completed:\s*(\d+)(?:\s*\(Average score:\s*(\d+)\))?/i);
+    const repoMatch = promptText.match(/GitHub Repositories analyzed:\s*(\d+)(?:\s*\(([^)]*)\))?/i);
+
+    const level = expMatch ? expMatch[1].trim() : "Intermediate";
+    const lang = langMatch ? langMatch[1].trim() : "Python";
+    const resumeCount = resumeMatch ? parseInt(resumeMatch[1], 10) : 0;
+    const resumeAvg = resumeMatch && resumeMatch[2] ? parseInt(resumeMatch[2], 10) : 0;
+    const interviewCount = interviewMatch ? parseInt(interviewMatch[1], 10) : 0;
+    const interviewAvg = interviewMatch && interviewMatch[2] ? parseInt(interviewMatch[2], 10) : 0;
+    const repoCount = repoMatch ? parseInt(repoMatch[1], 10) : 0;
+    const repoNames = repoMatch && repoMatch[2] ? repoMatch[2].trim() : "";
+
+    let summaryText = "";
+    if (resumeCount > 0 || interviewCount > 0 || repoCount > 0) {
+      summaryText = `Commendable consistency this week across your preparation sprint! ${resumeCount > 0 ? `You refined ${resumeCount} resume draft(s)${resumeAvg > 0 ? ` achieving an average ATS score of ${resumeAvg}/100` : ""}. ` : ""}${interviewCount > 0 ? `You completed ${interviewCount} mock interview(s) with an average score of ${interviewAvg}%. ` : ""}${repoCount > 0 ? `You analyzed ${repoCount} GitHub project(s). ` : ""}Maintaining this momentum will compound your readiness for upcoming placement opportunities.`;
+    } else {
+      summaryText = `Welcome to your active sprint! No new mock interviews or resume scans were logged in the past 7 days, making this the perfect week to jumpstart your preparation with hands-on practice in ${lang}.`;
+    }
+
+    const recommendations = [
+      repoCount > 0 && repoNames
+        ? `Enhance code architecture in your analyzed repositories with comprehensive ${lang} unit tests, type hinting, and robust error handling.`
+        : `Solve 3 ${level.toLowerCase()}-level technical coding drills in ${lang} focusing on data structures, algorithmic complexity, and clean code principles.`,
+      interviewCount > 0
+        ? `Review your past interview feedback and conduct another mock session to articulate technical trade-offs using the STAR framework.`
+        : `Complete a 15-minute AI mock interview in ${level} difficulty to benchmark your verbal communication and technical explanation skills.`,
+      resumeCount > 0 && resumeAvg >= 80
+        ? `Focus on system design fundamentals and multi-tier architectural patterns to prepare for comprehensive technical interview rounds.`
+        : `Optimize your resume bullet points with quantifiable engineering impact and verified skill keywords to lift your ATS score above 85.`,
+    ];
+
+    return {
+      summary: summaryText,
+      recommendations,
+    };
+  }
+
   // Generic schema-aware fallback
   if (responseSchema?.properties) {
     const mock = {};
@@ -772,14 +894,23 @@ function generateContextualFallback(feature, prompt, responseSchema) {
 /**
  * Streaming version of generateContent
  */
-async function generateContentStream({ prompt, model, feature = "general", userId }) {
+async function generateContentStream({ prompt, model, feature = "general", userId, maxLength: customMaxLength }) {
   const modelName = model || defaultModel;
   const resultMeta = { feature, model: modelName, userId };
 
   // Validate prompt for injection attacks
   // Use higher limits for code analysis features
-  const maxLength = feature.includes("github") || feature.includes("repo-analysis") ? 50000 : 12000;
-  const isCodeAnalysis = feature.includes("github") || feature.includes("repo-analysis") || feature.includes("resume-analysis");
+  let maxLength = customMaxLength;
+  if (!maxLength) {
+    if (feature.includes("github") || feature.includes("repo-analysis")) {
+      maxLength = 65000;
+    } else if (feature.includes("resume") || feature.includes("code") || feature.includes("compiler")) {
+      maxLength = 35000;
+    } else {
+      maxLength = 15000;
+    }
+  }
+  const isCodeAnalysis = feature.includes("github") || feature.includes("repo-analysis") || feature.includes("resume") || feature.includes("code") || feature.includes("compiler");
   
   const validation = validatePrompt(prompt, {
     maxLength,

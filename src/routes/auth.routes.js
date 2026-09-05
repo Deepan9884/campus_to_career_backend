@@ -3,6 +3,7 @@ const rateLimit = require("express-rate-limit");
 
 const verifyJWT = require("../middleware/auth.middleware");
 const validateZod = require("../middleware/validateZod.middleware");
+const { validatePasswordMiddleware } = require("../utils/passwordValidator");
 const authController = require("../controllers/auth.controller");
 const {
   registerSchema,
@@ -40,8 +41,8 @@ const refreshLimiter = rateLimit({
 });
 
 const forgotPasswordLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 10,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 3, // 3 attempts per IP per 15 minutes (prevents email bombing)
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Too many password reset requests, please try again later" },
@@ -60,7 +61,7 @@ const verifyResetTokenLimiter = rateLimit({
 
 // --- Public routes ---
 
-router.post("/register", registerLimiter, validateZod(registerSchema), authController.register);
+router.post("/register", registerLimiter, validatePasswordMiddleware('password'), validateZod(registerSchema), authController.register);
 
 router.post("/login", loginLimiter, validateZod(loginSchema), authController.login);
 
@@ -79,7 +80,7 @@ router.post(
   authController.forgotPassword,
 );
 
-router.post("/reset-password", validateZod(resetPasswordSchema), authController.resetPassword);
+router.post("/reset-password", validatePasswordMiddleware('newPassword'), validateZod(resetPasswordSchema), authController.resetPassword);
 
 router.get("/verify-reset-token", verifyResetTokenLimiter, authController.verifyResetTokenHandler);
 
@@ -103,6 +104,7 @@ router.patch(
 
 router.post("/logout-all", verifyJWT, authController.logoutAll);
 router.get("/export", verifyJWT, authController.exportUserData);
+router.delete("/delete-account", verifyJWT, authController.deleteAccount);
 router.post("/2fa/generate", verifyJWT, authController.generate2FA);
 router.post("/2fa/verify", verifyJWT, authController.verify2FA);
 router.post("/2fa/disable", verifyJWT, authController.disable2FA);

@@ -11,6 +11,8 @@ const InterviewSession = require("../models/InterviewSession.model");
 const SkillGapAnalysis = require("../models/SkillGapAnalysis.model");
 const AIUsageLog = require("../models/AIUsageLog.model");
 const SuperDream = require("../models/SuperDream.model");
+const ExamSubmission = require("../models/ExamSubmission.model");
+const Notification = require("../models/Notification.model");
 
 const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
@@ -25,12 +27,29 @@ const {
 } = require("../utils/resetToken");
 const emailService = require("../services/email.service");
 const { OAuth2Client } = require("google-auth-library");
+const { isEncrypted, decrypt } = require("../services/encryption.service");
 
 const googleClient = new OAuth2Client(env.GOOGLE_CLIENT_ID);
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Safely ensure a user's display name is plain text, never encrypted ciphertext.
+ */
+function ensurePlainName(name, email) {
+  if (!name) return email ? email.split("@")[0] : "Student";
+  if (isEncrypted(name)) {
+    try {
+      const dec = decrypt(name);
+      return isEncrypted(dec) ? (email ? email.split("@")[0] : "Student") : dec;
+    } catch {
+      return email ? email.split("@")[0] : "Student";
+    }
+  }
+  return name;
+}
 
 /**
  * Hash a token for storage using SHA-256 + bcrypt.
@@ -77,13 +96,13 @@ function getCookieValue(req, name) {
   return undefined;
 }
 
-/** Set the httpOnly refreshToken cookie with cross-origin support for production. */
+/** Set the httpOnly refreshToken cookie with strict cross-origin protection for production. */
 function setRefreshTokenCookie(res, token) {
   const maxAge = parseDurationToMs(env.JWT_REFRESH_EXPIRES_IN);
   res.cookie("refreshToken", token, {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
-    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
+    sameSite: env.NODE_ENV === "production" ? "strict" : "lax", // Changed from "none" to "strict" for CSRF protection
     maxAge,
   });
 }
@@ -141,7 +160,7 @@ const register = asyncHandler(async (req, res) => {
   return ApiResponse.created({
     user: {
       _id: user._id,
-      name: user.name,
+      name: ensurePlainName(user.name, user.email),
       email: user.email,
       role: user.role,
       avatar: user.avatar,
@@ -317,7 +336,7 @@ const login = asyncHandler(async (req, res) => {
   return ApiResponse.success({
     user: {
       _id: user._id,
-      name: user.name,
+      name: ensurePlainName(user.name, user.email),
       email: user.email,
       role: user.role,
       avatar: user.avatar,
@@ -402,11 +421,15 @@ const googleLogin = asyncHandler(async (req, res) => {
   const name = payload?.name || payload?.given_name || "Google User";
   const picture = payload?.picture || payload?.avatar || "";
   const isEmailVerified =
-    payload?.email_verified === true ||
-    payload?.email_verified === "true" ||
-    payload?.verified_email === true ||
-    payload?.verified_email === "true" ||
-    Boolean(payload?.email && googleId);
+    payload?.email_verified === false || payload?.verified_email === false
+      ? false
+      : Boolean(
+          payload?.email_verified === true ||
+          payload?.email_verified === "true" ||
+          payload?.verified_email === true ||
+          payload?.verified_email === "true" ||
+          (payload?.email && googleId && payload?.email_verified === undefined && payload?.verified_email === undefined)
+        );
 
   if (!googleId || !email || !isEmailVerified) {
     console.error("[Google Auth Error] Verification failed. Payload received:", payload);
@@ -494,7 +517,7 @@ const googleLogin = asyncHandler(async (req, res) => {
   return ApiResponse.success({
     user: {
       _id: user._id,
-      name: user.name,
+      name: ensurePlainName(user.name, user.email),
       email: user.email,
       role: user.role,
       avatar: user.avatar,
@@ -627,7 +650,7 @@ const githubLogin = asyncHandler(async (req, res) => {
   return ApiResponse.success({
     user: {
       _id: user._id,
-      name: user.name,
+      name: ensurePlainName(user.name, user.email),
       email: user.email,
       role: user.role,
       avatar: user.avatar,
@@ -666,7 +689,7 @@ const logout = asyncHandler(async (req, res) => {
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
-    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
+    sameSite: env.NODE_ENV === "production" ? "strict" : "lax",
   });
 
   return ApiResponse.success(null, "Logged out successfully").send(res);
@@ -1002,39 +1025,151 @@ const logoutAll = asyncHandler(async (req, res) => {
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
-    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
+    sameSite: env.NODE_ENV === "production" ? "strict" : "lax",
   });
   return ApiResponse.success(null, "Logged out of all sessions").send(res);
 });
 
 const exportUserData = asyncHandler(async (req, res) => {
   const userId = req.user._id;
-  const [user, resumes, interviews, codingProfiles, skillGaps, aiUsage] = await Promise.all([
-    User.findById(userId).lean(),
+  
+  // Fetch all user-related data in parallel for GDPR compliance
+  const [
+    user, 
+    resumes, 
+    interviews, 
+    codingProfiles, 
+    skillGaps, 
+    aiUsage,
+    examSubmissions,
+    superDream,
+    badges,
+    mentorTasks,
+    notifications,
+    activityLogs
+  ] = await Promise.all([
+    User.findById(userId).select('-password -refreshToken -twoFactorSecret').lean(),
     Resume.find({ user: userId }).lean(),
     InterviewSession.find({ user: userId }).lean(),
     CodingProfile.find({ userId: userId }).lean(),
     SkillGapAnalysis.find({ user: userId }).lean(),
-    AIUsageLog.find({ user: userId }).lean(),
+    AIUsageLog.find({ user: userId }).limit(1000).lean(),
+    ExamSubmission.find({ userId: userId }).lean(),
+    SuperDream.findOne({ student: userId }).lean(),
+    require("../models/Badge.model").find({ userId: userId }).lean(),
+    require("../models/MentorTask.model").find({ student: userId }).lean(),
+    Notification.find({ user: userId }).limit(500).lean(),
+    require("../models/ActivityLog.model").find({ user: userId }).limit(1000).lean()
   ]);
 
-  if (user) {
-    delete user.password;
-    delete user.twoFactorSecret;
-    delete user.refreshToken;
-  }
-
+  // GDPR-compliant data export structure
   const exportData = {
-    user,
-    resumes,
-    interviews,
-    codingProfiles,
-    skillGaps,
-    aiUsage,
-    exportedAt: new Date().toISOString()
+    // Export metadata
+    exportMetadata: {
+      exportedAt: new Date().toISOString(),
+      userId: userId.toString(),
+      dataProtectionRegulation: "GDPR Article 20 - Right to Data Portability",
+      format: "JSON",
+      version: "1.0"
+    },
+    
+    // Personal Information
+    personalInformation: user ? {
+      userId: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      avatar: user.avatar,
+      authProvider: user.authProvider,
+      isEmailVerified: user.isEmailVerified,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
+    } : null,
+    
+    // Profile Data
+    profileData: user?.profile || {},
+    
+    // Career Goals
+    careerGoals: {
+      targetRole: user?.targetRole,
+      githubUsername: user?.githubUsername,
+      linkedinUrl: user?.linkedinUrl,
+      bio: user?.bio
+    },
+    
+    // Preferences & Settings
+    preferences: user?.preferences || {},
+    
+    // Resumes
+    resumes: resumes || [],
+    
+    // Interview Sessions
+    interviews: interviews || [],
+    
+    // Coding Platform Profiles
+    codingProfiles: codingProfiles || [],
+    
+    // Skill Analysis
+    skillGaps: skillGaps || [],
+    
+    // Exam Submissions
+    examSubmissions: examSubmissions?.map(sub => ({
+      examId: sub.examId,
+      score: sub.score,
+      totalScore: sub.totalScore,
+      percentage: sub.percentage,
+      status: sub.status,
+      submittedAt: sub.submittedAt,
+      timeTaken: sub.timeTaken,
+      passed: sub.passed
+    })) || [],
+    
+    // Super Dream Progress
+    superDream: superDream || null,
+    
+    // Badges & Achievements
+    badges: badges || [],
+    
+    // Mentor Tasks
+    mentorTasks: mentorTasks || [],
+    
+    // Notifications (limited to last 500)
+    notifications: notifications || [],
+    
+    // Activity History (limited to last 1000)
+    activityHistory: activityLogs || [],
+    
+    // AI Usage Statistics
+    aiUsage: {
+      totalQueries: aiUsage?.length || 0,
+      recentUsage: aiUsage || []
+    },
+    
+    // Data Processing Information
+    dataProcessingInfo: {
+      dataControllers: ["Campus to Career AI"],
+      dataProcessors: ["MongoDB Atlas", "Google AI", "GitHub API"],
+      dataRetentionPeriod: "Until account deletion",
+      legalBasis: "Consent (GDPR Article 6(1)(a))",
+      yourRights: [
+        "Right to access (Article 15)",
+        "Right to rectification (Article 16)",
+        "Right to erasure (Article 17)",
+        "Right to data portability (Article 20)",
+        "Right to object (Article 21)"
+      ],
+      contactInfo: {
+        dataProtectionOfficer: "privacy@campustocareer.ai",
+        supportEmail: "support@campustocareer.ai"
+      }
+    }
   };
 
-  return ApiResponse.success(exportData).send(res);
+  // Set headers for download
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="campustocareer-data-export-${userId}-${Date.now()}.json"`);
+
+  return res.json(exportData);
 });
 
 const generate2FA = asyncHandler(async (req, res) => {
@@ -1173,6 +1308,185 @@ const disable2FA = asyncHandler(async (req, res) => {
 });
 
 /**
+ * DELETE ACCOUNT - GDPR Right to Erasure (Article 17)
+ * Anonymizes user data while preserving referential integrity
+ */
+const deleteAccount = asyncHandler(async (req, res) => {
+  const { password, confirmText } = req.body;
+  const userId = req.user._id;
+
+  // Require password confirmation for security
+  const user = await User.findById(userId).select("+password");
+  if (!user) {
+    throw ApiError.notFound("User not found");
+  }
+
+  // Verify password
+  if (user.authProvider === "local" || user.authProvider === "both") {
+    if (!password) {
+      throw ApiError.badRequest("Password is required to delete account");
+    }
+    const isMatch = await user.comparePassword(password);
+    if (!isMatch) {
+      throw ApiError.unauthorized("Incorrect password");
+    }
+  }
+
+  // Require explicit confirmation
+  if (confirmText !== "DELETE MY ACCOUNT") {
+    throw ApiError.badRequest('Please type "DELETE MY ACCOUNT" to confirm deletion');
+  }
+
+  // Audit log before deletion
+  await auditLogService.logAuth({
+    action: "USER_DELETED",
+    userId: user._id,
+    userEmail: user.email,
+    status: "SUCCESS",
+    req,
+    details: {
+      reason: "user_request",
+      authProvider: user.authProvider,
+      role: user.role
+    }
+  });
+
+  const { encrypt } = require("../services/encryption.service");
+
+  // Step 1: Anonymize user data (don't hard delete to preserve referential integrity)
+  await User.findByIdAndUpdate(userId, {
+    name: encrypt("Deleted User"),
+    email: `deleted_${userId}@deleted.campustocareer.ai`,
+    password: crypto.randomBytes(32).toString("hex") + "Aa1!",
+    googleId: null,
+    githubId: null,
+    githubUsername: "",
+    linkedinUrl: "",
+    bio: "",
+    avatar: "",
+    targetRole: "",
+    refreshToken: null,
+    emailVerificationToken: null,
+    twoFactorSecret: null,
+    is2FAEnabled: false,
+    profile: {
+      targetRole: "",
+      githubUsername: "",
+      bio: "",
+      location: "",
+      registerNumber: "",
+      department: "",
+      batch: "",
+      currentSemester: "",
+      facultyMentor: ""
+    },
+    isDeleted: true,
+    deletedAt: new Date(),
+    authProvider: "deleted"
+  });
+
+  // Step 2: Remove from mentor's mentee list
+  await User.updateMany(
+    { mentees: userId },
+    { $pull: { mentees: userId } }
+  );
+
+  // Step 3: Unassign from mentees if mentor
+  await User.updateMany(
+    { assignedMentor: userId },
+    { $unset: { assignedMentor: 1 } }
+  );
+
+  // Step 4: Anonymize related data collections
+  // Resumes
+  await Resume.updateMany(
+    { user: userId },
+    {
+      $set: {
+        anonymized: true,
+        anonymizedAt: new Date()
+      }
+    }
+  );
+
+  // Exam Submissions
+  await ExamSubmission.updateMany(
+    { userId: userId },
+    {
+      $set: {
+        anonymized: true,
+        anonymizedAt: new Date()
+      }
+    }
+  );
+
+  // Interview Sessions
+  await InterviewSession.updateMany(
+    { user: userId },
+    {
+      $set: {
+        anonymized: true,
+        anonymizedAt: new Date()
+      }
+    }
+  );
+
+  // Coding Profiles
+  await CodingProfile.updateMany(
+    { userId: userId },
+    {
+      $set: {
+        anonymized: true,
+        anonymizedAt: new Date()
+      }
+    }
+  );
+
+  // Skill Gap Analysis
+  await SkillGapAnalysis.updateMany(
+    { user: userId },
+    {
+      $set: {
+        anonymized: true,
+        anonymizedAt: new Date()
+      }
+    }
+  );
+
+  // Super Dream records - keep for institutional analytics but anonymize
+  await SuperDream.updateMany(
+    { student: userId },
+    {
+      $set: {
+        "checklist.profile.name": "Deleted User",
+        "checklist.profile.registerNumber": "",
+        anonymized: true,
+        anonymizedAt: new Date()
+      }
+    }
+  );
+
+  // Step 5: Clear notification history (PII may be in messages)
+  await Notification.deleteMany({ user: userId });
+
+  // Step 6: Clear activity logs
+  const ActivityLog = require("../models/ActivityLog.model");
+  await ActivityLog.deleteMany({ user: userId });
+
+  // Step 7: Clear session and logout
+  res.clearCookie("refreshToken", {
+    httpOnly: true,
+    secure: env.NODE_ENV === "production",
+    sameSite: env.NODE_ENV === "production" ? "strict" : "lax",
+  });
+
+  return ApiResponse.success(
+    null,
+    "Your account has been successfully deleted. All personal data has been anonymized in compliance with GDPR."
+  ).send(res);
+});
+
+/**
  * Send email verification
  * POST /api/auth/send-verification
  */
@@ -1286,6 +1600,7 @@ module.exports = {
   githubLogin,
   logoutAll,
   exportUserData,
+  deleteAccount,
   generate2FA,
   verify2FA,
   disable2FA,

@@ -29,6 +29,21 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: [true, "Password is required"],
       minlength: [8, "Password must be at least 8 characters"],
+      validate: {
+        validator: function(v) {
+          // Skip validation if password was not modified (e.g. during login, profile updates, token refresh)
+          if (this && typeof this.isModified === "function" && !this.isModified("password")) {
+            return true;
+          }
+          // Skip validation if already a bcrypt hash
+          if (typeof v === "string" && /^\$2[aby]\$\d{2}\$[./0-9A-Za-z]{53}$/.test(v)) {
+            return true;
+          }
+          // Require: 1 uppercase, 1 lowercase, 1 number, 1 special char
+          return /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[\S]{8,}$/.test(v);
+        },
+        message: 'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character (@$!%*?&)'
+      },
       select: false,
     },
     googleId: { type: String, unique: true, sparse: true },
@@ -129,11 +144,29 @@ const userSchema = new mongoose.Schema(
     },
     isProctoringBlocked: { type: Boolean, default: false },
     proctoringBlockedAt: { type: Date, default: null },
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: { type: Date, default: null },
   },
   {
     timestamps: true,
   },
 );
+
+// Store original role value before any modifications (MUST RUN FIRST)
+userSchema.pre("save", async function(next) {
+  if (!this.isNew && this.isModified("role")) {
+    // Store original value using $locals before any changes
+    if (!this.$locals.wasRole) {
+      // Retrieve the original document from database
+      const User = mongoose.model("User");
+      const original = await User.findById(this._id).select('role').lean();
+      if (original) {
+        this.$locals.wasRole = original.role;
+      }
+    }
+  }
+  next();
+});
 
 // Pre-save hook: Encrypt PII fields before saving
 userSchema.pre("save", async function (next) {
@@ -180,6 +213,51 @@ userSchema.pre("save", async function (next) {
   const salt = await bcryptjs.genSalt(10);
   this.password = await bcryptjs.hash(this.password, salt);
   next();
+});
+
+// Pre-save hook: Role transition validation and cleanup
+userSchema.pre("save", async function (next) {
+  try {
+    if (!this.isModified("role")) return next();
+    
+    const User = mongoose.model("User");
+    
+    // Get original role
+    const originalRole = this.$locals.wasRole;
+    
+    // If demoting from mentor to student, reassign mentees
+    if (originalRole === "mentor" && this.role === "student") {
+      console.log(`[User] Demoting user ${this._id} from mentor to student, reassigning mentees`);
+      
+      // Unassign all mentees
+      await User.updateMany(
+        { assignedMentor: this._id },
+        { $unset: { assignedMentor: 1 } }
+      );
+      
+      // Clear mentees array
+      this.mentees = [];
+    }
+    
+    // Prevent last admin from demoting self
+    if (originalRole === "admin" && this.role !== "admin") {
+      const adminCount = await User.countDocuments({ role: "admin", _id: { $ne: this._id } });
+      
+      if (adminCount === 0) {
+        const error = new Error("Cannot demote the last admin. Please assign another admin first.");
+        return next(error);
+      }
+    }
+    
+    // If promoting to mentor, initialize mentees array
+    if (this.role === "mentor" && (!this.mentees || this.mentees.length === 0)) {
+      this.mentees = [];
+    }
+    
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
 
 // Safe helper to decrypt a single user document's PII fields without crashing
@@ -233,6 +311,22 @@ userSchema.post("findOne", function (doc) {
   safeDecryptUserDoc(doc);
 });
 
+// Post-save hook: Decrypt in-memory document immediately after writing to MongoDB
+// so that User.create or user.save() leaves doc.name and other PII in plaintext for immediate callers
+userSchema.post("save", function (doc) {
+  safeDecryptUserDoc(doc);
+});
+
+// Post-findOneAndUpdate hook: Decrypt PII fields
+userSchema.post("findOneAndUpdate", function (doc) {
+  safeDecryptUserDoc(doc);
+});
+
+// Post-init hook: Ensure document instantiated from DB is decrypted
+userSchema.post("init", function (doc) {
+  safeDecryptUserDoc(doc);
+});
+
 // Instance method: Compare password
 userSchema.methods.comparePassword = async function (candidatePassword) {
   return bcryptjs.compare(candidatePassword, this.password);
@@ -241,7 +335,8 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 // Instance method: Generate access token
 userSchema.methods.generateAccessToken = function () {
   const nonce = crypto.randomBytes(16).toString("hex");
-  return jwt.sign({ sub: this._id, email: this.email, name: this.name, nonce }, env.JWT_SECRET, {
+  const plainName = this.name && isEncrypted(this.name) ? decrypt(this.name) : this.name;
+  return jwt.sign({ sub: this._id, email: this.email, name: plainName, nonce }, env.JWT_SECRET, {
     expiresIn: env.JWT_EXPIRES_IN,
   });
 };

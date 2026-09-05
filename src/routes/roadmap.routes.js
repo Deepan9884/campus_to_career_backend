@@ -40,6 +40,10 @@ router.get("/latest", verifyJWT, roadmapController.getLatestRoadmap);
 
 router.get("/by-gap/:gapAnalysisId", verifyJWT, roadmapController.getRoadmapByGapAnalysis);
 
+router.get("/:id/recommendations", verifyJWT, roadmapController.getRoadmapRecommendations);
+
+router.patch("/:id/subtopic/:subTopicId", verifyJWT, roadmapController.updateSubTopicStatus);
+
 router.get("/:id", verifyJWT, roadmapController.getRoadmapById);
 
 router.delete("/:id", verifyJWT, roadmapController.deleteRoadmap);

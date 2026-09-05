@@ -15,6 +15,7 @@ const runCode = asyncHandler(async (req, res) => {
     language: language || "python",
     testCases: Array.isArray(testCases) ? testCases : [],
     questionText: questionText || "",
+    userId: req.user?._id,
   });
 
   return res.status(200).json(new ApiResponse(200, result, "Code execution completed"));

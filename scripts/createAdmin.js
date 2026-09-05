@@ -1,4 +1,4 @@
-﻿require('dotenv').config();
+require('dotenv').config();
 const mongoose = require('mongoose');
 const User = require('../src/models/User.model');
 
@@ -20,16 +20,16 @@ async function makeAdmin() {
 
   const user = await User.findOne({ email: email.toLowerCase() });
   if (!user) {
-    console.error(User with email " \ not found. Please register first on the Student portal.);
- await mongoose.disconnect();
- process.exit(1);
- }
+    console.error(`User with email "${email}" not found. Please register first on the Student portal.`);
+    await mongoose.disconnect();
+    process.exit(1);
+  }
 
- user.role = 'admin';
- await user.save();
+  user.role = 'admin';
+  await user.save();
 
- console.log(SUCCESS! User \\ () has been granted ADMIN role!);
- await mongoose.disconnect();
+  console.log(`SUCCESS! User ${user.name} (${user.email}) has been granted ADMIN role!`);
+  await mongoose.disconnect();
 }
 
 makeAdmin().catch((err) => {

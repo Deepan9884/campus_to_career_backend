@@ -1,4 +1,4 @@
-const { spawn, execFile } = require("child_process");
+const { spawn, execFile, exec } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -858,7 +858,7 @@ async function runCpp(code, input = "") {
 /**
  * Intelligent Code Evaluator fallback powered by Gemini with deterministic temperature (0.0)
  */
-async function runWithAiEvaluator(code, language, testCases = [], questionText = "") {
+async function runWithAiEvaluator(code, language, testCases = [], questionText = "", userId = null) {
   const prompt = `You are a strict automated code execution engine and compiler judge.
 Evaluate the candidate's ${language} code against the test cases.
 
@@ -877,13 +877,14 @@ STRICT EVALUATION INSTRUCTIONS:
 1. First, check if the candidate code has any SYNTAX or COMPILATION errors.
    - If there is a syntax error or missing closing bracket/parenthesis/semicolon:
      set "isCompilationError": true, "success": false, "stderr": "SyntaxError: <details with line number>", and set every test case "passed": false, "status": "Compilation Error", "actualOutput": "Compilation Error: <details>".
-2. If the code is completely empty or blank:
-     set "success": false, "stderr": "No code provided in coding area.", and set every testcase "passed": false, "status": "Failed", "actualOutput": "(No output produced — code is empty)".
+2. If the candidate code is empty, blank, contains only comments, or is only a boilerplate template without a functioning solution:
+     set "success": false, "stderr": "No solution code provided in editor.", and set every test case "passed": false, "status": "Failed", "actualOutput": "(No output produced — empty solution)".
 3. If the code executes without syntax errors:
    - Simulate running the code on each testcase input.
    - Compare actual computed output against expectedOutput.
+   - NEVER assume the code passes. If the code does not print or return the expected output, mark it as FAILED with the actual output produced.
    - If output matches expectedOutput exactly (whitespace-trimmed): set "passed": true, "status": "Passed".
-   - If output differs: set "passed": false, "status": "Failed".
+   - If output differs or nothing is printed: set "passed": false, "status": "Failed".
    - If a runtime error occurs (IndexError, TypeError, division by zero): set "passed": false, "status": "Runtime Error", "actualOutput": "Runtime Error: <type>".
 
 Return valid JSON in this EXACT structure:
@@ -901,7 +902,7 @@ Return valid JSON in this EXACT structure:
       "expectedOutput": "expected output",
       "actualOutput": "computed actual output",
       "passed": false,
-      "status": "Passed",
+      "status": "Failed",
       "executionTimeMs": 15
     }
   ]
@@ -914,6 +915,7 @@ Return ONLY raw valid JSON.`;
       prompt,
       feature: "quiz-grading",
       temperature: 0.0,
+      userId,
     });
     const parsed = parseJsonSafely(raw?.data || raw);
     if (parsed && Array.isArray(parsed.testCaseResults)) {
@@ -962,16 +964,44 @@ Return ONLY raw valid JSON.`;
   };
 }
 
+function isCodeEmptyOrBoilerplateOnly(code = "", language = "") {
+  if (!code || typeof code !== "string" || !code.trim()) return true;
+
+  let s = code
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(\/\/|#|--).*$/gm, "")
+    .replace(/""".*?"""/gs, "")
+    .replace(/'''.*?'''/gs, "")
+    .replace(/^\s*(#include|import|from|package|using\s+namespace)[^\n;]*;?/gm, "")
+    .replace(/ios_base::sync_with_stdio\([^)]*\);?/g, "")
+    .replace(/cin\.tie\([^)]*\);?/g, "")
+    .replace(/\b(pass|return\s+0;?)\b/g, "")
+    .replace(/[a-zA-Z0-9_]+\s*\(\s*\);?/g, "");
+
+  let prev;
+  do {
+    prev = s;
+    s = s.replace(/\{[^{}]*\}/g, "");
+  } while (s !== prev);
+
+  s = s
+    .replace(/\b(int|void|public\s+static\s+void|func|function|class|public\s+class)\s+[a-zA-Z0-9_]+\s*(\([^)]*\))?/g, "")
+    .replace(/def\s+[a-zA-Z0-9_]+\s*\([^)]*\)\s*:/g, "")
+    .replace(/if\s+__name__\s*==\s*['"]__main__['"]\s*:/g, "")
+    .replace(/\s+/g, "");
+
+  return s.length === 0;
+}
+
 /**
  * Main Code Execution & Test Case Verification Handler with High-Concurrency Throttling and Result Caching
  */
-async function executeCode({ code, language = "python", testCases = [], questionText = "" }) {
+async function executeCode({ code, language = "python", testCases = [], questionText = "", userId = null }) {
   const lang = String(language).toLowerCase().trim();
   const rawCode = String(code || "").trim();
 
-  // Validate presence of real solution code (ignoring default starter comment lines)
-  const cleanCode = rawCode.replace(/^(#|\/\/|--)\s*write your code here\s*$/gmi, "").trim();
-  if (!cleanCode) {
+  // Validate presence of real solution code (ignoring starter boilerplate & comments)
+  if (isCodeEmptyOrBoilerplateOnly(rawCode, lang)) {
     const defaultTCs = testCases && testCases.length > 0 ? testCases : [{ input: "", expectedOutput: "" }];
     return {
       success: false,
@@ -986,13 +1016,15 @@ async function executeCode({ code, language = "python", testCases = [], question
         testCaseId: tc.id || String(i + 1),
         input: tc.input || "",
         expectedOutput: tc.expectedOutput || "",
-        actualOutput: "(No output — code is empty)",
+        actualOutput: "(No output — no code written)",
         passed: false,
-        status: "Not Attempted",
+        status: "Failed",
         executionTimeMs: 0,
       })),
     };
   }
+
+  const cleanCode = rawCode.replace(/^(#|\/\/|--)\s*write your code here\s*$/gmi, "").trim();
 
   const defaultTestCases = (testCases && testCases.length > 0)
     ? testCases
@@ -1009,7 +1041,7 @@ async function executeCode({ code, language = "python", testCases = [], question
   const securityCheck = checkCodeSecurity(cleanCode, lang);
   if (!securityCheck.safe) {
     console.warn(`[CompilerService] Security scan flagged code: ${securityCheck.reason}. Routing to safe AI sandbox evaluator.`);
-    const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
+    const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText, userId);
     const finalResult = {
       success: aiResult.success ?? false,
       isCompilationError: aiResult.isCompilationError ?? false,
@@ -1063,7 +1095,7 @@ async function executeCode({ code, language = "python", testCases = [], question
 
     if (!hasNativeRunner || !runner) {
       console.info(`[CompilerService] Direct AI sandbox delegation for ${lang} (compiler absent or method solution).`);
-      const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
+      const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText, userId);
       const finalResult = {
         success: aiResult.success ?? false,
         isCompilationError: aiResult.isCompilationError ?? false,
@@ -1089,7 +1121,11 @@ async function executeCode({ code, language = "python", testCases = [], question
 
       for (let i = 0; i < defaultTestCases.length; i++) {
         const tc = defaultTestCases[i];
-        const res = await runner(cleanCode, tc.input || "");
+        const normalizedInput = String(tc.input || "")
+          .replace(/\r\n/g, "\n")
+          .replace(/\\r\\n/g, "\n")
+          .replace(/\\n/g, "\n");
+        const res = await runner(cleanCode, normalizedInput);
 
         if (res.stderr) {
           overallStderr = res.stderr;
@@ -1147,6 +1183,9 @@ async function executeCode({ code, language = "python", testCases = [], question
           passed = false;
           status = "Runtime Error";
           actualOutput = res.stderr ? `Runtime Error: ${res.stderr}` : "Runtime Error (exit code " + res.exitCode + ")";
+        } else if (expectedTrimmed === "(Custom)" || expectedTrimmed.length === 0) {
+          passed = res.exitCode === 0;
+          status = passed ? "Passed" : "Failed";
         } else if (expectedTrimmed.length > 0) {
           passed =
             actualTrimmed === expectedTrimmed ||
@@ -1176,7 +1215,7 @@ async function executeCode({ code, language = "python", testCases = [], question
       // If host compiler was missing, delegate to AI sandbox
       if (hostCompilerMissing) {
         console.info(`[CompilerService] Host binary for ${lang} not available. Delegating to AI execution sandbox.`);
-        const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
+        const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText, userId);
         const finalResult = {
           success: aiResult.success ?? false,
           isCompilationError: aiResult.isCompilationError ?? false,
@@ -1201,7 +1240,7 @@ async function executeCode({ code, language = "python", testCases = [], question
       const hasFunctionSyntax = /(def\s+[a-zA-Z0-9_]+|function\s+[a-zA-Z0-9_]+|class\s+[a-zA-Z0-9_]+|const\s+[a-zA-Z0-9_]+\s*=\s*\([^)]*\)\s*=>)/.test(cleanCode);
       if (passedCount === 0 && !hasCompilationError && hasFunctionSyntax) {
         console.info("[CompilerService] Native runner produced 0 stdout for function-based code. Evaluating with AI sandbox engine.");
-        const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
+        const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText, userId);
         if (aiResult && Array.isArray(aiResult.testCaseResults) && aiResult.testCaseResults.length > 0) {
           const finalResult = {
             success: aiResult.success ?? false,
@@ -1237,7 +1276,7 @@ async function executeCode({ code, language = "python", testCases = [], question
     }
 
     // Fallback to AI-powered execution evaluator for any other language
-    const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText);
+    const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText, userId);
     const finalResult = {
       success: aiResult.success ?? false,
       isCompilationError: aiResult.isCompilationError ?? false,
