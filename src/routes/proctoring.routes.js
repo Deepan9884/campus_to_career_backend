@@ -1,7 +1,11 @@
 const { Router } = require("express");
 const rateLimit = require("express-rate-limit");
 const verifyJWT = require("../middleware/auth.middleware");
-const { reportViolation, getViolationStatus } = require("../controllers/proctoring.controller");
+const {
+  reportViolation,
+  getViolationStatus,
+  checkMyProctoringStatus,
+} = require("../controllers/proctoring.controller");
 
 const router = Router();
 
@@ -16,6 +20,9 @@ const proctoringLimiter = rateLimit({
     message: "Too many proctoring telemetry requests, please slow down",
   },
 });
+
+// GET /api/proctoring/check-status — lightweight query for 30m block timer & mentor info
+router.get("/check-status", verifyJWT, checkMyProctoringStatus);
 
 // POST /api/proctoring/violation — student reports a violation event
 router.post("/violation", verifyJWT, proctoringLimiter, reportViolation);

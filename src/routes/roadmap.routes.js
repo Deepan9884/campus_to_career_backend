@@ -2,6 +2,7 @@ const { Router } = require("express");
 const rateLimit = require("express-rate-limit");
 
 const verifyJWT = require("../middleware/auth.middleware");
+const checkProctoringBlock = require("../middleware/proctoringBlock.middleware");
 const validate = require("../middleware/validate.middleware");
 const { generateValidators } = require("../validators/roadmap.validators");
 const roadmapController = require("../controllers/roadmap.controller");
@@ -42,7 +43,12 @@ router.get("/by-gap/:gapAnalysisId", verifyJWT, roadmapController.getRoadmapByGa
 
 router.get("/:id/recommendations", verifyJWT, roadmapController.getRoadmapRecommendations);
 
-router.patch("/:id/subtopic/:subTopicId", verifyJWT, roadmapController.updateSubTopicStatus);
+router.patch(
+  "/:id/subtopic/:subTopicId",
+  verifyJWT,
+  checkProctoringBlock,
+  roadmapController.updateSubTopicStatus
+);
 
 router.get("/:id", verifyJWT, roadmapController.getRoadmapById);
 

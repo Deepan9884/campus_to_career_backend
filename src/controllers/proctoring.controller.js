@@ -8,13 +8,17 @@ const ApiResponse = require("../utils/ApiResponse");
 const notificationService = require("../services/notification.service");
 const emailService = require("../services/email.service");
 const { invalidateUserCache } = require("../middleware/auth.middleware");
+const {
+  evaluateAndAutoUnblockUser,
+  blockUserForProctoring,
+} = require("../services/proctoringBlock.service");
 
 const MAX_VIOLATIONS = 3;
 
 /**
  * POST /api/proctoring/violation
  * Student reports a proctoring violation event.
- * Increments count, blocks user on 3rd strike.
+ * Increments count, blocks user for 30 minutes on 3rd strike or fullscreen timeout.
  */
 const reportViolation = asyncHandler(async (req, res) => {
   const { moduleType, moduleId, violationType, forceBlock } = req.body;
@@ -42,7 +46,10 @@ const reportViolation = asyncHandler(async (req, res) => {
     throw ApiError.badRequest("Invalid violationType");
   }
 
-  // Upsert: find or create violation record for this attempt/session
+  // 1. Check if user is currently globally blocked (and evaluate 30-min auto-unblock)
+  const currentBlockStatus = await evaluateAndAutoUnblockUser(req.user);
+
+  // 2. Upsert: find or create violation record for this attempt/session
   let record = await ProctoringViolation.findOne({
     userId: req.user._id,
     moduleId,
@@ -61,13 +68,30 @@ const reportViolation = asyncHandler(async (req, res) => {
     });
   }
 
-  // If already blocked, return HTTP 403
-  if (record.isBlocked) {
+  // If user is already blocked in 30-minute lockout, return 403 immediately
+  if (currentBlockStatus.isBlocked || record.isBlocked) {
+    let mentorName = "your assigned mentor";
+    let mentorEmail = null;
+    if (req.user.assignedMentor) {
+      try {
+        const m = await User.findById(req.user.assignedMentor).select("name email").lean();
+        if (m) {
+          mentorName = m.name || mentorName;
+          mentorEmail = m.email || null;
+        }
+      } catch {}
+    }
+
     return res.status(403).json({
       success: false,
-      violationCount: record.violationCount,
-      isBlocked: true,
-      message: "Exam access is blocked. Please contact your mentor to restore access.",
+      violationCount: record.violationCount || MAX_VIOLATIONS,
+      isProctoringBlocked: true,
+      remainingMs: currentBlockStatus.remainingMs,
+      remainingSeconds: currentBlockStatus.remainingSeconds,
+      remainingMinutes: currentBlockStatus.remainingMinutes,
+      blockedAt: currentBlockStatus.blockedAt || record.blockedAt,
+      mentor: { name: mentorName, email: mentorEmail },
+      message: `Your assessment access is suspended for 30 minutes. Only ${mentorName} can unblock you early, or access will automatically restore in ${currentBlockStatus.remainingMinutes} minute(s).`,
     });
   }
 
@@ -80,16 +104,13 @@ const reportViolation = asyncHandler(async (req, res) => {
 
   const shouldBlock = isFullscreenTimeout || record.violationCount >= MAX_VIOLATIONS;
 
+  let blockInfo = null;
   if (shouldBlock) {
     record.isBlocked = true;
     record.blockedAt = new Date();
 
-    // Block the user's proctoring access and invalidate auth user cache
-    await User.findByIdAndUpdate(req.user._id, {
-      isProctoringBlocked: true,
-      proctoringBlockedAt: new Date(),
-    });
-    invalidateUserCache(req.user._id);
+    // Block candidate for 30 minutes in DB and invalidate session cache
+    blockInfo = await blockUserForProctoring(req.user._id);
 
     // Synchronize ExamSubmission if candidate is taking an exam
     try {
@@ -112,49 +133,71 @@ const reportViolation = asyncHandler(async (req, res) => {
       console.error("[Proctoring] Failed to sync ExamSubmission status:", examSubErr);
     }
 
+    // Lookup mentor details
+    let mentorName = "Your Assigned Mentor";
+    let mentorEmail = null;
+    let fullStudent = null;
+    try {
+      fullStudent = await User.findById(req.user._id)
+        .select("name email assignedMentor")
+        .populate("assignedMentor", "name email")
+        .lean();
+      if (fullStudent?.assignedMentor) {
+        mentorName = fullStudent.assignedMentor.name || mentorName;
+        mentorEmail = fullStudent.assignedMentor.email || null;
+      }
+    } catch {}
+
     // Notify the student via in-app notification & email
     try {
       const studentNotification = await Notification.create({
         user: req.user._id,
         type: "proctoring_blocked",
-        title: "Exam Access Blocked",
+        title: "Test Access Suspended (30 Minutes)",
         message: isFullscreenTimeout
-          ? "Your exam access has been blocked because you did not return to fullscreen within 15 seconds. Please contact your mentor to restore access."
-          : "Your exam access has been blocked due to 3 proctoring violations. Please contact your mentor to restore access.",
+          ? `Your test access has been suspended for 30 minutes because you did not return to fullscreen within 15 seconds. Only ${mentorName} can unblock you early, or access will auto-restore in 30 minutes.`
+          : `Your test access has been suspended for 30 minutes due to 3 proctoring violations. Only ${mentorName} can unblock you early, or access will auto-restore in 30 minutes.`,
         actionUrl: "/dashboard",
         read: false,
       });
       notificationService.pushToOpenConnections(req.user._id, studentNotification);
 
-      // Trigger high-deliverability email alert
-      const fullStudent = await User.findById(req.user._id).select("name email assignedMentor").populate("assignedMentor", "name").lean();
       if (fullStudent) {
-        emailService.sendProctoringBlockedEmail(fullStudent, {
-          examTitle: moduleType === "exam" ? "Faculty Assessment" : moduleType === "interview" ? "AI Mock Interview" : "Skill Gap Quiz",
-          reason: isFullscreenTimeout ? "Exited fullscreen and failed to return within 15 seconds" : "Anti-cheat violations limit exceeded (3 strikes)",
-          violationCount: record.violationCount,
-          mentorName: fullStudent.assignedMentor?.name || "Your Mentor",
-        }).catch((e) => console.error("[Proctoring] Failed to send email alert:", e.message));
+        emailService
+          .sendProctoringBlockedEmail(fullStudent, {
+            examTitle:
+              moduleType === "exam"
+                ? "Faculty Assessment"
+                : moduleType === "interview"
+                ? "AI Mock Interview"
+                : "Skill Gap / Roadmap Quiz",
+            reason: isFullscreenTimeout
+              ? "Exited fullscreen and failed to return within 15 seconds"
+              : "Anti-cheat violations limit exceeded (3 strikes)",
+            violationCount: record.violationCount,
+            mentorName,
+          })
+          .catch((e) => console.error("[Proctoring] Failed to send email alert:", e.message));
       }
     } catch (err) {
       console.error("[Proctoring] Failed to send block notification to student:", err);
     }
 
-    // Notify the assigned mentor if any
+    // Notify the assigned mentor
     try {
-      const fullUser = await User.findById(req.user._id).select("name assignedMentor").lean();
-      if (fullUser?.assignedMentor) {
+      if (fullStudent?.assignedMentor) {
+        const mentorId = fullStudent.assignedMentor._id || fullStudent.assignedMentor;
         const mentorNotification = await Notification.create({
-          user: fullUser.assignedMentor,
+          user: mentorId,
           type: "proctoring_blocked",
-          title: `[Mentee Alert] Exam Blocked: ${fullUser.name}`,
+          title: `[Mentee Alert] Test Blocked (30m): ${fullStudent.name}`,
           message: isFullscreenTimeout
-            ? `Your mentee ${fullUser.name} was blocked from exam access after failing to re-enter fullscreen within 15 seconds. Review and unblock from the admin portal.`
-            : `Your mentee ${fullUser.name} was blocked from exam access after 3 proctoring violations. Review and unblock from the admin portal.`,
+            ? `Your mentee ${fullStudent.name} was blocked from tests for 30 minutes after failing to re-enter fullscreen within 15 seconds. You can review and unblock early from the admin portal.`
+            : `Your mentee ${fullStudent.name} was blocked from tests for 30 minutes after 3 proctoring violations. You can review and unblock early from the admin portal.`,
           actionUrl: "/students",
           read: false,
         });
-        notificationService.pushToOpenConnections(fullUser.assignedMentor, mentorNotification);
+        notificationService.pushToOpenConnections(mentorId, mentorNotification);
       }
     } catch (err) {
       console.error("[Proctoring] Failed to send block notification to mentor:", err);
@@ -164,13 +207,30 @@ const reportViolation = asyncHandler(async (req, res) => {
   await record.save();
 
   if (shouldBlock) {
+    let mentorName = "Your Assigned Mentor";
+    let mentorEmail = null;
+    if (req.user.assignedMentor) {
+      try {
+        const m = await User.findById(req.user.assignedMentor).select("name email").lean();
+        if (m) {
+          mentorName = m.name || mentorName;
+          mentorEmail = m.email || null;
+        }
+      } catch {}
+    }
+
     return res.status(403).json({
       success: false,
       violationCount: record.violationCount,
-      isBlocked: true,
+      isProctoringBlocked: true,
+      remainingMs: blockInfo?.remainingMs || 30 * 60 * 1000,
+      remainingSeconds: blockInfo?.remainingSeconds || 1800,
+      remainingMinutes: blockInfo?.remainingMinutes || 30,
+      blockedAt: blockInfo?.blockedAt || new Date(),
+      mentor: { name: mentorName, email: mentorEmail },
       message: isFullscreenTimeout
-        ? "Exam access blocked: Candidate failed to re-enter fullscreen within 15 seconds"
-        : "Exam access blocked after 3 violations",
+        ? `Test access suspended for 30 minutes (fullscreen exit timeout). Only ${mentorName} can unblock you early, or access will auto-restore in 30 minutes.`
+        : `Test access suspended for 30 minutes (3 violations reached). Only ${mentorName} can unblock you early, or access will auto-restore in 30 minutes.`,
     });
   }
 
@@ -188,6 +248,8 @@ const reportViolation = asyncHandler(async (req, res) => {
 const getViolationStatus = asyncHandler(async (req, res) => {
   const { moduleId } = req.params;
 
+  const userBlockStatus = await evaluateAndAutoUnblockUser(req.user);
+
   const record = await ProctoringViolation.findOne({
     userId: req.user._id,
     moduleId,
@@ -196,17 +258,59 @@ const getViolationStatus = asyncHandler(async (req, res) => {
   if (!record) {
     return ApiResponse.success({
       violationCount: 0,
-      isBlocked: false,
+      isBlocked: userBlockStatus.isBlocked,
+      remainingSeconds: userBlockStatus.remainingSeconds,
+      remainingMinutes: userBlockStatus.remainingMinutes,
       events: [],
     }).send(res);
   }
 
   return ApiResponse.success({
     violationCount: record.violationCount,
-    isBlocked: record.isBlocked,
-    blockedAt: record.blockedAt,
+    isBlocked: Boolean(userBlockStatus.isBlocked || record.isBlocked),
+    blockedAt: record.blockedAt || userBlockStatus.blockedAt,
+    remainingSeconds: userBlockStatus.remainingSeconds,
+    remainingMinutes: userBlockStatus.remainingMinutes,
     events: record.events,
   }).send(res);
 });
 
-module.exports = { reportViolation, getViolationStatus };
+/**
+ * GET /api/proctoring/check-status
+ * Dedicated lightweight query for the student frontend to inspect real-time block state,
+ * countdown seconds, and assigned mentor info.
+ */
+const checkMyProctoringStatus = asyncHandler(async (req, res) => {
+  const status = await evaluateAndAutoUnblockUser(req.user);
+
+  let mentorName = "Your Assigned Mentor";
+  let mentorEmail = null;
+  if (req.user.assignedMentor) {
+    try {
+      const mentor = await User.findById(req.user.assignedMentor).select("name email").lean();
+      if (mentor) {
+        mentorName = mentor.name || mentorName;
+        mentorEmail = mentor.email || null;
+      }
+    } catch {}
+  }
+
+  return ApiResponse.success({
+    isBlocked: status.isBlocked,
+    autoUnblocked: status.autoUnblocked,
+    remainingMs: status.remainingMs,
+    remainingSeconds: status.remainingSeconds,
+    remainingMinutes: status.remainingMinutes,
+    blockedAt: status.blockedAt,
+    mentor: {
+      name: mentorName,
+      email: mentorEmail,
+    },
+  }).send(res);
+});
+
+module.exports = {
+  reportViolation,
+  getViolationStatus,
+  checkMyProctoringStatus,
+};

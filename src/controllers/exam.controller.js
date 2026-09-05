@@ -14,6 +14,7 @@ const ProctoringViolation = require("../models/ProctoringViolation.model");
 const notificationService = require("../services/notification.service");
 const emailService = require("../services/email.service");
 const { invalidateUserCache } = require("../middleware/auth.middleware");
+const { evaluateAndAutoUnblockUser } = require("../services/proctoringBlock.service");
 const {
   fetchMcqsFromBank,
   parseCodingProblemFromUrl,
@@ -1382,8 +1383,9 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
     userId: studentId,
   });
 
-  // Check if user account is globally blocked by admin OR submission is actively blocked
-  const isUserGloballyBlocked = Boolean(req.user.isProctoringBlocked);
+  // Check if user account is globally blocked or subject to 30-minute auto-unblock
+  const userBlockStatus = await evaluateAndAutoUnblockUser(req.user);
+  const isUserGloballyBlocked = userBlockStatus.isBlocked;
 
   // If user was unblocked or is not globally blocked, auto-clear any stale submission block
   if (!isUserGloballyBlocked && existingSub && existingSub.isBlocked) {
@@ -1409,12 +1411,14 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
           durationMinutes: exam.durationMinutes,
           sections: [],
           isBlocked: true,
+          remainingSeconds: userBlockStatus.remainingSeconds,
+          remainingMinutes: userBlockStatus.remainingMinutes,
           blockedReason:
             existingSub?.blockedReason ||
-            "Your exam access has been locked due to proctoring policy violations. Awaiting mentor unblock authorization.",
-          blockedAt: existingSub?.blockedAt || req.user.proctoringBlockedAt || new Date(),
+            `Your exam access has been suspended for 30 minutes due to proctoring policy violations. Only your assigned mentor can unblock you early, or access will auto-restore in ${userBlockStatus.remainingMinutes} minute(s).`,
+          blockedAt: existingSub?.blockedAt || userBlockStatus.blockedAt || new Date(),
         },
-        "Exam session locked: Awaiting mentor unblock"
+        "Exam session locked: Awaiting mentor unblock or 30-minute auto-unblock"
       )
     );
   }
@@ -1556,8 +1560,10 @@ const submitStudentExam = asyncHandler(async (req, res) => {
     moduleId: examId,
   }).lean();
 
+  const userBlockStatus = await evaluateAndAutoUnblockUser(req.user);
+
   const isUserBlocked = Boolean(
-    req.user.isProctoringBlocked ||
+    userBlockStatus.isBlocked ||
     existingSub?.isBlocked ||
     dbViolation?.isBlocked ||
     (dbViolation && dbViolation.violationCount >= 3)
@@ -1566,7 +1572,7 @@ const submitStudentExam = asyncHandler(async (req, res) => {
   if (isUserBlocked) {
     throw new ApiError(
       403,
-      "Your exam access is locked due to proctoring policy violations. Submissions are not permitted."
+      `Your exam access is locked for 30 minutes due to proctoring policy violations. Submissions are not permitted. Only your assigned mentor can unblock you early, or access will auto-restore in ${userBlockStatus.remainingMinutes || 30} minute(s).`
     );
   }
 
@@ -1954,13 +1960,13 @@ const getStudentExamBlockStatus = asyncHandler(async (req, res) => {
   const { examId } = req.params;
   const studentId = req.user._id;
 
-  const [user, sub, exam] = await Promise.all([
-    User.findById(studentId).select("isProctoringBlocked name").lean(),
+  const [userBlockStatus, sub, exam] = await Promise.all([
+    evaluateAndAutoUnblockUser(studentId),
     ExamSubmission.findOne({ examId, userId: studentId }).select("isBlocked unblockedAt status blockedReason").lean(),
     Exam.findById(examId).select("status isPublished").lean(),
   ]);
 
-  const isBlocked = Boolean(user?.isProctoringBlocked || sub?.isBlocked);
+  const isBlocked = Boolean(userBlockStatus.isBlocked || sub?.isBlocked);
   const isExamStopped = Boolean(exam?.status === "stopped" || (!exam?.isPublished && exam?.status !== "active"));
 
   return res.status(200).json(
@@ -1968,6 +1974,8 @@ const getStudentExamBlockStatus = asyncHandler(async (req, res) => {
       200,
       {
         isBlocked,
+        remainingSeconds: userBlockStatus.remainingSeconds,
+        remainingMinutes: userBlockStatus.remainingMinutes,
         unblockedAt: sub?.unblockedAt,
         status: sub?.status,
         blockedReason: sub?.blockedReason,
@@ -1975,7 +1983,7 @@ const getStudentExamBlockStatus = asyncHandler(async (req, res) => {
         isExamStopped,
       },
       isBlocked
-        ? "Exam session is currently blocked"
+        ? `Exam session is currently blocked for 30 minutes. ${userBlockStatus.remainingMinutes} minute(s) remaining.`
         : isExamStopped
         ? "Assessment has been concluded by administrator"
         : "Exam session is authorized"
