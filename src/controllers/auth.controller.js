@@ -28,6 +28,7 @@ const {
 const emailService = require("../services/email.service");
 const { OAuth2Client } = require("google-auth-library");
 const { isEncrypted, decrypt } = require("../services/encryption.service");
+const { evaluateAndAutoUnblockUser } = require("../services/proctoringBlock.service");
 
 const googleClient = new OAuth2Client(env.GOOGLE_CLIENT_ID);
 
@@ -748,7 +749,15 @@ const refreshToken = asyncHandler(async (req, res) => {
 });
 
 const getMe = asyncHandler(async (req, res) => {
-  return ApiResponse.success(req.user).send(res);
+  const blockStatus = await evaluateAndAutoUnblockUser(req.user);
+  const userData = { ...req.user };
+  if (blockStatus.autoUnblocked) {
+    userData.isProctoringBlocked = false;
+    userData.proctoringBlockedAt = null;
+  }
+  userData.proctoringRemainingSeconds = blockStatus.remainingSeconds;
+  userData.proctoringRemainingMinutes = blockStatus.remainingMinutes;
+  return ApiResponse.success(userData).send(res);
 });
 
 const updateProfile = asyncHandler(async (req, res) => {

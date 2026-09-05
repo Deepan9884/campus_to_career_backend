@@ -1,30 +1,70 @@
-﻿const ApiError = require("../utils/ApiError");
+const ApiError = require("../utils/ApiError");
+const User = require("../models/User.model");
+const { evaluateAndAutoUnblockUser } = require("../services/proctoringBlock.service");
 
 /**
- * Middleware that blocks Quiz and Interview access for users who
- * have been flagged by the proctoring system (isProctoringBlocked = true).
+ * Middleware that guards Quiz, Exam, and Interview access for users who
+ * have been flagged by the proctoring anti-cheat system (isProctoringBlocked = true).
  *
- * Apply to protected quiz/interview mutation routes:
- *   POST /api/skill-gap/quiz/generate
- *   POST /api/skill-gap/quiz/submit
- *   POST /api/interview/start
- *   POST /api/interview/:id/rounds/:roundType/answer
- *   POST /api/interview/:id/rounds/:roundType/finish
+ * Rules:
+ *   1. 30-Minute Classic Auto-Unblock: Evaluates whether 30 minutes have elapsed.
+ *      If yes, automatically restores user access across DB and session cache.
+ *   2. Mentor Override: Before 30 minutes, only the assigned mentor (or admin) can
+ *      unblock the candidate via the admin/mentor portal.
+ *   3. When blocked: returns HTTP 403 with `isProctoringBlocked: true`, exact
+ *      `remainingSeconds`, `remainingMinutes`, and assigned mentor contact information.
  */
-const checkProctoringBlock = (req, _res, next) => {
-  if (!req.user) {
-    return next(ApiError.unauthorized("Authentication required"));
-  }
+const checkProctoringBlock = async (req, res, next) => {
+  try {
+    if (!req.user) {
+      return next(ApiError.unauthorized("Authentication required"));
+    }
 
-  if (req.user.isProctoringBlocked === true) {
-    return next(
-      ApiError.forbidden(
-        "Your exam access has been blocked due to proctoring violations. Please contact your mentor to restore access."
-      )
-    );
-  }
+    const status = await evaluateAndAutoUnblockUser(req.user);
 
-  return next();
+    // If auto-unblocked by 30-minute expiration or never blocked, allow through
+    if (!status.isBlocked) {
+      if (req.user) {
+        req.user.isProctoringBlocked = false;
+        req.user.proctoringBlockedAt = null;
+      }
+      return next();
+    }
+
+    // Lookup assigned mentor details if available to assist the student
+    let mentorName = "Your Assigned Mentor";
+    let mentorEmail = null;
+    if (req.user.assignedMentor) {
+      try {
+        const mentor = await User.findById(req.user.assignedMentor)
+          .select("name email")
+          .lean();
+        if (mentor) {
+          mentorName = mentor.name || mentorName;
+          mentorEmail = mentor.email || null;
+        }
+      } catch (mentorErr) {
+        console.warn("[ProctoringBlock] Failed to fetch mentor info:", mentorErr.message);
+      }
+    }
+
+    return res.status(403).json({
+      success: false,
+      isProctoringBlocked: true,
+      blockedAt: status.blockedAt,
+      remainingMs: status.remainingMs,
+      remainingSeconds: status.remainingSeconds,
+      remainingMinutes: status.remainingMinutes,
+      mentor: {
+        name: mentorName,
+        email: mentorEmail,
+      },
+      message: `Your test and interview access is suspended for 30 minutes due to academic integrity violations. Only ${mentorName} can unblock you early, or access will automatically restore in ${status.remainingMinutes} minute(s).`,
+    });
+  } catch (err) {
+    console.error("[ProctoringBlock Middleware Error]:", err);
+    return next(err);
+  }
 };
 
 module.exports = checkProctoringBlock;
