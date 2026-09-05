@@ -17,50 +17,54 @@ const PLATFORM_TO_FETCHER = {
 };
 
 function parseUsernameFromUrl(platform, profileUrl) {
-    const url = String(profileUrl || "").trim();
+    let url = String(profileUrl || "").trim();
+    if (!url) throw new Error("Profile URL is required");
+
+    // Remove query params, hash fragments, and trailing slashes
+    url = url.split("?")[0].split("#")[0].replace(/\/+$/, "");
+
+    // If bare username without slashes or domain dots
+    if (!url.includes("/") && !url.includes(".")) {
+        return url;
+    }
 
     try {
-        const u = new URL(url);
-        const path = u.pathname.replace(/\/+$/, "");
+        const u = new URL(url.startsWith("http") ? url : `https://${url}`);
+        const segs = u.pathname.split("/").filter(Boolean);
 
         if (platform === "leetcode") {
-            const segs = path.split("/").filter(Boolean);
-            if (segs[0] === "u" && segs[1]) return segs[1];
-            if (segs[0]) return segs[0];
-            throw new Error("Cannot parse leetcode username");
+            const idx = segs.findIndex((s) => s === "u" || s === "profile");
+            if (idx >= 0 && segs[idx + 1]) return segs[idx + 1];
+            return segs[segs.length - 1];
         }
 
         if (platform === "codechef") {
-            // /users/<username>
-            const segs = path.split("/").filter(Boolean);
-            const idx = segs.indexOf("users");
+            // /users/<username> or /profile/<username>
+            const idx = segs.findIndex((s) => s === "users" || s === "user" || s === "profile");
             if (idx >= 0 && segs[idx + 1]) return segs[idx + 1];
-            // fallback: first segment
-            if (segs[0]) return segs[0];
-            throw new Error("Cannot parse codechef username");
+            return segs[segs.length - 1];
         }
 
         if (platform === "hackerrank") {
-            // /profile/<username>
-            const segs = path.split("/").filter(Boolean);
-            const idx = segs.indexOf("profile");
+            // /profile/<username> or /<username>
+            const idx = segs.findIndex((s) => s === "profile" || s === "users" || s === "user");
             if (idx >= 0 && segs[idx + 1]) return segs[idx + 1];
-            if (segs[0]) return segs[0];
-            throw new Error("Cannot parse hackerrank username");
+            return segs[segs.length - 1];
         }
 
         if (platform === "gfg") {
-            // /user/<username>
-            const segs = path.split("/").filter(Boolean);
-            const idx = segs.indexOf("user");
+            // /user/<username> or /profile/<username> or /practice
+            const idx = segs.findIndex((s) => s === "user" || s === "profile");
             if (idx >= 0 && segs[idx + 1]) return segs[idx + 1];
-            if (segs[0]) return segs[0];
-            throw new Error("Cannot parse gfg username");
+            const filtered = segs.filter(
+                (s) => !["user", "profile", "practice", "batch", "courses", "contest"].includes(s.toLowerCase())
+            );
+            if (filtered.length > 0) return filtered[filtered.length - 1];
+            return segs[segs.length - 1];
         }
 
-        throw new Error("Unsupported platform");
+        return segs[segs.length - 1];
     } catch {
-        // If URL parsing fails, do a very simple fallback
         const seg = url.split("/").filter(Boolean).slice(-1)[0];
         if (!seg) throw new Error("Invalid profile URL");
         return seg;
