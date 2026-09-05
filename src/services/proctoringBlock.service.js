@@ -3,19 +3,22 @@ const ProctoringViolation = require("../models/ProctoringViolation.model");
 const ExamSubmission = require("../models/ExamSubmission.model");
 const { invalidateUserCache } = require("../middleware/auth.middleware");
 
-// Standard anti-cheat block duration: 30 minutes
+// Standard anti-cheat block duration in Classic mode: 30 minutes
 const PROCTORING_BLOCK_DURATION_MS = 30 * 60 * 1000;
 
 /**
  * Evaluates whether a candidate is proctoring-blocked.
- * If 30 minutes have elapsed since `proctoringBlockedAt`, automatically clears
- * the block (Classic 30-Minute Auto-Unblock) across User, ProctoringViolation,
- * and ExamSubmission models, and invalidates the cached session.
+ *
+ * Rules:
+ *   - Classic track: Auto-unblocks in 30 minutes (timer comes only in classic).
+ *   - Super Dream track: NO auto-unblock timer. Only mentor can unblock!
  *
  * @param {import("mongoose").Document|string|object} userOrId
  * @returns {Promise<{
  *   isBlocked: boolean,
  *   autoUnblocked: boolean,
+ *   isSuperDream: boolean,
+ *   hasTimer: boolean,
  *   remainingMs: number,
  *   remainingSeconds: number,
  *   remainingMinutes: number,
@@ -28,6 +31,8 @@ async function evaluateAndAutoUnblockUser(userOrId) {
     return {
       isBlocked: false,
       autoUnblocked: false,
+      isSuperDream: false,
+      hasTimer: false,
       remainingMs: 0,
       remainingSeconds: 0,
       remainingMinutes: 0,
@@ -40,9 +45,9 @@ async function evaluateAndAutoUnblockUser(userOrId) {
   const userId = user._id || user;
 
   // If user object lacks proctoring fields, query the latest document
-  if (!user || user.isProctoringBlocked === undefined) {
+  if (!user || user.isProctoringBlocked === undefined || user.proctoringBlockTrack === undefined) {
     user = await User.findById(userId)
-      .select("name email assignedMentor isProctoringBlocked proctoringBlockedAt")
+      .select("name email assignedMentor isProctoringBlocked proctoringBlockedAt proctoringBlockTrack")
       .lean();
   }
 
@@ -50,6 +55,8 @@ async function evaluateAndAutoUnblockUser(userOrId) {
     return {
       isBlocked: false,
       autoUnblocked: false,
+      isSuperDream: false,
+      hasTimer: false,
       remainingMs: 0,
       remainingSeconds: 0,
       remainingMinutes: 0,
@@ -63,6 +70,8 @@ async function evaluateAndAutoUnblockUser(userOrId) {
     return {
       isBlocked: false,
       autoUnblocked: false,
+      isSuperDream: false,
+      hasTimer: false,
       remainingMs: 0,
       remainingSeconds: 0,
       remainingMinutes: 0,
@@ -71,16 +80,31 @@ async function evaluateAndAutoUnblockUser(userOrId) {
     };
   }
 
-  // Calculate elapsed duration
+  const isSuperDream = user.proctoringBlockTrack === "super_dream";
   const blockedAtTime = user.proctoringBlockedAt
     ? new Date(user.proctoringBlockedAt).getTime()
     : Date.now();
   const elapsed = Date.now() - blockedAtTime;
 
-  // ── CLASSIC AUTO-UNBLOCK IN 30 MINUTES ────────────────────────────────────
+  // ── SUPER DREAM TRACK: NO AUTO-UNBLOCK TIMER; ONLY MENTOR UNBLOCKS ───────
+  if (isSuperDream) {
+    return {
+      isBlocked: true,
+      autoUnblocked: false,
+      isSuperDream: true,
+      hasTimer: false,
+      remainingMs: 0,
+      remainingSeconds: 0,
+      remainingMinutes: 0,
+      blockedAt: user.proctoringBlockedAt || new Date(blockedAtTime),
+      user,
+    };
+  }
+
+  // ── CLASSIC TRACK: AUTO-UNBLOCK IN 30 MINUTES ─────────────────────────────
   if (elapsed >= PROCTORING_BLOCK_DURATION_MS) {
     console.log(
-      `[Proctoring] 30-minute block duration expired for user ${userId}. Executing classic auto-unblock.`
+      `[Proctoring] Classic 30-minute block duration expired for user ${userId}. Executing classic auto-unblock.`
     );
 
     // 1. Reset User block state
@@ -88,6 +112,7 @@ async function evaluateAndAutoUnblockUser(userOrId) {
       $set: {
         isProctoringBlocked: false,
         proctoringBlockedAt: null,
+        proctoringBlockTrack: "classic",
       },
     });
 
@@ -122,15 +147,17 @@ async function evaluateAndAutoUnblockUser(userOrId) {
     return {
       isBlocked: false,
       autoUnblocked: true,
+      isSuperDream: false,
+      hasTimer: false,
       remainingMs: 0,
       remainingSeconds: 0,
       remainingMinutes: 0,
       blockedAt: null,
-      user: { ...user, isProctoringBlocked: false, proctoringBlockedAt: null },
+      user: { ...user, isProctoringBlocked: false, proctoringBlockedAt: null, proctoringBlockTrack: "classic" },
     };
   }
 
-  // Still blocked within the 30-minute window
+  // Classic track still within the 30-minute window
   const remainingMs = Math.max(0, PROCTORING_BLOCK_DURATION_MS - elapsed);
   const remainingSeconds = Math.ceil(remainingMs / 1000);
   const remainingMinutes = Math.ceil(remainingMs / 60000);
@@ -138,6 +165,8 @@ async function evaluateAndAutoUnblockUser(userOrId) {
   return {
     isBlocked: true,
     autoUnblocked: false,
+    isSuperDream: false,
+    hasTimer: true,
     remainingMs,
     remainingSeconds,
     remainingMinutes,
@@ -147,17 +176,22 @@ async function evaluateAndAutoUnblockUser(userOrId) {
 }
 
 /**
- * Blocks a student for proctoring violations and sets `proctoringBlockedAt = new Date()`.
+ * Blocks a student for proctoring violations.
  *
  * @param {string|object} userId
- * @returns {Promise<{ isBlocked: boolean, blockedAt: Date, remainingSeconds: number }>}
+ * @param {"classic"|"super_dream"} track
+ * @returns {Promise<{ isBlocked: boolean, isSuperDream: boolean, hasTimer: boolean, blockedAt: Date, remainingSeconds: number }>}
  */
-async function blockUserForProctoring(userId) {
+async function blockUserForProctoring(userId, track = "classic") {
   const blockedAt = new Date();
+  const normalizedTrack = track === "super_dream" ? "super_dream" : "classic";
+  const isSuperDream = normalizedTrack === "super_dream";
+
   await User.findByIdAndUpdate(userId, {
     $set: {
       isProctoringBlocked: true,
       proctoringBlockedAt: blockedAt,
+      proctoringBlockTrack: normalizedTrack,
     },
   });
 
@@ -165,10 +199,12 @@ async function blockUserForProctoring(userId) {
 
   return {
     isBlocked: true,
+    isSuperDream,
+    hasTimer: !isSuperDream,
     blockedAt,
-    remainingMs: PROCTORING_BLOCK_DURATION_MS,
-    remainingSeconds: Math.ceil(PROCTORING_BLOCK_DURATION_MS / 1000),
-    remainingMinutes: 30,
+    remainingMs: isSuperDream ? 0 : PROCTORING_BLOCK_DURATION_MS,
+    remainingSeconds: isSuperDream ? 0 : Math.ceil(PROCTORING_BLOCK_DURATION_MS / 1000),
+    remainingMinutes: isSuperDream ? 0 : 30,
   };
 }
 

@@ -2002,6 +2002,7 @@ const unblockStudentExamSession = asyncHandler(async (req, res) => {
 
   student.isProctoringBlocked = false;
   student.proctoringBlockedAt = null;
+  student.proctoringBlockTrack = "classic";
   await student.save();
   invalidateUserCache(studentId);
 
@@ -2262,17 +2263,17 @@ const rescheduleExam = asyncHandler(async (req, res) => {
     if (exam.targetAudience === "selected" && exam.assignedStudents && exam.assignedStudents.length > 0) {
       await User.updateMany(
         { _id: { $in: exam.assignedStudents } },
-        { $set: { isProctoringBlocked: false, proctoringBlockedAt: null } }
+        { $set: { isProctoringBlocked: false, proctoringBlockedAt: null, proctoringBlockTrack: "classic" } }
       );
     } else if (exam.targetAudience === "mentees") {
       await User.updateMany(
         { assignedMentor: req.user._id },
-        { $set: { isProctoringBlocked: false, proctoringBlockedAt: null } }
+        { $set: { isProctoringBlocked: false, proctoringBlockedAt: null, proctoringBlockTrack: "classic" } }
       );
     } else {
       await User.updateMany(
         { role: "student" },
-        { $set: { isProctoringBlocked: false, proctoringBlockedAt: null } }
+        { $set: { isProctoringBlocked: false, proctoringBlockedAt: null, proctoringBlockTrack: "classic" } }
       );
     }
   }

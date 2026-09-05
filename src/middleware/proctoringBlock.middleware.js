@@ -7,12 +7,9 @@ const { evaluateAndAutoUnblockUser } = require("../services/proctoringBlock.serv
  * have been flagged by the proctoring anti-cheat system (isProctoringBlocked = true).
  *
  * Rules:
- *   1. 30-Minute Classic Auto-Unblock: Evaluates whether 30 minutes have elapsed.
- *      If yes, automatically restores user access across DB and session cache.
- *   2. Mentor Override: Before 30 minutes, only the assigned mentor (or admin) can
- *      unblock the candidate via the admin/mentor portal.
- *   3. When blocked: returns HTTP 403 with `isProctoringBlocked: true`, exact
- *      `remainingSeconds`, `remainingMinutes`, and assigned mentor contact information.
+ *   1. Classic Track: Auto-unblocks in 30 minutes (timer comes only in classic).
+ *   2. Super Dream Track: NO auto-unblock timer. Only the mentor can unblock!
+ *   3. When blocked: returns HTTP 403 with track information and mentor details.
  */
 const checkProctoringBlock = async (req, res, next) => {
   try {
@@ -27,6 +24,7 @@ const checkProctoringBlock = async (req, res, next) => {
       if (req.user) {
         req.user.isProctoringBlocked = false;
         req.user.proctoringBlockedAt = null;
+        req.user.proctoringBlockTrack = "classic";
       }
       return next();
     }
@@ -48,9 +46,28 @@ const checkProctoringBlock = async (req, res, next) => {
       }
     }
 
+    // ── SUPER DREAM: NO AUTO-UNBLOCK TIMER; ONLY MENTOR UNBLOCKS ────────────
+    if (status.isSuperDream) {
+      return res.status(403).json({
+        success: false,
+        isProctoringBlocked: true,
+        isSuperDream: true,
+        hasTimer: false,
+        blockedAt: status.blockedAt,
+        mentor: {
+          name: mentorName,
+          email: mentorEmail,
+        },
+        message: `Your Super Dream assessment access is suspended due to academic integrity violations. In Super Dream, auto-unblock timers are disabled. Only ${mentorName} can unblock your access.`,
+      });
+    }
+
+    // ── CLASSIC TRACK: 30-MINUTE TIMER & CLASSIC AUTO-UNBLOCK ───────────────
     return res.status(403).json({
       success: false,
       isProctoringBlocked: true,
+      isSuperDream: false,
+      hasTimer: true,
       blockedAt: status.blockedAt,
       remainingMs: status.remainingMs,
       remainingSeconds: status.remainingSeconds,
