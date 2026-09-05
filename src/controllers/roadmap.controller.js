@@ -1,5 +1,6 @@
 const LearningRoadmap = require("../models/LearningRoadmap.model");
 const SkillGapAnalysis = require("../models/SkillGapAnalysis.model");
+const QuizAttempt = require("../models/QuizAttempt.model");
 const aiService = require("../services/ai.service");
 const notificationService = require("../services/notification.service");
 const activityLogService = require("../services/activityLog.service");
@@ -662,6 +663,23 @@ const updateSubTopicStatus = asyncHandler(async (req, res) => {
 
   if (!["not_started", "in_progress", "passed"].includes(status)) {
     throw ApiError.badRequest("Invalid status. Must be 'not_started', 'in_progress', or 'passed'");
+  }
+
+  if (status === "passed") {
+    // Milestones can only be marked as completed if the user has taken and passed the verification quiz
+    const passedAttempt = await QuizAttempt.findOne({
+      userId: req.user._id,
+      $or: [
+        { subTopicId: subTopicId },
+        { subTopicId: { $regex: new RegExp(`^${subTopicId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") } },
+      ],
+      passed: true,
+    });
+    if (!passedAttempt) {
+      throw ApiError.badRequest(
+        "Milestones can only be completed by taking and passing the verification quiz assessment."
+      );
+    }
   }
 
   const roadmap = await LearningRoadmap.findById(id);

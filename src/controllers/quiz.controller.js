@@ -178,7 +178,10 @@ const generateQuiz = asyncHandler(async (req, res) => {
 
   if (isValidObjectId) {
     roadmap = await LearningRoadmap.findOne({
-      "milestones._id": roadmapItemId,
+      $or: [
+        { _id: roadmapItemId },
+        { "milestones._id": roadmapItemId },
+      ],
       user: req.user._id,
     });
   }
@@ -198,7 +201,10 @@ const generateQuiz = asyncHandler(async (req, res) => {
       throw ApiError.badRequest("Roadmap has no milestones");
     }
     milestone = roadmap.milestones.find(
-      (m) => m._id?.toString() === roadmapItemId || m.subTopicId === roadmapItemId
+      (m) =>
+        (reqSubTopicName && (m.subTopicId === reqSubTopicName || m._id?.toString() === reqSubTopicName)) ||
+        m._id?.toString() === roadmapItemId ||
+        m.subTopicId === roadmapItemId
     );
     if (!milestone) {
       milestone = roadmap.milestones[0];
