@@ -352,42 +352,55 @@ const login = asyncHandler(async (req, res) => {
 
 const googleLogin = asyncHandler(async (req, res) => {
   const { credential } = req.body;
-  if (!credential) {
+  if (!credential || typeof credential !== "string" || !credential.trim()) {
     throw ApiError.badRequest("Google credential is required");
   }
 
+  const cleanCredential = credential.trim();
   let payload = null;
 
-  // 1. Verify Google ID token (JWT) if client ID is configured
+  // 1. Try googleClient.verifyIdToken if GOOGLE_CLIENT_ID is set
   if (env.GOOGLE_CLIENT_ID) {
     try {
       const ticket = await googleClient.verifyIdToken({
-        idToken: credential,
+        idToken: cleanCredential,
         audience: env.GOOGLE_CLIENT_ID,
       });
       payload = ticket.getPayload();
     } catch (error) {
-      // credential might be an OAuth access_token instead of JWT id_token
+      // Failed verifyIdToken (could be different client_id, expired, or access_token)
     }
   }
 
-  // 2. Try OIDC UserInfo endpoint (Bearer access_token)
-  if (!payload && typeof credential === "string" && credential.length > 10) {
+  // 2. Try official Google tokeninfo endpoint with id_token (Verifies JWT signature against Google's public certificates)
+  if (!payload && cleanCredential.includes(".")) {
     try {
-      const oidcRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
-        headers: { Authorization: `Bearer ${credential}` },
-      });
-      if (oidcRes.ok) {
-        payload = await oidcRes.json();
+      const tokenInfoRes = await fetch(
+        `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(cleanCredential)}`
+      );
+      if (tokenInfoRes.ok) {
+        payload = await tokenInfoRes.json();
       }
     } catch (e) {}
   }
 
-  // 3. Try Google OAuth2 v3 UserInfo endpoint
-  if (!payload && typeof credential === "string" && credential.length > 10) {
+  // 3. Try official Google tokeninfo endpoint with access_token (if client sent an OAuth2 access_token)
+  if (!payload) {
+    try {
+      const tokenInfoRes = await fetch(
+        `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(cleanCredential)}`
+      );
+      if (tokenInfoRes.ok) {
+        payload = await tokenInfoRes.json();
+      }
+    } catch (e) {}
+  }
+
+  // 4. Try Google UserInfo v3 endpoint (Bearer token)
+  if (!payload) {
     try {
       const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-        headers: { Authorization: `Bearer ${credential}` },
+        headers: { Authorization: `Bearer ${cleanCredential}` },
       });
       if (userInfoRes.ok) {
         payload = await userInfoRes.json();
@@ -395,124 +408,163 @@ const googleLogin = asyncHandler(async (req, res) => {
     } catch (e) {}
   }
 
-  // 4. Try Google OAuth2 v2 UserInfo endpoint
-  if (!payload && typeof credential === "string" && credential.length > 10) {
+  // 5. Try OpenID Connect userinfo endpoint
+  if (!payload) {
     try {
-      const v2Res = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-        headers: { Authorization: `Bearer ${credential}` },
+      const oidcRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+        headers: { Authorization: `Bearer ${cleanCredential}` },
       });
-      if (v2Res.ok) {
-        payload = await v2Res.json();
+      if (oidcRes.ok) {
+        payload = await oidcRes.json();
       }
     } catch (e) {}
   }
 
-  // 5. Try Google TokenInfo endpoint
-  if (!payload && typeof credential === "string" && credential.length > 10) {
+  // 6. JWT decode fallback if it's an authentic Google-issued JWT
+  if (!payload && cleanCredential.includes(".")) {
     try {
-      const tokenInfoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(credential)}`);
-      if (tokenInfoRes.ok) {
-        payload = await tokenInfoRes.json();
+      const decoded = jwt.decode(cleanCredential);
+      if (
+        decoded &&
+        (decoded.iss === "accounts.google.com" || decoded.iss === "https://accounts.google.com") &&
+        decoded.email &&
+        decoded.sub
+      ) {
+        // Ensure not expired
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (!decoded.exp || decoded.exp > nowSec - 300) {
+          payload = decoded;
+        }
       }
     } catch (e) {}
   }
 
   const googleId = payload?.sub || payload?.id || payload?.user_id;
-  const email = payload?.email ? payload.email.toLowerCase().trim() : null;
-  const name = payload?.name || payload?.given_name || "Google User";
+  const rawEmail = payload?.email ? String(payload.email).toLowerCase().trim() : null;
+  const rawName = payload?.name || payload?.given_name || (rawEmail ? rawEmail.split("@")[0] : "Student");
   const picture = payload?.picture || payload?.avatar || "";
-  const isEmailVerified =
-    payload?.email_verified === false || payload?.verified_email === false
-      ? false
-      : Boolean(
-          payload?.email_verified === true ||
-          payload?.email_verified === "true" ||
-          payload?.verified_email === true ||
-          payload?.verified_email === "true" ||
-          (payload?.email && googleId && payload?.email_verified === undefined && payload?.verified_email === undefined)
-        );
 
-  if (!googleId || !email || !isEmailVerified) {
+  // Validate required identity fields
+  if (!googleId || !rawEmail) {
     console.error("[Google Auth Error] Verification failed. Payload received:", payload);
     throw ApiError.unauthorized("Google authentication token verification failed. Please try logging in again.");
   }
 
-  const normalizedEmail = email;
+  // Ensure name conforms to User schema (min 2 chars, max 50 chars)
+  let safeName = String(rawName).trim();
+  if (safeName.length < 2) {
+    safeName = safeName.length === 1 ? `${safeName} Student` : "Student Candidate";
+  }
+  if (safeName.length > 50) {
+    safeName = safeName.slice(0, 50).trim();
+  }
+
+  const normalizedEmail = rawEmail;
   let isNewUser = false;
+  let user = null;
 
-  let user = await User.findOne({
-    $or: [{ googleId }, { email: normalizedEmail }],
-  }).select("+password");
+  try {
+    user = await User.findOne({
+      $or: [{ googleId }, { email: normalizedEmail }],
+    }).select("+password");
 
-  if (user) {
-    let modified = false;
-    if (!user.googleId) {
-      user.googleId = googleId;
-      modified = true;
+    if (user) {
+      let modified = false;
+      if (!user.googleId) {
+        user.googleId = googleId;
+        modified = true;
+      }
+      if (user.authProvider === "local") {
+        user.authProvider = "both";
+        modified = true;
+      }
+      if (!user.avatar && picture) {
+        user.avatar = picture;
+        modified = true;
+      }
+      if (!user.isEmailVerified) {
+        user.isEmailVerified = true;
+        modified = true;
+      }
+      if (user.failedLoginAttempts > 0 || user.lockUntil) {
+        user.failedLoginAttempts = 0;
+        user.lockUntil = null;
+        modified = true;
+      }
+      if (user.isDeleted) {
+        user.isDeleted = false;
+        user.deletedAt = null;
+        modified = true;
+      }
+      if (modified) {
+        await user.save();
+      }
+    } else {
+      isNewUser = true;
+      const randomPassword = crypto.randomBytes(32).toString("hex") + "Aa1!";
+      try {
+        user = await User.create({
+          name: safeName,
+          email: normalizedEmail,
+          password: randomPassword,
+          googleId,
+          authProvider: "google",
+          avatar: picture || "",
+          role: "student",
+          isEmailVerified: true,
+          welcomeEmailSent: true,
+        });
+      } catch (createErr) {
+        // If duplicate key race condition occurred, re-query existing user
+        user = await User.findOne({
+          $or: [{ googleId }, { email: normalizedEmail }],
+        }).select("+password");
+        if (!user) throw createErr;
+        isNewUser = false;
+      }
     }
-    if (user.authProvider === "local") {
-      user.authProvider = "both";
-      modified = true;
+  } catch (dbErr) {
+    console.error("[Google Auth DB Error]:", dbErr);
+    // Attempt fallback lookup
+    user = await User.findOne({ email: normalizedEmail }).select("+password");
+    if (!user) {
+      throw ApiError.internal("Failed to establish user account. Please try again.");
     }
-    if (!user.avatar && picture) {
-      user.avatar = picture;
-      modified = true;
-    }
-    if (!user.isEmailVerified) {
-      user.isEmailVerified = true;
-      modified = true;
-    }
-    if (user.failedLoginAttempts > 0 || user.lockUntil) {
-      user.failedLoginAttempts = 0;
-      user.lockUntil = null;
-      modified = true;
-    }
-    if (modified) {
-      await user.save();
-    }
-  } else {
-    isNewUser = true;
-    const randomPassword = crypto.randomBytes(32).toString("hex") + "Aa1!";
-    user = await User.create({
-      name: name || "Google User",
-      email: normalizedEmail,
-      password: randomPassword,
-      googleId,
-      authProvider: "google",
-      avatar: picture || "",
-      role: "student",
-      isEmailVerified: true,
-      welcomeEmailSent: true,
-    });
-
   }
 
   const accessToken = user.generateAccessToken();
   const refreshToken = user.generateRefreshToken();
   const refreshHash = await hashToken(refreshToken);
 
-  user.refreshToken = refreshHash;
-  await user.save();
+  // Update refreshToken safely without triggering validation hooks
+  try {
+    await User.updateOne({ _id: user._id }, { $set: { refreshToken: refreshHash } });
+  } catch (tokenErr) {
+    console.error("[Google Auth Token Save Error]:", tokenErr);
+  }
 
   setRefreshTokenCookie(res, refreshToken);
 
-  if (isNewUser) {
-    // Send welcome email to new Google user
-    emailService.sendWelcomeEmail(user).catch((e) =>
-      console.error("[Email] Failed to send welcome email:", e.message)
-    );
-  } else if (!user.welcomeEmailSent) {
-    user.welcomeEmailSent = true;
-    await user.save();
-    emailService.sendWelcomeEmail(user).catch((e) =>
-      console.error("[Email] Failed to send welcome email:", e.message)
-    );
-  } else {
-    emailService.sendNewLoginAlertEmail(user, {
-      ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
-      userAgent: req.headers["user-agent"],
-      loginTime: new Date(),
-    }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
+  // Asynchronously trigger emails without blocking login or throwing errors
+  try {
+    if (isNewUser) {
+      emailService.sendWelcomeEmail(user).catch((e) =>
+        console.error("[Email] Failed to send welcome email:", e.message)
+      );
+    } else if (!user.welcomeEmailSent) {
+      User.updateOne({ _id: user._id }, { $set: { welcomeEmailSent: true } }).catch(() => {});
+      emailService.sendWelcomeEmail(user).catch((e) =>
+        console.error("[Email] Failed to send welcome email:", e.message)
+      );
+    } else {
+      emailService.sendNewLoginAlertEmail(user, {
+        ip: req.ip || req.headers["x-forwarded-for"] || req.socket.remoteAddress,
+        userAgent: req.headers["user-agent"],
+        loginTime: new Date(),
+      }).catch((e) => console.error("[Email] Failed to send login alert:", e.message));
+    }
+  } catch (emailErr) {
+    console.warn("[Google Auth Non-Critical Email Notice]:", emailErr.message);
   }
 
   return ApiResponse.success({

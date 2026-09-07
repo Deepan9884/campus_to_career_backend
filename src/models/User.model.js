@@ -159,18 +159,22 @@ const userSchema = new mongoose.Schema(
 
 // Store original role value before any modifications (MUST RUN FIRST)
 userSchema.pre("save", async function(next) {
-  if (!this.isNew && this.isModified("role")) {
-    // Store original value using $locals before any changes
-    if (!this.$locals.wasRole) {
-      // Retrieve the original document from database
-      const User = mongoose.model("User");
-      const original = await User.findById(this._id).select('role').lean();
-      if (original) {
-        this.$locals.wasRole = original.role;
+  try {
+    if (!this.isNew && this.isModified("role")) {
+      this.$locals = this.$locals || {};
+      if (!this.$locals.wasRole) {
+        // Retrieve the original document from database
+        const User = mongoose.model("User");
+        const original = await User.findById(this._id).select('role').lean();
+        if (original) {
+          this.$locals.wasRole = original.role;
+        }
       }
     }
+    next();
+  } catch (err) {
+    next();
   }
-  next();
 });
 
 // Pre-save hook: Encrypt PII fields before saving
@@ -228,7 +232,7 @@ userSchema.pre("save", async function (next) {
     const User = mongoose.model("User");
     
     // Get original role
-    const originalRole = this.$locals.wasRole;
+    const originalRole = this.$locals?.wasRole;
     
     // If demoting from mentor to student, reassign mentees
     if (originalRole === "mentor" && this.role === "student") {
