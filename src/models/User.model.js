@@ -359,4 +359,8 @@ userSchema.statics.findByEmail = function (email) {
   return this.findOne({ email: email.toLowerCase().trim() });
 };
 
+userSchema.index({ role: 1, createdAt: -1 });
+userSchema.index({ assignedMentor: 1, role: 1 });
+userSchema.index({ mentees: 1 });
+
 module.exports = mongoose.model("User", userSchema);

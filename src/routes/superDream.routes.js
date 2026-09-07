@@ -1,6 +1,7 @@
 const { Router } = require("express");
 const verifyJWT = require("../middleware/auth.middleware");
 const verifyRole = require("../middleware/role.middleware");
+const { cacheMiddleware, invalidateCache } = require("../middleware/cache.middleware");
 const {
   getMySuperDreamState,
   syncMySuperDreamState,
@@ -20,17 +21,60 @@ const router = Router();
 router.use(verifyJWT);
 
 // Student routes
-router.get("/my-state", getMySuperDreamState);
-router.put("/sync", syncMySuperDreamState);
-router.post("/movement", logSuperDreamMovement);
-router.delete("/reset", resetMySuperDreamState);
+router.get("/my-state", cacheMiddleware({ ttl: 60, prefix: "super-dream:my-state" }), getMySuperDreamState);
+router.put(
+  "/sync",
+  invalidateCache({ patterns: ["super-dream:my-state:*", "super-dream:cohort:*", "super-dream:student:*"] }),
+  syncMySuperDreamState
+);
+router.post(
+  "/movement",
+  invalidateCache({ patterns: ["super-dream:my-state:*", "super-dream:cohort:*", "super-dream:student:*"] }),
+  logSuperDreamMovement
+);
+router.delete(
+  "/reset",
+  invalidateCache({ patterns: ["super-dream:my-state:*", "super-dream:cohort:*", "super-dream:student:*"] }),
+  resetMySuperDreamState
+);
 
 // Mentor / Admin protected routes
-router.get("/cohort", verifyRole(["admin", "mentor"]), getAdminSuperDreamCohort);
-router.post("/assign-mentee", verifyRole(["admin", "mentor"]), assignSuperDreamMentee);
-router.post("/unassign-mentee", verifyRole(["admin", "mentor"]), unassignSuperDreamMentee);
-router.get("/student/:studentId", verifyRole(["admin", "mentor"]), getAdminStudentSuperDream);
-router.post("/student/:studentId/verify", verifyRole(["admin", "mentor"]), mentorVerifyDeliverable);
-router.post("/student/:studentId/signoff", verifyRole(["admin", "mentor"]), mentorSignoffEvaluation);
+router.get(
+  "/cohort",
+  verifyRole(["admin", "mentor"]),
+  cacheMiddleware({ ttl: 60, prefix: "super-dream:cohort" }),
+  getAdminSuperDreamCohort
+);
+router.post(
+  "/assign-mentee",
+  verifyRole(["admin", "mentor"]),
+  invalidateCache({ patterns: ["super-dream:cohort:*", "admin:students:*", "admin:analytics:*"] }),
+  assignSuperDreamMentee
+);
+router.post(
+  "/unassign-mentee",
+  verifyRole(["admin", "mentor"]),
+  invalidateCache({ patterns: ["super-dream:cohort:*", "admin:students:*", "admin:analytics:*"] }),
+  unassignSuperDreamMentee
+);
+router.get(
+  "/student/:studentId",
+  verifyRole(["admin", "mentor"]),
+  cacheMiddleware({ ttl: 60, prefix: "super-dream:student" }),
+  getAdminStudentSuperDream
+);
+router.post(
+  "/student/:studentId/verify",
+  verifyRole(["admin", "mentor"]),
+  invalidateCache({ patterns: ["super-dream:student:*", "super-dream:cohort:*", "super-dream:my-state:*"] }),
+  mentorVerifyDeliverable
+);
+router.post(
+  "/student/:studentId/signoff",
+  verifyRole(["admin", "mentor"]),
+  invalidateCache({ patterns: ["super-dream:student:*", "super-dream:cohort:*", "super-dream:my-state:*"] }),
+  mentorSignoffEvaluation
+);
 
 module.exports = router;
+

@@ -27,76 +27,168 @@ function escapeRegex(str) {
 }
 
 /**
- * Helper to compute computed telemetry and readiness scores for a student.
+ * High-performance batched metrics calculator.
+ * Fetches all student telemetries in 6 bulk queries instead of 6*N individual queries.
  */
-async function calculateStudentMetrics(u, menteeSet, mentorId) {
+async function calculateCohortMetricsBatch(users, menteeSet, mentorId) {
+  if (!users || users.length === 0) return [];
+
+  const userIds = users.map((u) => u._id);
+  const mentorIdStr = mentorId ? mentorId.toString() : "";
+
   const [
-    latestResume,
-    completedInterviews,
+    resumes,
+    interviews,
     codingProfiles,
-    repoCount,
+    repoCounts,
     events,
-    latestGap,
+    gapAnalyses,
   ] = await Promise.all([
-    Resume.findOne({ user: u._id, status: "completed" }).select("atsScore").sort({ createdAt: -1 }).lean(),
-    InterviewSession.find({ user: u._id, status: "completed" }).select("overallScore").lean(),
-    CodingProfile.find({ userId: u._id }).select("platform cachedStats username").lean(),
-    RepoAnalysis.countDocuments({ user: u._id, status: "completed" }),
-    Event.find({ user: u._id }).select("verificationResult result").lean(),
-    SkillGapAnalysis.findOne({ user: u._id, status: "completed" }).select("matchPercentage").sort({ createdAt: -1 }).lean(),
+    Resume.find({ user: { $in: userIds }, status: "completed" })
+      .select("user atsScore createdAt")
+      .sort({ createdAt: -1 })
+      .lean(),
+    InterviewSession.find({ user: { $in: userIds }, status: "completed" })
+      .select("user overallScore")
+      .lean(),
+    CodingProfile.find({ userId: { $in: userIds } })
+      .select("userId platform cachedStats username")
+      .lean(),
+    RepoAnalysis.aggregate([
+      { $match: { user: { $in: userIds }, status: "completed" } },
+      { $group: { _id: "$user", count: { $sum: 1 } } },
+    ]),
+    Event.find({ user: { $in: userIds } })
+      .select("user verificationResult result")
+      .lean(),
+    SkillGapAnalysis.find({ user: { $in: userIds }, status: "completed" })
+      .select("user matchPercentage createdAt")
+      .sort({ createdAt: -1 })
+      .lean(),
   ]);
 
-  const resumeScore = latestResume?.atsScore || 0;
-  const avgInterviewScore = completedInterviews.length > 0
-    ? Math.round(completedInterviews.reduce((acc, i) => acc + (i.overallScore || 0), 0) / completedInterviews.length)
-    : 0;
-
-  let totalProblemsSolved = 0;
-  codingProfiles.forEach((cp) => {
-    const stats = cp.cachedStats || {};
-    totalProblemsSolved += Number(stats.totalSolved || stats.solved || stats.problemsSolved || 0);
+  // Index by user ID string
+  const latestResumeMap = new Map();
+  resumes.forEach((r) => {
+    const uid = r.user?.toString();
+    if (uid && !latestResumeMap.has(uid)) {
+      latestResumeMap.set(uid, r);
+    }
   });
 
-  const verifiedEventsCount = events.filter(
-    (e) => e.verificationResult?.isVerified || e.result === "winner" || e.result === "runner-up" || e.result === "finalist"
-  ).length;
+  const interviewsMap = new Map();
+  interviews.forEach((i) => {
+    const uid = i.user?.toString();
+    if (uid) {
+      if (!interviewsMap.has(uid)) interviewsMap.set(uid, []);
+      interviewsMap.get(uid).push(i);
+    }
+  });
 
-  const skillGapMatchPct = latestGap?.matchPercentage || 0;
-  const codingScore = Math.min(100, Math.round(totalProblemsSolved * 1.0 + repoCount * 10));
-  const eventScore = Math.min(100, Math.round(verifiedEventsCount * 30 + events.length * 10));
+  const codingMap = new Map();
+  codingProfiles.forEach((cp) => {
+    const uid = cp.userId?.toString();
+    if (uid) {
+      if (!codingMap.has(uid)) codingMap.set(uid, []);
+      codingMap.get(uid).push(cp);
+    }
+  });
 
-  const overallReadiness = Math.round(
-    skillGapMatchPct * 0.30 +
-    resumeScore * 0.20 +
-    avgInterviewScore * 0.20 +
-    codingScore * 0.15 +
-    eventScore * 0.15
-  );
+  const repoCountMap = new Map();
+  repoCounts.forEach((rc) => {
+    if (rc._id) {
+      repoCountMap.set(rc._id.toString(), rc.count || 0);
+    }
+  });
 
-  let status = "On Track";
-  if (overallReadiness < 40) status = "At Risk";
-  else if (overallReadiness >= 75) status = "Top Performer";
+  const eventsMap = new Map();
+  events.forEach((e) => {
+    const uid = e.user?.toString();
+    if (uid) {
+      if (!eventsMap.has(uid)) eventsMap.set(uid, []);
+      eventsMap.get(uid).push(e);
+    }
+  });
 
-  return {
-    _id: u._id,
-    name: u.name,
-    email: u.email,
-    avatar: u.avatar || "",
-    targetRole: u.targetRole || u.profile?.targetRole || "Software Engineer",
-    githubUsername: u.githubUsername || u.profile?.githubUsername || "",
-    overallReadiness,
-    resumeScore,
-    avgInterviewScore,
-    totalProblemsSolved,
-    repoCount,
-    verifiedEventsCount,
-    linkedPlatformsCount: codingProfiles.length,
-    status,
-    isMyMentee: menteeSet.has(u._id.toString()) || u.assignedMentor?.toString() === mentorId.toString(),
-    isProctoringBlocked: Boolean(u.isProctoringBlocked),
-    proctoringBlockedAt: u.proctoringBlockedAt || null,
-    lastActive: u.updatedAt || u.createdAt,
-  };
+  const latestGapMap = new Map();
+  gapAnalyses.forEach((g) => {
+    const uid = g.user?.toString();
+    if (uid && !latestGapMap.has(uid)) {
+      latestGapMap.set(uid, g);
+    }
+  });
+
+  return users.map((u) => {
+    const uid = u._id.toString();
+    const latestResume = latestResumeMap.get(uid);
+    const completedInterviews = interviewsMap.get(uid) || [];
+    const profiles = codingMap.get(uid) || [];
+    const repoCount = repoCountMap.get(uid) || 0;
+    const userEvents = eventsMap.get(uid) || [];
+    const latestGap = latestGapMap.get(uid);
+
+    const resumeScore = latestResume?.atsScore || 0;
+    const avgInterviewScore = completedInterviews.length > 0
+      ? Math.round(completedInterviews.reduce((acc, i) => acc + (i.overallScore || 0), 0) / completedInterviews.length)
+      : 0;
+
+    let totalProblemsSolved = 0;
+    profiles.forEach((cp) => {
+      const stats = cp.cachedStats || {};
+      totalProblemsSolved += Number(stats.totalSolved || stats.solved || stats.problemsSolved || 0);
+    });
+
+    const verifiedEventsCount = userEvents.filter(
+      (e) => e.verificationResult?.isVerified || e.result === "winner" || e.result === "runner-up" || e.result === "finalist"
+    ).length;
+
+    const skillGapMatchPct = latestGap?.matchPercentage || 0;
+    const codingScore = Math.min(100, Math.round(totalProblemsSolved * 1.0 + repoCount * 10));
+    const eventScore = Math.min(100, Math.round(verifiedEventsCount * 30 + userEvents.length * 10));
+
+    const overallReadiness = Math.round(
+      skillGapMatchPct * 0.30 +
+      resumeScore * 0.20 +
+      avgInterviewScore * 0.20 +
+      codingScore * 0.15 +
+      eventScore * 0.15
+    );
+
+    let status = "On Track";
+    if (overallReadiness < 40) status = "At Risk";
+    else if (overallReadiness >= 75) status = "Top Performer";
+
+    const isMyMentee = menteeSet.has(uid) || (u.assignedMentor && u.assignedMentor.toString() === mentorIdStr);
+
+    return {
+      _id: u._id,
+      name: u.name,
+      email: u.email,
+      avatar: u.avatar || "",
+      targetRole: u.targetRole || u.profile?.targetRole || "Software Engineer",
+      githubUsername: u.githubUsername || u.profile?.githubUsername || "",
+      overallReadiness,
+      resumeScore,
+      avgInterviewScore,
+      totalProblemsSolved,
+      repoCount,
+      verifiedEventsCount,
+      linkedPlatformsCount: profiles.length,
+      status,
+      isMyMentee: Boolean(isMyMentee),
+      isProctoringBlocked: Boolean(u.isProctoringBlocked),
+      proctoringBlockedAt: u.proctoringBlockedAt || null,
+      lastActive: u.updatedAt || u.createdAt,
+    };
+  });
+}
+
+/**
+ * Single-student compatibility wrapper around batch calculator.
+ */
+async function calculateStudentMetrics(u, menteeSet, mentorId) {
+  const [res] = await calculateCohortMetricsBatch([u], menteeSet, mentorId);
+  return res;
 }
 
 /**
@@ -161,9 +253,7 @@ const getStudentsList = asyncHandler(async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    const studentsWithMetrics = await Promise.all(
-      allCandidates.map((u) => calculateStudentMetrics(u, menteeSet, req.user._id))
-    );
+    const studentsWithMetrics = await calculateCohortMetricsBatch(allCandidates, menteeSet, req.user._id);
 
     const matchingStudents = studentsWithMetrics.filter((st) => {
       if (filter === "at-risk") return st.status === "At Risk" || st.overallReadiness < 40;
@@ -192,9 +282,7 @@ const getStudentsList = asyncHandler(async (req, res) => {
       .limit(limit)
       .lean();
 
-    const studentsWithMetrics = await Promise.all(
-      users.map((u) => calculateStudentMetrics(u, menteeSet, req.user._id))
-    );
+    const studentsWithMetrics = await calculateCohortMetricsBatch(users, menteeSet, req.user._id);
 
     return ApiResponse.success({
       students: studentsWithMetrics,
@@ -370,16 +458,18 @@ const getCohortAnalytics = asyncHandler(async (req, res) => {
         $or: assignedOr,
       };
 
-  const users = await User.find(menteeFilter).select("_id").lean();
+  const users = await User.find(menteeFilter).select("_id name email avatar targetRole profile githubUsername createdAt updatedAt role assignedMentor").lean();
   const userIds = users.map((u) => u._id);
   const totalStudents = userIds.length;
+  const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
 
-  const [resumes, interviews, codingProfiles, events, gapAnalyses] = await Promise.all([
+  const [resumes, interviews, codingProfiles, events, gapAnalyses, userMetrics] = await Promise.all([
     Resume.find({ user: { $in: userIds }, status: "completed" }).select("atsScore user").lean(),
     InterviewSession.find({ user: { $in: userIds }, status: "completed" }).select("overallScore targetRole user").lean(),
     CodingProfile.find({ userId: { $in: userIds } }).select("platform cachedStats userId").lean(),
     Event.find({ user: { $in: userIds } }).select("verificationResult user").lean(),
-    SkillGapAnalysis.find({ user: { $in: userIds }, status: "completed" }).select("matchPercentage targetRole user").lean(),
+    SkillGapAnalysis.find({ user: { $in: userIds }, status: "completed" }).select("matchPercentage targetRole gaps user").lean(),
+    calculateCohortMetricsBatch(users, menteeSet, req.user._id),
   ]);
 
   const avgResumeScore = resumes.length > 0
@@ -398,61 +488,27 @@ const getCohortAnalytics = asyncHandler(async (req, res) => {
 
   const verifiedProofsCount = events.filter((e) => e.verificationResult?.isVerified).length;
 
-  // Compute placement readiness funnel distribution across assigned mentees
+  // Compute placement readiness funnel distribution across assigned mentees in-memory
   let placementReadyCount = 0;
   let developingCount = 0;
   let interventionCount = 0;
+
+  userMetrics.forEach((st) => {
+    if (st.overallReadiness >= 75) placementReadyCount++;
+    else if (st.overallReadiness >= 45) developingCount++;
+    else interventionCount++;
+  });
+
   const missingSkillMap = {};
-
-  await Promise.all(
-    users.map(async (u) => {
-      const [latestResume, completedInts, codingProfs, repoCount, evts, latestGap] = await Promise.all([
-        Resume.findOne({ user: u._id, status: "completed" }).select("atsScore").sort({ createdAt: -1 }).lean(),
-        InterviewSession.find({ user: u._id, status: "completed" }).select("overallScore").lean(),
-        CodingProfile.find({ userId: u._id }).select("cachedStats").lean(),
-        RepoAnalysis.countDocuments({ user: u._id, status: "completed" }),
-        Event.find({ user: u._id }).select("verificationResult result").lean(),
-        SkillGapAnalysis.findOne({ user: u._id, status: "completed" }).select("matchPercentage gaps").sort({ createdAt: -1 }).lean(),
-      ]);
-
-      const resumeScore = latestResume?.atsScore || 0;
-      const avgInterview = completedInts.length > 0
-        ? Math.round(completedInts.reduce((a, b) => a + (b.overallScore || 0), 0) / completedInts.length)
-        : 0;
-
-      let solved = 0;
-      codingProfs.forEach((c) => {
-        const s = c.cachedStats || {};
-        solved += Number(s.totalSolved || s.solved || s.problemsSolved || 0);
+  gapAnalyses.forEach((g) => {
+    if (g.gaps && Array.isArray(g.gaps)) {
+      g.gaps.forEach((gap) => {
+        if (gap.skillName) {
+          missingSkillMap[gap.skillName] = (missingSkillMap[gap.skillName] || 0) + 1;
+        }
       });
-
-      const verEvts = evts.filter(
-        (e) => e.verificationResult?.isVerified || e.result === "winner" || e.result === "runner-up"
-      ).length;
-
-      const gapScore = latestGap?.matchPercentage || 0;
-      const readiness = Math.round(
-        gapScore * 0.30 +
-        resumeScore * 0.20 +
-        avgInterview * 0.20 +
-        Math.min(100, solved + repoCount * 10) * 0.15 +
-        Math.min(100, verEvts * 30 + evts.length * 10) * 0.15
-      );
-
-      if (readiness >= 75) placementReadyCount++;
-      else if (readiness >= 45) developingCount++;
-      else interventionCount++;
-
-      // Aggregate gaps for heatmap
-      if (latestGap?.gaps) {
-        latestGap.gaps.forEach((g) => {
-          if (g.skillName) {
-            missingSkillMap[g.skillName] = (missingSkillMap[g.skillName] || 0) + 1;
-          }
-        });
-      }
-    })
-  );
+    }
+  });
 
   // Distribution of Target Roles
   const roleCounts = {};
@@ -1405,9 +1461,7 @@ const exportStudentsCohortCsv = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .lean();
 
-  const studentsWithMetrics = await Promise.all(
-    students.map((u) => calculateStudentMetrics(u, menteeSet, req.user._id))
-  );
+  const studentsWithMetrics = await calculateCohortMetricsBatch(students, menteeSet, req.user._id);
 
   return ApiResponse.success({
     students: studentsWithMetrics,
