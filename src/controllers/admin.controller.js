@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const User = require("../models/User.model");
 const Resume = require("../models/Resume.model");
 const InterviewSession = require("../models/InterviewSession.model");

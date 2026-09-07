@@ -134,7 +134,7 @@ aiUsageLogSchema.statics.getTotalCostByUser = async function (userId, startDate,
   const result = await this.aggregate([
     {
       $match: {
-        userId: mongoose.Types.ObjectId(userId),
+        userId: mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId,
         createdAt: { $gte: startDate, $lte: endDate },
         success: true,
       },

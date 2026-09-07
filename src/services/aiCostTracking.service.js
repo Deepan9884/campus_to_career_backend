@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const AIUsageLog = require("../models/AIUsageLog.model");
 const { MODEL_COSTS } = require("../models/AIUsageLog.model");
 
@@ -76,7 +77,7 @@ async function getUserUsageSummary(userId, startDate, endDate) {
   const byFeature = await AIUsageLog.aggregate([
     {
       $match: {
-        userId: mongoose.Types.ObjectId(userId),
+        userId: mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId,
         createdAt: { $gte: startDate, $lte: endDate },
         success: true,
       },

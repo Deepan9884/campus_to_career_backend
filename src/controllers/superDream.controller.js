@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const SuperDream = require("../models/SuperDream.model");
 const User = require("../models/User.model");
 const CodingProfile = require("../models/CodingProfile.model");

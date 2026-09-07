@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const LearningRoadmap = require("../models/LearningRoadmap.model");
 const UserSkill = require("../models/UserSkill.model");
 const SkillGapAnalysis = require("../models/SkillGapAnalysis.model");
