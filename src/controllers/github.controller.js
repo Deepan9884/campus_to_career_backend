@@ -518,8 +518,27 @@ const generateLinkedInPost = asyncHandler(async (req, res) => {
   }
   if (!draft) {
     const title = mergedData.projectTitle || mergedData.eventName || mergedData.repoFullName || mergedData.title || "Engineering Project";
-    const tech = Array.isArray(mergedData.techStack) ? mergedData.techStack.join(", ") : mergedData.techStack || "Modern Tech Stack";
-    draft = `🚀 Excited to announce our latest milestone with **${title}**!\n\nEngineered with ${tech}, delivering high performance, reliability, and clean architecture.\n\n#SoftwareEngineering #TechInnovation #FullStack`;
+    const tech = Array.isArray(mergedData.techStack) ? mergedData.techStack.join(", ") : mergedData.techStack || "TypeScript, React, Node.js";
+    const overview = mergedData.overview || mergedData.description || "a robust full-stack architecture solving real-world engineering bottlenecks.";
+
+    draft = `🚀 Excited to share my latest engineering project: **${title}**!
+
+💡 **The Problem & Motivation**
+When building modern applications, reliability, performance, and clean modular code are non-negotiable. I developed ${title} to deliver ${overview}
+
+🛠️ **Core Tech Stack & Architecture**
+• Built using: ${tech}
+• Architected with scalable design patterns, defensive error handling, and optimized state management.
+• Focused on clean separation of concerns, testability, and enterprise-grade code maintainability.
+
+📈 **Key Engineering Wins & Impact**
+• Designed intuitive workflows reducing latency and optimizing responsiveness.
+• Thoroughly audited code quality, security posture, and production readiness.
+• Structured for continuous scalability and seamless developer onboarding.
+
+💬 Check out the project repository below and feel free to share your thoughts, feedback, or connect!
+
+#SoftwareEngineering #WebDevelopment #OpenSource #FullStack #TechInnovation #Coding #DeveloperJourney`;
   }
 
   // Safe fallback if variations missing in edge case
@@ -527,14 +546,28 @@ const generateLinkedInPost = asyncHandler(async (req, res) => {
     ? responseData.variations
     : [
         { style: "Storytelling & Journey", content: draft },
-        { style: "Deep Technical Breakdown", content: draft },
-        { style: "Executive Summary", content: draft },
+        {
+          style: "Deep Technical Breakdown",
+          content: `🛠️ **Deep Technical Breakdown: ${mergedData.projectTitle || mergedData.repoFullName || "Project Showcase"}**\n\n📌 **System Architecture & Stack**: ${Array.isArray(mergedData.techStack) ? mergedData.techStack.join(", ") : mergedData.techStack || "TypeScript, React, Node.js"}\n\n🔍 **Key Design Decisions**:\n1. **Modular Component Architecture**: Decoupled domain logic from view presentation for maximum maintainability.\n2. **State & Performance Optimization**: Streamlined state mutations, caching, and async lifecycle management.\n3. **Resilience & Error Handling**: Graceful degradation patterns and comprehensive boundary management.\n\n🚀 Explore the repository link below! What architectural patterns do you rely on in your stack?\n\n#SystemDesign #SoftwareArchitecture #FullStack #WebDevelopment #CleanCode`,
+        },
+        {
+          style: "Executive Summary",
+          content: `⚡ **Executive Summary: ${mergedData.projectTitle || mergedData.repoFullName || "Engineering Milestone"}**\n\n🎯 **Objective**: Deliver a production-ready, high-performance application addressing key technical workflows.\n\n📊 **Highlights & Capabilities**:\n• Tech Stack: ${Array.isArray(mergedData.techStack) ? mergedData.techStack.join(", ") : mergedData.techStack || "Modern Full-Stack"}\n• Performance: Optimized for sub-second responses and clean resource utilization.\n• Readiness: Audited against enterprise code quality and security standards.\n\n🔗 Full repository and code analysis linked below.\n\n#SoftwareEngineering #TechLeadership #Portfolio #ProductDelivery`,
+        },
       ];
 
-  const achievementParagraph = responseData.achievementParagraph || draft.slice(0, 300);
-  const suggestedHashtags = Array.isArray(responseData.suggestedHashtags) ? responseData.suggestedHashtags : [];
+  const achievementParagraph = responseData.achievementParagraph || `Successfully engineered and deployed ${mergedData.projectTitle || mergedData.repoFullName || "a full-stack software system"}, establishing robust software design patterns, resilient error handling, and high-performance execution. Demonstrated full-lifecycle software engineering capability from requirements definition to clean, maintainable architecture.`;
+  const suggestedHashtags = Array.isArray(responseData.suggestedHashtags) && responseData.suggestedHashtags.length > 0
+    ? responseData.suggestedHashtags
+    : ["#SoftwareEngineering", "#WebDevelopment", "#OpenSource", "#FullStack", "#React", "#TechInnovation"];
   const suggestedMentions = Array.isArray(responseData.suggestedMentions) ? responseData.suggestedMentions : [];
-  const keyTakeaways = Array.isArray(responseData.keyTakeaways) ? responseData.keyTakeaways : [];
+  const keyTakeaways = Array.isArray(responseData.keyTakeaways) && responseData.keyTakeaways.length > 0
+    ? responseData.keyTakeaways
+    : [
+        "Mastered end-to-end full stack architecture and modular component design",
+        "Optimized asynchronous state management and performance bottlenecks",
+        "Enforced rigorous code quality benchmarks and maintainability patterns"
+      ];
 
   // Log activity
   try {
