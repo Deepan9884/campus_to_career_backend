@@ -112,19 +112,10 @@ const getStudentsList = asyncHandler(async (req, res) => {
   const currentUser = await User.findById(req.user._id).select("mentees role").lean();
   const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
 
-  // Find all mentor and admin IDs to guarantee exclusion of faculty/admin staff accounts
-  const allMentorAccounts = await User.find({
-    $or: [
-      { role: { $in: ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD", "staff", "STAFF"] } },
-      { "mentees.0": { $exists: true } },
-    ],
-  }).select("_id").lean();
-  const allMentorIds = allMentorAccounts.map((m) => m._id);
-
-  const nonStudentRoles = ["admin", "mentor", "faculty", "hod", "ADMIN", "MENTOR", "FACULTY", "HOD", "staff", "STAFF"];
+  const nonStudentRoles = ["admin", "faculty", "hod", "ADMIN", "FACULTY", "HOD", "staff", "STAFF"];
 
   const baseConds = [
-    { _id: { $ne: req.user._id, $nin: allMentorIds } },
+    { _id: { $ne: req.user._id } },
     {
       $or: [
         { role: { $in: ["student", "STUDENT", "user", "candidate"] } },
@@ -550,71 +541,77 @@ const sendStudentFeedback = asyncHandler(async (req, res) => {
 
 /**
  * POST /api/admin/mentees
- * Mentor adds a mentee by email or student ID.
- * STRICT LOGIC: Mentors can ONLY add mentees who already have a registered account on the student side.
+ * Mentor adds a mentee by email, name, register number, or student ID.
  */
 const addMentee = asyncHandler(async (req, res) => {
-  const { studentEmail, studentId, email } = req.body;
-  const input = (studentEmail || email || studentId || "").trim();
+  const { studentEmail, studentId, email, name, query } = req.body;
+  const input = (studentEmail || email || studentId || name || query || "").trim();
 
   if (!input) {
-    throw ApiError.badRequest("Student email or ID is required");
+    throw ApiError.badRequest("Student email, name, or ID is required");
   }
 
-  // Check max mentee limit for the mentor
-  const MAX_MENTEES_PER_MENTOR = 25;
   const mentor = await User.findById(req.user._id);
   if (!mentor) {
     throw ApiError.notFound("Mentor account not found");
   }
-  
-  if (mentor.mentees && mentor.mentees.length >= MAX_MENTEES_PER_MENTOR) {
-    throw ApiError.badRequest(`Maximum mentee limit reached (${MAX_MENTEES_PER_MENTOR}). Please contact administration if you need to manage more students.`);
-  }
 
-  let student;
-  if (input.includes("@")) {
-    student = await User.findOne({ email: input.toLowerCase() });
-  } else if (input.match(/^[0-9a-fA-F]{24}$/)) {
+  let student = null;
+  if (mongoose.Types.ObjectId.isValid(input)) {
     student = await User.findById(input);
-  } else {
-    student = await User.findOne({ email: input.toLowerCase() });
+  }
+  if (!student && input.includes("@")) {
+    student = await User.findOne({ email: new RegExp(`^${escapeRegex(input)}$`, "i") });
+  }
+  if (!student) {
+    student = await User.findOne({ email: new RegExp(`^${escapeRegex(input)}$`, "i") });
+  }
+  if (!student) {
+    student = await User.findOne({ name: new RegExp(`^${escapeRegex(input)}$`, "i") });
+  }
+  if (!student) {
+    student = await User.findOne({
+      $or: [
+        { "profile.registerNumber": new RegExp(`^${escapeRegex(input)}$`, "i") },
+        { registerNumber: new RegExp(`^${escapeRegex(input)}$`, "i") },
+        { githubUsername: new RegExp(`^${escapeRegex(input)}$`, "i") },
+        { "profile.githubUsername": new RegExp(`^${escapeRegex(input)}$`, "i") },
+        { name: new RegExp(escapeRegex(input), "i") },
+        { email: new RegExp(escapeRegex(input), "i") },
+      ],
+    });
   }
 
-  if (!student || student.role !== "student") {
-    throw ApiError.notFound("No registered student account found with this email/ID. Only registered students can be added as mentees.");
+  if (!student) {
+    throw ApiError.notFound(`No registered student account found matching "${input}". Please ensure the student has registered.`);
   }
 
   if (student._id.toString() === req.user._id.toString()) {
     throw ApiError.badRequest("You cannot add yourself as your own mentee. Please select a registered student account.");
   }
 
-  if (student.mentees && student.mentees.length > 0) {
-    throw ApiError.badRequest("Selected account is a faculty mentor with assigned mentees and cannot be added as a mentee.");
+  const nonStudentRoles = ["admin", "faculty", "hod", "ADMIN", "FACULTY", "HOD", "staff", "STAFF"];
+  if (student.role && nonStudentRoles.includes(student.role)) {
+    throw ApiError.badRequest("Selected account is an administrative/faculty account and cannot be added as a mentee.");
   }
 
-  const nameLower = (student.name || "").toLowerCase();
-  const targetLower = (student.targetRole || student.profile?.targetRole || "").toLowerCase();
-  if (
-    nameLower.startsWith("dr.") ||
-    nameLower.startsWith("prof.") ||
-    nameLower.includes("mentor") ||
-    nameLower.includes("faculty") ||
-    targetLower.includes("mentor") ||
-    targetLower.includes("faculty") ||
-    targetLower.includes("admin")
-  ) {
-    throw ApiError.badRequest("Selected account is a faculty/mentor account and cannot be added as a mentee.");
+  if (student.role === "mentor" && student._id.toString() !== req.user._id.toString() && student.mentees && student.mentees.length > 0) {
+    throw ApiError.badRequest("Selected account is another faculty mentor with active mentees.");
+  }
+
+  // Ensure role is normalized to student if not set
+  if (!student.role || student.role === "STUDENT" || student.role === "user" || student.role === "candidate") {
+    student.role = "student";
   }
 
   // Link student to mentor
-  const menteeIds = (mentor.mentees || []).map((id) => id.toString());
-  if (!menteeIds.includes(student._id.toString())) {
-    mentor.mentees.push(student._id);
-    await mentor.save();
-  }
+  await User.findByIdAndUpdate(mentor._id, {
+    $addToSet: { mentees: student._id },
+  });
 
   student.assignedMentor = mentor._id;
+  if (!student.profile) student.profile = {};
+  student.profile.facultyMentor = mentor.name || "Faculty Mentor";
   await student.save();
 
   // Send real-time notification to student
@@ -640,7 +637,7 @@ const addMentee = asyncHandler(async (req, res) => {
       name: student.name,
       email: student.email,
       avatar: student.avatar,
-      targetRole: student.targetRole,
+      targetRole: student.targetRole || student.profile?.targetRole || "Software Engineer",
       assignedMentor: student.assignedMentor,
     },
   }).send(res);
@@ -660,12 +657,13 @@ const removeMentee = asyncHandler(async (req, res) => {
     throw ApiError.forbidden("Access denied: This student is not in your mentees list");
   }
 
-  if (mentor && mentor.mentees) {
-    mentor.mentees = mentor.mentees.filter((id) => id.toString() !== studentId);
-    await mentor.save();
-  }
+  await User.findByIdAndUpdate(req.user._id, {
+    $pull: { mentees: new mongoose.Types.ObjectId(studentId) },
+  });
 
-  await User.findByIdAndUpdate(studentId, { assignedMentor: null });
+  await User.findByIdAndUpdate(studentId, {
+    $unset: { assignedMentor: 1 },
+  });
 
   return ApiResponse.success({
     message: "Mentee removed successfully",
@@ -678,10 +676,18 @@ const removeMentee = asyncHandler(async (req, res) => {
  */
 const getMyMentees = asyncHandler(async (req, res) => {
   const mentor = await User.findById(req.user._id).populate("mentees", "name email avatar targetRole githubUsername createdAt").lean();
-  const menteeList = mentor?.mentees || [];
+  const directMentees = await User.find({ assignedMentor: req.user._id }).select("name email avatar targetRole githubUsername createdAt").lean();
+
+  const menteeMap = new Map();
+  (mentor?.mentees || []).forEach((m) => {
+    if (m && m._id) menteeMap.set(m._id.toString(), m);
+  });
+  directMentees.forEach((m) => {
+    if (m && m._id) menteeMap.set(m._id.toString(), m);
+  });
 
   return ApiResponse.success({
-    mentees: menteeList,
+    mentees: Array.from(menteeMap.values()),
   }).send(res);
 });
 
@@ -699,13 +705,16 @@ const searchRegisteredStudents = asyncHandler(async (req, res) => {
   const menteeIds = new Set((mentor?.mentees || []).map((id) => id.toString()));
 
   const searchRegex = new RegExp(escapeRegex(queryStr), "i");
+  const nonStudentRoles = ["admin", "faculty", "hod", "ADMIN", "FACULTY", "HOD", "staff", "STAFF"];
+  
   const students = await User.find({
     _id: { $ne: req.user._id },
     $or: [
-      { role: "student" },
-      { role: { $nin: ["admin", "mentor", "ADMIN", "MENTOR"] } },
+      { role: { $in: ["student", "STUDENT", "user", "candidate"] } },
+      { role: { $nin: nonStudentRoles } },
       { role: { $exists: false } },
       { role: null },
+      { role: "" },
     ],
     $and: [
       {
@@ -716,12 +725,14 @@ const searchRegisteredStudents = asyncHandler(async (req, res) => {
           { "profile.targetRole": searchRegex },
           { githubUsername: searchRegex },
           { "profile.githubUsername": searchRegex },
+          { "profile.registerNumber": searchRegex },
+          { registerNumber: searchRegex },
         ],
       },
     ],
   })
     .select("name email avatar targetRole profile githubUsername createdAt assignedMentor")
-    .limit(20)
+    .limit(25)
     .lean();
 
   const formatted = students.map((s) => ({

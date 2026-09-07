@@ -45,6 +45,25 @@ const updateProfile = asyncHandler(async (req, res) => {
     return ApiResponse.success(req.user).send(res);
   }
 
+  // If facultyMentor is provided, attempt to auto-associate with matching mentor account
+  if (update["profile.facultyMentor"]) {
+    const mentorQuery = update["profile.facultyMentor"];
+    const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const matchingMentor = await User.findOne({
+      role: { $in: ["mentor", "admin"] },
+      $or: [
+        { email: new RegExp(`^${escapeRegex(mentorQuery)}$`, "i") },
+        { name: new RegExp(`^${escapeRegex(mentorQuery)}$`, "i") },
+      ],
+    });
+    if (matchingMentor && matchingMentor._id.toString() !== req.user._id.toString()) {
+      update["assignedMentor"] = matchingMentor._id;
+      await User.findByIdAndUpdate(matchingMentor._id, {
+        $addToSet: { mentees: req.user._id },
+      });
+    }
+  }
+
   const user = await User.findByIdAndUpdate(
     req.user._id,
     { $set: update },
