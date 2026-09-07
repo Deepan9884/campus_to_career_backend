@@ -55,6 +55,9 @@ const updateProfile = asyncHandler(async (req, res) => {
     throw ApiError.notFound("User not found");
   }
 
+  const { invalidateUserCache } = require("../middleware/auth.middleware");
+  invalidateUserCache(req.user._id);
+
   return ApiResponse.success(user).send(res);
 });
 

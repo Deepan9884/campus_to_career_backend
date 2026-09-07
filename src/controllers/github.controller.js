@@ -225,6 +225,10 @@ const connectGithub = asyncHandler(async (req, res) => {
     { new: true, runValidators: true },
   ).select("-password -refreshToken");
 
+  // Invalidate auth user cache immediately so subsequent calls immediately see the new username
+  const { invalidateUserCache } = require("../middleware/auth.middleware");
+  invalidateUserCache(req.user._id);
+
   return ApiResponse.success({
     user,
     github: {
@@ -239,15 +243,26 @@ const connectGithub = asyncHandler(async (req, res) => {
 });
 
 const listRepos = asyncHandler(async (req, res) => {
-  if (!req.user.githubUsername) {
+  let targetUsername = (req.query.username || "").trim();
+
+  if (!targetUsername) {
+    targetUsername = (req.user.githubUsername || req.user.profile?.githubUsername || "").trim();
+  }
+
+  if (!targetUsername) {
+    const freshUser = await User.findById(req.user._id).select("githubUsername profile.githubUsername").lean();
+    targetUsername = (freshUser?.githubUsername || freshUser?.profile?.githubUsername || "").trim();
+  }
+
+  if (!targetUsername) {
     throw ApiError.badRequest(
       "GitHub account not connected. Call POST /api/github/connect first.",
     );
   }
 
-  const repos = await githubService.listPublicRepos(req.user.githubUsername);
+  const repos = await githubService.listPublicRepos(targetUsername);
 
-  return ApiResponse.success({ repos }).send(res);
+  return ApiResponse.success({ repos, githubUsername: targetUsername }).send(res);
 });
 
 const analyzeRepo = asyncHandler(async (req, res) => {
@@ -259,16 +274,24 @@ const analyzeRepo = asyncHandler(async (req, res) => {
     );
   }
 
-  if (!req.user.githubUsername) {
+  const [owner, repo] = repoFullName.split("/");
+
+  // Determine active GitHub username with fresh DB fallback if cache is stale
+  let activeGithubUsername = (req.user.githubUsername || req.user.profile?.githubUsername || "").trim();
+  if (!activeGithubUsername || owner.toLowerCase() !== activeGithubUsername.toLowerCase()) {
+    const freshUser = await User.findById(req.user._id).select("githubUsername profile.githubUsername").lean();
+    activeGithubUsername = (freshUser?.githubUsername || freshUser?.profile?.githubUsername || "").trim();
+  }
+
+  if (!activeGithubUsername) {
     throw ApiError.badRequest(
       "GitHub account not connected. Call POST /api/github/connect first.",
     );
   }
 
-  const [owner, repo] = repoFullName.split("/");
-  if (owner.toLowerCase() !== req.user.githubUsername.toLowerCase()) {
+  if (owner.toLowerCase() !== activeGithubUsername.toLowerCase()) {
     throw ApiError.badRequest(
-      "You can only analyze repositories that belong to your connected GitHub account.",
+      `You can only analyze repositories that belong to your connected GitHub account (@${activeGithubUsername}).`,
     );
   }
 

@@ -854,6 +854,9 @@ const updateProfile = asyncHandler(async (req, res) => {
     throw ApiError.notFound("User not found");
   }
 
+  const { invalidateUserCache } = require("../middleware/auth.middleware");
+  invalidateUserCache(req.user._id);
+
   // Two-way synchronization: update SuperDream profile if record exists
   try {
     const sdUpdate = {};
