@@ -21,9 +21,24 @@ const notificationService = require("../services/notification.service");
 const emailService = require("../services/email.service");
 const { generateContent } = require("../services/ai.service");
 const { invalidateUserCache } = require("../middleware/auth.middleware");
+const { decrypt, isEncrypted } = require("../services/encryption.service");
 
 function escapeRegex(str) {
   return (str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function ensurePlainName(rawName, email) {
+  if (!rawName) return email ? email.split("@")[0] : "Student";
+  if (typeof rawName !== "string") return String(rawName);
+  if (isEncrypted(rawName)) {
+    try {
+      const dec = decrypt(rawName);
+      return isEncrypted(dec) ? (email ? email.split("@")[0] : "Student") : dec;
+    } catch {
+      return email ? email.split("@")[0] : "Student";
+    }
+  }
+  return rawName;
 }
 
 /**
@@ -36,57 +51,67 @@ async function calculateCohortMetricsBatch(users, menteeSet, mentorId) {
   const userIds = users.map((u) => u._id);
   const mentorIdStr = mentorId ? mentorId.toString() : "";
 
-  const [
-    resumes,
-    interviews,
-    codingProfiles,
-    repoCounts,
-    events,
-    gapAnalyses,
-  ] = await Promise.all([
-    Resume.find({ user: { $in: userIds }, status: "completed" })
-      .select("user atsScore createdAt")
-      .sort({ createdAt: -1 })
-      .lean(),
-    InterviewSession.find({ user: { $in: userIds }, status: "completed" })
-      .select("user overallScore")
-      .lean(),
-    CodingProfile.find({ userId: { $in: userIds } })
-      .select("userId platform cachedStats username")
-      .lean(),
-    RepoAnalysis.aggregate([
-      { $match: { user: { $in: userIds }, status: "completed" } },
-      { $group: { _id: "$user", count: { $sum: 1 } } },
-    ]),
-    Event.find({ user: { $in: userIds } })
-      .select("user verificationResult result")
-      .lean(),
-    SkillGapAnalysis.find({ user: { $in: userIds }, status: "completed" })
-      .select("user matchPercentage createdAt")
-      .sort({ createdAt: -1 })
-      .lean(),
-  ]);
+  let resumes = [];
+  let interviews = [];
+  let codingProfiles = [];
+  let repoAnalyses = [];
+  let events = [];
+  let gapAnalyses = [];
+
+  try {
+    [
+      resumes,
+      interviews,
+      codingProfiles,
+      repoAnalyses,
+      events,
+      gapAnalyses,
+    ] = await Promise.all([
+      Resume.find({ user: { $in: userIds } })
+        .select("user atsScore status createdAt")
+        .sort({ createdAt: -1 })
+        .lean(),
+      InterviewSession.find({ user: { $in: userIds } })
+        .select("user overallScore status")
+        .lean(),
+      CodingProfile.find({ userId: { $in: userIds } })
+        .select("userId platform cachedStats username")
+        .lean(),
+      RepoAnalysis.find({ user: { $in: userIds } })
+        .select("user status")
+        .lean(),
+      Event.find({ user: { $in: userIds } })
+        .select("user verificationResult result")
+        .lean(),
+      SkillGapAnalysis.find({ user: { $in: userIds } })
+        .select("user matchPercentage status createdAt")
+        .sort({ createdAt: -1 })
+        .lean(),
+    ]);
+  } catch (err) {
+    console.error("[calculateCohortMetricsBatch] Error fetching telemetry batches:", err);
+  }
 
   // Index by user ID string
   const latestResumeMap = new Map();
-  resumes.forEach((r) => {
+  (resumes || []).forEach((r) => {
     const uid = r.user?.toString();
-    if (uid && !latestResumeMap.has(uid)) {
+    if (uid && (!latestResumeMap.has(uid) || (r.atsScore && !latestResumeMap.get(uid)?.atsScore))) {
       latestResumeMap.set(uid, r);
     }
   });
 
   const interviewsMap = new Map();
-  interviews.forEach((i) => {
+  (interviews || []).forEach((i) => {
     const uid = i.user?.toString();
-    if (uid) {
+    if (uid && (i.status === "completed" || (i.overallScore && i.overallScore > 0))) {
       if (!interviewsMap.has(uid)) interviewsMap.set(uid, []);
       interviewsMap.get(uid).push(i);
     }
   });
 
   const codingMap = new Map();
-  codingProfiles.forEach((cp) => {
+  (codingProfiles || []).forEach((cp) => {
     const uid = cp.userId?.toString();
     if (uid) {
       if (!codingMap.has(uid)) codingMap.set(uid, []);
@@ -95,14 +120,15 @@ async function calculateCohortMetricsBatch(users, menteeSet, mentorId) {
   });
 
   const repoCountMap = new Map();
-  repoCounts.forEach((rc) => {
-    if (rc._id) {
-      repoCountMap.set(rc._id.toString(), rc.count || 0);
+  (repoAnalyses || []).forEach((ra) => {
+    const uid = ra.user?.toString();
+    if (uid && (ra.status === "completed" || !ra.status)) {
+      repoCountMap.set(uid, (repoCountMap.get(uid) || 0) + 1);
     }
   });
 
   const eventsMap = new Map();
-  events.forEach((e) => {
+  (events || []).forEach((e) => {
     const uid = e.user?.toString();
     if (uid) {
       if (!eventsMap.has(uid)) eventsMap.set(uid, []);
@@ -111,75 +137,99 @@ async function calculateCohortMetricsBatch(users, menteeSet, mentorId) {
   });
 
   const latestGapMap = new Map();
-  gapAnalyses.forEach((g) => {
+  (gapAnalyses || []).forEach((g) => {
     const uid = g.user?.toString();
-    if (uid && !latestGapMap.has(uid)) {
+    if (uid && (!latestGapMap.has(uid) || (g.matchPercentage && !latestGapMap.get(uid)?.matchPercentage))) {
       latestGapMap.set(uid, g);
     }
   });
 
   return users.map((u) => {
-    const uid = u._id.toString();
-    const latestResume = latestResumeMap.get(uid);
-    const completedInterviews = interviewsMap.get(uid) || [];
-    const profiles = codingMap.get(uid) || [];
-    const repoCount = repoCountMap.get(uid) || 0;
-    const userEvents = eventsMap.get(uid) || [];
-    const latestGap = latestGapMap.get(uid);
+    try {
+      const uid = u._id?.toString();
+      const latestResume = latestResumeMap.get(uid);
+      const completedInterviews = interviewsMap.get(uid) || [];
+      const profiles = codingMap.get(uid) || [];
+      const repoCount = repoCountMap.get(uid) || 0;
+      const userEvents = eventsMap.get(uid) || [];
+      const latestGap = latestGapMap.get(uid);
 
-    const resumeScore = latestResume?.atsScore || 0;
-    const avgInterviewScore = completedInterviews.length > 0
-      ? Math.round(completedInterviews.reduce((acc, i) => acc + (i.overallScore || 0), 0) / completedInterviews.length)
-      : 0;
+      const resumeScore = latestResume?.atsScore || 0;
+      const avgInterviewScore = completedInterviews.length > 0
+        ? Math.round(completedInterviews.reduce((acc, i) => acc + (i.overallScore || 0), 0) / completedInterviews.length)
+        : 0;
 
-    let totalProblemsSolved = 0;
-    profiles.forEach((cp) => {
-      const stats = cp.cachedStats || {};
-      totalProblemsSolved += Number(stats.totalSolved || stats.solved || stats.problemsSolved || 0);
-    });
+      let totalProblemsSolved = 0;
+      profiles.forEach((cp) => {
+        const stats = cp.cachedStats || {};
+        totalProblemsSolved += Number(stats.totalSolved || stats.solved || stats.problemsSolved || 0);
+      });
 
-    const verifiedEventsCount = userEvents.filter(
-      (e) => e.verificationResult?.isVerified || e.result === "winner" || e.result === "runner-up" || e.result === "finalist"
-    ).length;
+      const verifiedEventsCount = userEvents.filter(
+        (e) => e.verificationResult?.isVerified || e.result === "winner" || e.result === "runner-up" || e.result === "finalist"
+      ).length;
 
-    const skillGapMatchPct = latestGap?.matchPercentage || 0;
-    const codingScore = Math.min(100, Math.round(totalProblemsSolved * 1.0 + repoCount * 10));
-    const eventScore = Math.min(100, Math.round(verifiedEventsCount * 30 + userEvents.length * 10));
+      const skillGapMatchPct = latestGap?.matchPercentage || 0;
+      const codingScore = Math.min(100, Math.round(totalProblemsSolved * 1.0 + repoCount * 10));
+      const eventScore = Math.min(100, Math.round(verifiedEventsCount * 30 + userEvents.length * 10));
 
-    const overallReadiness = Math.round(
-      skillGapMatchPct * 0.30 +
-      resumeScore * 0.20 +
-      avgInterviewScore * 0.20 +
-      codingScore * 0.15 +
-      eventScore * 0.15
-    );
+      const overallReadiness = Math.round(
+        skillGapMatchPct * 0.30 +
+        resumeScore * 0.20 +
+        avgInterviewScore * 0.20 +
+        codingScore * 0.15 +
+        eventScore * 0.15
+      );
 
-    let status = "On Track";
-    if (overallReadiness < 40) status = "At Risk";
-    else if (overallReadiness >= 75) status = "Top Performer";
+      let status = "On Track";
+      if (overallReadiness < 40) status = "At Risk";
+      else if (overallReadiness >= 75) status = "Top Performer";
 
-    const isMyMentee = menteeSet.has(uid) || (u.assignedMentor && u.assignedMentor.toString() === mentorIdStr);
+      const isMyMentee = menteeSet.has(uid) || (u.assignedMentor && u.assignedMentor.toString() === mentorIdStr);
 
-    return {
-      _id: u._id,
-      name: u.name,
-      email: u.email,
-      avatar: u.avatar || "",
-      targetRole: u.targetRole || u.profile?.targetRole || "Software Engineer",
-      githubUsername: u.githubUsername || u.profile?.githubUsername || "",
-      overallReadiness,
-      resumeScore,
-      avgInterviewScore,
-      totalProblemsSolved,
-      repoCount,
-      verifiedEventsCount,
-      linkedPlatformsCount: profiles.length,
-      status,
-      isMyMentee: Boolean(isMyMentee),
-      isProctoringBlocked: Boolean(u.isProctoringBlocked),
-      proctoringBlockedAt: u.proctoringBlockedAt || null,
-      lastActive: u.updatedAt || u.createdAt,
-    };
+      return {
+        _id: u._id,
+        name: ensurePlainName(u.name, u.email),
+        email: u.email || "",
+        avatar: u.avatar || "",
+        targetRole: u.targetRole || u.profile?.targetRole || "Software Engineer",
+        githubUsername: u.githubUsername || u.profile?.githubUsername || "",
+        overallReadiness,
+        resumeScore,
+        avgInterviewScore,
+        totalProblemsSolved,
+        repoCount,
+        verifiedEventsCount,
+        linkedPlatformsCount: profiles.length,
+        status,
+        isMyMentee: Boolean(isMyMentee),
+        isProctoringBlocked: Boolean(u.isProctoringBlocked),
+        proctoringBlockedAt: u.proctoringBlockedAt || null,
+        lastActive: u.updatedAt || u.createdAt,
+      };
+    } catch (err) {
+      console.warn(`[calculateCohortMetricsBatch] Error processing user ${u._id}:`, err.message);
+      return {
+        _id: u._id,
+        name: ensurePlainName(u.name, u.email),
+        email: u.email || "",
+        avatar: u.avatar || "",
+        targetRole: u.targetRole || u.profile?.targetRole || "Software Engineer",
+        githubUsername: u.githubUsername || u.profile?.githubUsername || "",
+        overallReadiness: 0,
+        resumeScore: 0,
+        avgInterviewScore: 0,
+        totalProblemsSolved: 0,
+        repoCount: 0,
+        verifiedEventsCount: 0,
+        linkedPlatformsCount: 0,
+        status: "At Risk",
+        isMyMentee: Boolean(menteeSet.has(u._id?.toString())),
+        isProctoringBlocked: Boolean(u.isProctoringBlocked),
+        proctoringBlockedAt: u.proctoringBlockedAt || null,
+        lastActive: u.updatedAt || u.createdAt,
+      };
+    }
   });
 }
 
@@ -793,8 +843,8 @@ const searchRegisteredStudents = asyncHandler(async (req, res) => {
 
   const formatted = students.map((s) => ({
     _id: s._id,
-    name: s.name,
-    email: s.email,
+    name: ensurePlainName(s.name, s.email),
+    email: s.email || "",
     avatar: s.avatar || "",
     targetRole: s.targetRole || s.profile?.targetRole || "Software Engineer",
     githubUsername: s.githubUsername || s.profile?.githubUsername || "",
@@ -1469,6 +1519,8 @@ const exportStudentsCohortCsv = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  calculateCohortMetricsBatch,
+  calculateStudentMetrics,
   getStudentsList,
   getStudent360Detail,
   getCohortAnalytics,
