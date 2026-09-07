@@ -109,8 +109,16 @@ router.get("/proctoring/live-feed", getLiveProctoringFeed);
 
 // Mentee management routes
 router.get("/mentees", getMyMentees);
-router.post("/mentees", addMentee);
-router.delete("/mentees/:studentId", removeMentee);
+router.post(
+  "/mentees",
+  invalidateCache({ patterns: ["admin:students:*", "admin:analytics:*", "admin:student-detail:*"] }),
+  addMentee
+);
+router.delete(
+  "/mentees/:studentId",
+  invalidateCache({ patterns: ["admin:students:*", "admin:analytics:*", "admin:student-detail:*"] }),
+  removeMentee
+);
 
 // Mentor profile & credential settings routes
 router.get("/profile", getMentorProfile);
