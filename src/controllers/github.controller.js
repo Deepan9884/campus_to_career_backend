@@ -125,12 +125,22 @@ Challenges Faced: ${data.challengesFaced || "Complex architecture and tight deli
 Key Takeaways: ${Array.isArray(data.keyTakeaways) ? data.keyTakeaways.join("; ") : data.keyTakeaways || ""}
 Project / Live Link: ${data.projectLink || ""}`;
   } else if (postType === "github") {
+    const qualityText = typeof data.quality === "object" && data.quality !== null
+      ? (data.quality.codeOrganization || (data.quality.strengths && data.quality.strengths.join("; ")) || "Modular, scalable architecture")
+      : (data.quality || "Modular, scalable architecture");
+
+    const resumeBullets = Array.isArray(data.resumeImpact)
+      ? data.resumeImpact.join("; ")
+      : (data.resumeImpact && typeof data.resumeImpact === "object" && Array.isArray(data.resumeImpact.bullets)
+        ? data.resumeImpact.bullets.join("; ")
+        : (data.resumeImpact || "High performance and reliability"));
+
     contextDescription = `
 Source Type: GitHub Repository / Engineering Project Showcase
 Repository: ${data.repoFullName || "Software Project"}
 Project Overview: ${data.overview || data.description || "Production-grade repository"}
-Code Quality & Architecture Highlights: ${data.quality || "Modular, scalable architecture"}
-Resume Highlights & Impact Points: ${Array.isArray(data.resumeImpact) ? data.resumeImpact.join("; ") : data.resumeImpact || "High performance and reliability"}
+Code Quality & Architecture Highlights: ${qualityText}
+Resume Highlights & Impact Points: ${resumeBullets}
 Tech Stack: ${Array.isArray(data.techStack) ? data.techStack.join(", ") : data.techStack || (Array.isArray(data.filesAnalyzed) ? data.filesAnalyzed.slice(0, 5).join(", ") : "")}
 Repository URL: ${data.repoUrl || ""}`;
   } else if (postType === "milestone") {
