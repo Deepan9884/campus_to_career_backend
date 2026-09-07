@@ -492,7 +492,17 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
 const getCohortAnalytics = asyncHandler(async (req, res) => {
   const currentUser = await User.findById(req.user._id).select("mentees role").lean();
   const scope = (req.query.scope || req.query.filter || "my-mentees").trim();
-  const menteeIds = currentUser?.mentees || [];
+
+  const nonStudentRoles = ["admin", "faculty", "hod", "ADMIN", "FACULTY", "HOD", "staff", "STAFF"];
+  const studentRoleCond = {
+    $or: [
+      { role: { $in: ["student", "STUDENT", "user", "candidate"] } },
+      { role: { $nin: nonStudentRoles } },
+      { role: { $exists: false } },
+      { role: null },
+      { role: "" },
+    ],
+  };
 
   const assignedOr = [{ assignedMentor: req.user._id }];
   if (currentUser?.mentees && currentUser.mentees.length > 0) {
@@ -502,60 +512,73 @@ const getCohortAnalytics = asyncHandler(async (req, res) => {
   const menteeFilter = scope === "all"
     ? {
         _id: { $ne: req.user._id },
-        role: "student",
+        ...studentRoleCond,
       }
     : {
         _id: { $ne: req.user._id },
-        role: "student",
+        ...studentRoleCond,
         $or: assignedOr,
       };
 
-  const users = await User.find(menteeFilter).select("_id name email avatar targetRole profile githubUsername createdAt updatedAt role assignedMentor").lean();
-  const userIds = users.map((u) => u._id);
+  const users = await User.find(menteeFilter)
+    .select("_id name email avatar targetRole profile githubUsername createdAt updatedAt role assignedMentor isProctoringBlocked proctoringBlockedAt")
+    .lean();
+  const userIds = (users || []).map((u) => u._id);
   const totalStudents = userIds.length;
   const menteeSet = new Set((currentUser?.mentees || []).map((id) => id.toString()));
 
-  const [resumes, interviews, codingProfiles, events, gapAnalyses, userMetrics] = await Promise.all([
-    Resume.find({ user: { $in: userIds }, status: "completed" }).select("atsScore user").lean(),
-    InterviewSession.find({ user: { $in: userIds }, status: "completed" }).select("overallScore targetRole user").lean(),
-    CodingProfile.find({ userId: { $in: userIds } }).select("platform cachedStats userId").lean(),
-    Event.find({ user: { $in: userIds } }).select("verificationResult user").lean(),
-    SkillGapAnalysis.find({ user: { $in: userIds }, status: "completed" }).select("matchPercentage targetRole gaps user").lean(),
-    calculateCohortMetricsBatch(users, menteeSet, req.user._id),
-  ]);
+  let resumes = [];
+  let interviews = [];
+  let codingProfiles = [];
+  let events = [];
+  let gapAnalyses = [];
+  let userMetrics = [];
 
-  const avgResumeScore = resumes.length > 0
-    ? Math.round(resumes.reduce((sum, r) => sum + (r.atsScore || 0), 0) / resumes.length)
+  try {
+    [resumes, interviews, codingProfiles, events, gapAnalyses, userMetrics] = await Promise.all([
+      Resume.find({ user: { $in: userIds }, status: "completed" }).select("atsScore user").lean(),
+      InterviewSession.find({ user: { $in: userIds }, status: "completed" }).select("overallScore targetRole user").lean(),
+      CodingProfile.find({ userId: { $in: userIds } }).select("platform cachedStats userId").lean(),
+      Event.find({ user: { $in: userIds } }).select("verificationResult user").lean(),
+      SkillGapAnalysis.find({ user: { $in: userIds }, status: "completed" }).select("matchPercentage targetRole gaps user").lean(),
+      calculateCohortMetricsBatch(users || [], menteeSet, req.user._id),
+    ]);
+  } catch (err) {
+    console.warn("[getCohortAnalytics] Data aggregation error:", err.message);
+  }
+
+  const avgResumeScore = (resumes || []).length > 0
+    ? Math.round((resumes || []).reduce((sum, r) => sum + (r.atsScore || 0), 0) / resumes.length)
     : 0;
 
-  const avgInterviewScore = interviews.length > 0
-    ? Math.round(interviews.reduce((sum, i) => sum + (i.overallScore || 0), 0) / interviews.length)
+  const avgInterviewScore = (interviews || []).length > 0
+    ? Math.round((interviews || []).reduce((sum, i) => sum + (i.overallScore || 0), 0) / interviews.length)
     : 0;
 
   let totalCodingProblems = 0;
-  codingProfiles.forEach((cp) => {
+  (codingProfiles || []).forEach((cp) => {
     const stats = cp.cachedStats || {};
     totalCodingProblems += Number(stats.totalSolved || stats.solved || stats.problemsSolved || 0);
   });
 
-  const verifiedProofsCount = events.filter((e) => e.verificationResult?.isVerified).length;
+  const verifiedProofsCount = (events || []).filter((e) => e.verificationResult?.isVerified).length;
 
   // Compute placement readiness funnel distribution across assigned mentees in-memory
   let placementReadyCount = 0;
   let developingCount = 0;
   let interventionCount = 0;
 
-  userMetrics.forEach((st) => {
+  (userMetrics || []).forEach((st) => {
     if (st.overallReadiness >= 75) placementReadyCount++;
     else if (st.overallReadiness >= 45) developingCount++;
     else interventionCount++;
   });
 
   const missingSkillMap = {};
-  gapAnalyses.forEach((g) => {
+  (gapAnalyses || []).forEach((g) => {
     if (g.gaps && Array.isArray(g.gaps)) {
       g.gaps.forEach((gap) => {
-        if (gap.skillName) {
+        if (gap && gap.skillName) {
           missingSkillMap[gap.skillName] = (missingSkillMap[gap.skillName] || 0) + 1;
         }
       });
@@ -564,8 +587,8 @@ const getCohortAnalytics = asyncHandler(async (req, res) => {
 
   // Distribution of Target Roles
   const roleCounts = {};
-  gapAnalyses.forEach((g) => {
-    if (g.targetRole) {
+  (gapAnalyses || []).forEach((g) => {
+    if (g && g.targetRole) {
       roleCounts[g.targetRole] = (roleCounts[g.targetRole] || 0) + 1;
     }
   });
@@ -587,8 +610,8 @@ const getCohortAnalytics = asyncHandler(async (req, res) => {
       avgInterviewScore,
       totalCodingProblems,
       verifiedProofsCount,
-      completedInterviewsCount: interviews.length,
-      analyzedResumesCount: resumes.length,
+      completedInterviewsCount: (interviews || []).length,
+      analyzedResumesCount: (resumes || []).length,
       placementFunnel: {
         placementReady: placementReadyCount,
         developing: developingCount,
@@ -1399,52 +1422,68 @@ const deleteMentorTask = asyncHandler(async (req, res) => {
  * Real-time institutional exam radar & multi-exam live violation telemetry.
  */
 const getLiveProctoringFeed = asyncHandler(async (_req, res) => {
-  const [blockedUsers, recentViolations, totalBlockedCount, activeExams] = await Promise.all([
-    User.find({ isProctoringBlocked: true })
-      .select("name email avatar targetRole proctoringBlockedAt assignedMentor profile")
-      .sort({ proctoringBlockedAt: -1 })
-      .limit(50)
-      .lean(),
-    ProctoringViolation.find()
-      .populate("userId", "name email avatar targetRole")
-      .sort({ updatedAt: -1 })
-      .limit(40)
-      .lean(),
-    User.countDocuments({ isProctoringBlocked: true }),
-    Exam.find({
-      status: { $in: ["active", "scheduled"] },
-      isPublished: true,
-    })
-      .select("title examType category difficulty durationMinutes totalMarks status isScheduled scheduledStartTime scheduledEndTime")
-      .sort({ createdAt: -1 })
-      .lean(),
-  ]);
+  let blockedUsers = [];
+  let recentViolations = [];
+  let totalBlockedCount = 0;
+  let activeExams = [];
 
-  const activeExamIds = activeExams.map((e) => e._id);
-  const examSubmissions = await ExamSubmission.find({
-    examId: { $in: activeExamIds },
-  })
-    .populate("userId", "name email avatar targetRole isProctoringBlocked proctoringBlockedAt profile")
-    .sort({ updatedAt: -1 })
-    .lean();
+  try {
+    [blockedUsers, recentViolations, totalBlockedCount, activeExams] = await Promise.all([
+      User.find({ isProctoringBlocked: true })
+        .select("name email avatar targetRole proctoringBlockedAt assignedMentor profile")
+        .sort({ proctoringBlockedAt: -1 })
+        .limit(50)
+        .lean(),
+      ProctoringViolation.find()
+        .populate("userId", "name email avatar targetRole")
+        .sort({ updatedAt: -1 })
+        .limit(40)
+        .lean(),
+      User.countDocuments({ isProctoringBlocked: true }),
+      Exam.find({
+        status: { $in: ["active", "scheduled"] },
+        isPublished: true,
+      })
+        .select("title examType category difficulty durationMinutes totalMarks status isScheduled scheduledStartTime scheduledEndTime")
+        .sort({ createdAt: -1 })
+        .lean(),
+    ]);
+  } catch (err) {
+    console.warn("[getLiveProctoringFeed] Initial query error:", err.message);
+  }
 
-  const examsWithTakers = activeExams.map((exam) => {
-    const subs = examSubmissions.filter((s) => s.examId.toString() === exam._id.toString());
+  const activeExamIds = (activeExams || []).map((e) => e._id);
+  let examSubmissions = [];
+  if (activeExamIds.length > 0) {
+    try {
+      examSubmissions = await ExamSubmission.find({
+        examId: { $in: activeExamIds },
+      })
+        .populate("userId", "name email avatar targetRole isProctoringBlocked proctoringBlockedAt profile")
+        .sort({ updatedAt: -1 })
+        .lean();
+    } catch (err) {
+      console.warn("[getLiveProctoringFeed] ExamSubmissions query error:", err.message);
+    }
+  }
+
+  const examsWithTakers = (activeExams || []).map((exam) => {
+    const subs = (examSubmissions || []).filter((s) => s.examId && exam._id && s.examId.toString() === exam._id.toString());
     return {
       examId: exam._id,
-      examTitle: exam.title,
-      examType: exam.examType,
-      category: exam.category,
-      difficulty: exam.difficulty,
-      durationMinutes: exam.durationMinutes,
-      status: exam.status,
+      examTitle: exam.title || "Untitled Assessment",
+      examType: exam.examType || "mcq",
+      category: exam.category || "General",
+      difficulty: exam.difficulty || "medium",
+      durationMinutes: exam.durationMinutes || 60,
+      status: exam.status || "active",
       activeCount: subs.length,
       blockedCount: subs.filter((s) => s.isBlocked || s.userId?.isProctoringBlocked).length,
       warningCount: subs.filter((s) => !s.isBlocked && (s.violationsCount || 0) > 0).length,
       candidates: subs.map((s) => ({
         submissionId: s._id,
         studentId: s.userId?._id || s.userId,
-        name: s.studentName || s.userId?.name || "Student",
+        name: ensurePlainName(s.studentName || s.userId?.name, s.studentEmail || s.userId?.email),
         email: s.studentEmail || s.userId?.email || "",
         avatar: s.userId?.avatar || s.studentAvatar || "",
         registerNumber: s.registerNumber || s.userId?.profile?.registerNumber || "N/A",
@@ -1461,12 +1500,24 @@ const getLiveProctoringFeed = asyncHandler(async (_req, res) => {
     };
   });
 
+  const formattedBlockedUsers = (blockedUsers || []).map((u) => ({
+    ...u,
+    name: ensurePlainName(u.name, u.email),
+  }));
+
+  const formattedViolations = (recentViolations || []).map((v) => {
+    if (v.userId && typeof v.userId === "object") {
+      v.userId.name = ensurePlainName(v.userId.name, v.userId.email);
+    }
+    return v;
+  });
+
   return ApiResponse.success({
-    totalBlockedCount,
-    blockedUsers,
-    recentViolations,
-    activeExamsCount: activeExams.length,
-    totalActiveCandidates: examSubmissions.length,
+    totalBlockedCount: totalBlockedCount || 0,
+    blockedUsers: formattedBlockedUsers,
+    recentViolations: formattedViolations,
+    activeExamsCount: (activeExams || []).length,
+    totalActiveCandidates: (examSubmissions || []).length,
     examsWithTakers,
   }).send(res);
 });
