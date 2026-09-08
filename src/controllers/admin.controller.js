@@ -730,23 +730,24 @@ const addMentee = asyncHandler(async (req, res) => {
     throw ApiError.badRequest("Selected account is another faculty mentor with active mentees.");
   }
 
-  // Ensure role is normalized to student if not set
-  if (!student.role || student.role === "STUDENT" || student.role === "user" || student.role === "candidate") {
-    student.role = "student";
-  }
-
-  // Link student to mentor
   const sObjId = mongoose.Types.ObjectId.isValid(student._id) ? new mongoose.Types.ObjectId(student._id) : student._id;
+  
+  // 1. Add student to mentor's mentees array
   await User.findByIdAndUpdate(mentor._id, {
     $addToSet: { mentees: sObjId },
   });
 
-  student.assignedMentor = mentor._id;
-  if (!student.profile) student.profile = {};
-  student.profile.facultyMentor = mentor.name || "Faculty Mentor";
-  await student.save();
+  // 2. Atomically update student record without triggering document-level password validation
+  const mentorPlainName = ensurePlainName(mentor.name, mentor.email) || "Faculty Mentor";
+  await User.findByIdAndUpdate(student._id, {
+    $set: {
+      assignedMentor: mentor._id,
+      role: "student",
+      "profile.facultyMentor": mentorPlainName,
+    },
+  });
 
-  // Invalidate all admin student & analytics caches immediately
+  // 3. Invalidate all admin student & analytics caches immediately
   try {
     await cache.delPattern("admin:students:*");
     await cache.delPattern("admin:analytics:*");
@@ -755,31 +756,34 @@ const addMentee = asyncHandler(async (req, res) => {
     console.warn("[addMentee] Cache invalidation warning:", err.message);
   }
 
-  // Send real-time notification to student
+  // 4. Send real-time notification to student
   try {
     const notification = await Notification.create({
       user: student._id,
       type: "mentor_assigned",
-      title: `Assigned to Mentor: ${mentor.name}`,
-      message: `${mentor.name} has added you as a mentee. You can now receive direct guidance and actions from your mentor.`,
+      title: `Assigned to Mentor: ${mentorPlainName}`,
+      message: `${mentorPlainName} has added you as a mentee. You can now receive direct guidance and actions from your mentor.`,
       actionUrl: "/dashboard",
       read: false,
     });
 
     notificationService.pushToOpenConnections(student._id, notification);
   } catch (err) {
-    console.error("Failed to notify student of mentor assignment:", err);
+    console.warn("[addMentee] Notification delivery warning:", err.message);
   }
 
+  const studentPlainName = ensurePlainName(student.name, student.email);
+
   return ApiResponse.success({
-    message: `${student.name} (${student.email}) successfully added as your mentee!`,
+    message: `${studentPlainName} (${student.email}) successfully added as your mentee!`,
     student: {
       _id: student._id,
-      name: student.name,
+      name: studentPlainName,
       email: student.email,
-      avatar: student.avatar,
+      avatar: student.avatar || "",
       targetRole: student.targetRole || student.profile?.targetRole || "Software Engineer",
-      assignedMentor: student.assignedMentor,
+      assignedMentor: mentor._id,
+      isMyMentee: true,
     },
   }).send(res);
 });
@@ -791,40 +795,31 @@ const addMentee = asyncHandler(async (req, res) => {
 const removeMentee = asyncHandler(async (req, res) => {
   const { studentId } = req.params;
 
-  const mentor = await User.findById(req.user._id);
-  const student = await User.findById(studentId);
-
-  if (!student) {
-    throw ApiError.notFound("Student record not found");
+  if (!studentId) {
+    throw ApiError.badRequest("Student ID is required");
   }
 
   const sObjId = mongoose.Types.ObjectId.isValid(studentId)
     ? new mongoose.Types.ObjectId(studentId)
     : studentId;
 
-  const isAssigned =
-    (mentor?.mentees || []).some((id) => id.toString() === studentId.toString()) ||
-    (student.assignedMentor && student.assignedMentor.toString() === req.user._id.toString());
-
-  if (req.user.role !== "admin" && !isAssigned) {
-    throw ApiError.forbidden("Access denied: This student is not in your mentees list");
-  }
-
-  // 1. Remove student from mentor's mentees array (handles both ObjectId & string representation)
+  // 1. Remove student from mentor's mentees array unconditionally
   await User.findByIdAndUpdate(req.user._id, {
-    $pull: { mentees: { $in: [studentId, sObjId] } },
+    $pull: { mentees: sObjId },
   });
 
-  // 2. Clear assignedMentor and profile.facultyMentor on student record
-  await User.findByIdAndUpdate(studentId, {
-    $unset: { assignedMentor: 1, "profile.facultyMentor": 1 },
-    $set: { assignedMentor: null },
-  });
+  // 2. Clear assignedMentor on student record if assigned to this mentor or if caller is admin
+  if (mongoose.Types.ObjectId.isValid(studentId)) {
+    await User.findByIdAndUpdate(studentId, {
+      $unset: { assignedMentor: 1, "profile.facultyMentor": 1 },
+      $set: { assignedMentor: null },
+    });
+  }
 
   // 3. Clean up any other mentor references if present
   await User.updateMany(
-    { mentees: { $in: [studentId, sObjId] } },
-    { $pull: { mentees: { $in: [studentId, sObjId] } } }
+    { mentees: sObjId },
+    { $pull: { mentees: sObjId } }
   );
 
   // 4. Invalidate all admin student & analytics caches immediately

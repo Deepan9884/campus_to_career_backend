@@ -27,7 +27,9 @@ const userSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      required: [true, "Password is required"],
+      required: function () {
+        return this.authProvider === "local" && !this.googleId && !this.githubId;
+      },
       minlength: [8, "Password must be at least 8 characters"],
       validate: {
         validator: function(v) {
