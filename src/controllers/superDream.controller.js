@@ -483,8 +483,7 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
 
   // Ensure current user's role in DB is not accidentally 'student'
   if (currentUser && currentUser.role === "student") {
-    currentUser.role = "mentor";
-    await currentUser.save();
+    await User.findByIdAndUpdate(req.user._id, { $set: { role: "mentor" } });
   }
 
   const nonStudentRoles = ["admin", "faculty", "hod", "ADMIN", "FACULTY", "HOD", "staff", "STAFF"];
@@ -695,16 +694,18 @@ const assignSuperDreamMentee = asyncHandler(async (req, res) => {
     throw ApiError.badRequest("Selected account is another faculty mentor with active mentees.");
   }
 
-  // Ensure role is student
-  if (!student.role || student.role === "STUDENT" || student.role === "user" || student.role === "candidate") {
-    student.role = "student";
-  }
+  // 1. Atomically update student record without triggering document-level password validation
+  //    (password has select:false, so student.save() would fail the required validator)
+  const mentorPlainName = req.user.name || "Faculty Mentor";
+  await User.findByIdAndUpdate(student._id, {
+    $set: {
+      assignedMentor: req.user._id,
+      role: "student",
+      "profile.facultyMentor": mentorPlainName,
+    },
+  });
 
-  student.assignedMentor = req.user._id;
-  if (!student.profile) student.profile = {};
-  student.profile.facultyMentor = req.user.name || "Faculty Mentor";
-  await student.save();
-
+  // 2. Add student to mentor's mentees array
   await User.findByIdAndUpdate(req.user._id, {
     $addToSet: { mentees: student._id },
   });
@@ -751,17 +752,16 @@ const unassignSuperDreamMentee = asyncHandler(async (req, res) => {
     throw ApiError.notFound("Student record not found");
   }
 
-  // Remove from mentor's mentees array
+  // 1. Remove student from mentor's mentees array
   await User.findByIdAndUpdate(req.user._id, {
     $pull: { mentees: student._id },
   });
 
-  // Clear assigned mentor from student
-  student.assignedMentor = null;
-  if (student.profile && student.profile.facultyMentor) {
-    student.profile.facultyMentor = null;
-  }
-  await student.save();
+  // 2. Atomically clear assigned mentor from student without triggering password validation
+  await User.findByIdAndUpdate(student._id, {
+    $unset: { assignedMentor: 1, "profile.facultyMentor": 1 },
+    $set: { assignedMentor: null },
+  });
 
   return ApiResponse.success({
     message: `${student.name} (${student.email}) has been removed from your mentee and Super Dream roster.`,

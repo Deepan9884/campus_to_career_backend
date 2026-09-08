@@ -360,7 +360,14 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
     throw ApiError.notFound("Student not found");
   }
 
-  if (student.role !== "student" || student._id.toString() === req.user._id.toString()) {
+  // Block if the viewer is trying to view their own profile
+  if (student._id.toString() === req.user._id.toString()) {
+    throw ApiError.badRequest("You cannot view your own profile in student diagnostics.");
+  }
+
+  // Block admin/faculty accounts from being viewed as students
+  const nonStudentRoles = ["admin", "faculty", "hod", "ADMIN", "FACULTY", "HOD", "staff", "STAFF", "mentor"];
+  if (student.role && nonStudentRoles.includes(student.role)) {
     throw ApiError.badRequest("Selected user profile is not a registered student candidate.");
   }
 
