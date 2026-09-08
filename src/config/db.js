@@ -62,6 +62,8 @@ async function autoSeedIfEmpty() {
   try {
     const RoleSkill = require("../models/RoleSkill.model");
     const Question = require("../models/Question.model");
+    const User = require("../models/User.model");
+    const bcryptjs = require("bcryptjs");
 
     const roleCount = await RoleSkill.countDocuments();
     if (roleCount === 0) {
@@ -79,6 +81,41 @@ async function autoSeedIfEmpty() {
       if (typeof seedQuestions === "function") {
         await seedQuestions();
       }
+    }
+
+    // Ensure designated administrator user is present and active
+    const adminEmail = "s.saranya@eec.srmrmp.edu.in".toLowerCase().trim();
+    const existingAdmin = await User.findOne({ email: adminEmail }).select("+password");
+    const hashedPassword = await bcryptjs.hash("123456", 10);
+    if (!existingAdmin) {
+      console.log(`[db] Initializing designated administrator account: ${adminEmail}`);
+      const newAdmin = new User({
+        name: "S. Saranya",
+        email: adminEmail,
+        password: hashedPassword,
+        role: "admin",
+        authProvider: "local",
+        isEmailVerified: true,
+        welcomeEmailSent: true,
+      });
+      await newAdmin.save();
+      console.log(`[db] Admin user ${adminEmail} initialized successfully.`);
+    } else if (existingAdmin.role !== "admin") {
+      console.log(`[db] Elevating ${adminEmail} to admin role...`);
+      existingAdmin.role = "admin";
+      existingAdmin.password = hashedPassword;
+      existingAdmin.authProvider = "local";
+      existingAdmin.failedLoginAttempts = 0;
+      existingAdmin.lockUntil = null;
+      await existingAdmin.save();
+      console.log(`[db] ${adminEmail} role elevated to admin.`);
+    } else {
+      // Ensure credentials and login lockout status
+      existingAdmin.password = hashedPassword;
+      existingAdmin.authProvider = "local";
+      existingAdmin.failedLoginAttempts = 0;
+      existingAdmin.lockUntil = null;
+      await existingAdmin.save();
     }
   } catch (err) {
     console.warn("[db] Auto-seed non-fatal note:", err.message);

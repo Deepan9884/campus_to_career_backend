@@ -30,7 +30,7 @@ const userSchema = new mongoose.Schema(
       required: function () {
         return this.authProvider === "local" && !this.googleId && !this.githubId;
       },
-      minlength: [8, "Password must be at least 8 characters"],
+      minlength: [6, "Password must be at least 6 characters"],
       validate: {
         validator: function(v) {
           // Skip validation if password was not modified (e.g. during login, profile updates, token refresh)
@@ -41,10 +41,10 @@ const userSchema = new mongoose.Schema(
           if (typeof v === "string" && /^\$2[aby]\$\d{2}\$[./0-9A-Za-z]{53}$/.test(v)) {
             return true;
           }
-          // Require: 1 uppercase, 1 lowercase, 1 number, 1 special char
-          return /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[\S]{8,}$/.test(v);
+          // Accept passwords of length >= 6
+          return typeof v === "string" && v.length >= 6;
         },
-        message: 'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character (@$!%*?&)'
+        message: 'Password must be at least 6 characters long'
       },
       select: false,
     },
@@ -221,6 +221,10 @@ userSchema.pre("save", async function (next) {
 // Pre-save hook: Hash password with bcryptjs (10 rounds) only if modified
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
+  // Prevent double-hashing if password was already hashed with bcrypt
+  if (typeof this.password === "string" && /^\$2[aby]\$\d{2}\$[./0-9A-Za-z]{53}$/.test(this.password)) {
+    return next();
+  }
   const salt = await bcryptjs.genSalt(10);
   this.password = await bcryptjs.hash(this.password, salt);
   next();
