@@ -527,16 +527,59 @@ function fetchMcqsFromBank({ topics = [], difficulty = "all", count = 5 }) {
 }
 
 /**
- * Standard starter boilerplates with ONLY a single comment line
+ * CodeTantra-style complete runnable starter templates with main() and dynamic input reading
  */
 function getEmptyStarterCodes() {
   return {
-    python: "# Write your code here\n",
-    javascript: "// Write your code here\n",
-    java: "// Write your code here\n",
-    cpp: "// Write your code here\n",
-    c: "// Write your code here\n",
-    sql: "-- Write your code here\n",
+    python: `import sys
+
+def main():
+    # Read dynamic input from standard input (sys.stdin)
+    # Write your code here
+    pass
+
+if __name__ == "__main__":
+    main()
+`,
+    java: `import java.util.Scanner;
+
+public class Main {
+    public static void main(String[] args) {
+        Scanner sc = new Scanner(System.in);
+        // Write your code here
+        
+    }
+}
+`,
+    cpp: `#include <iostream>
+using namespace std;
+
+int main() {
+    // Write your code here
+    
+    return 0;
+}
+`,
+    c: `#include <stdio.h>
+
+int main() {
+    // Write your code here
+    
+    return 0;
+}
+`,
+    javascript: `const fs = require('fs');
+
+function main() {
+    // Read dynamic input from standard input (stdin)
+    const input = fs.readFileSync(0, 'utf-8').trim();
+    // Write your code here
+    
+}
+
+main();
+`,
+    sql: "-- Write your SQL query here\n",
   };
 }
 

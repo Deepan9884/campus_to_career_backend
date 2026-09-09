@@ -158,12 +158,82 @@ function isSyntaxOrCompileError(stderr = "", lang = "") {
     lower.includes("error: cannot find symbol") ||
     lower.includes("error: reached end of file while parsing") ||
     lower.includes("error: illegal start of expression") ||
+    lower.includes("error:") ||
     lower.includes("fatal error:") ||
-    lower.includes("compilation error")
+    lower.includes("compilation error") ||
+    lower.includes("undefined reference to `main'") ||
+    lower.includes("undefined reference to 'main'") ||
+    lower.includes("main method not found") ||
+    lower.includes("not declared in this scope") ||
+    lower.includes("expected declaration") ||
+    lower.includes("expected expression")
   ) {
     return true;
   }
   return false;
+}
+
+/**
+ * Extract 1-indexed line number and concise error message from compiler or interpreter stderr
+ */
+function extractErrorDetails(stderr = "", lang = "") {
+  if (!stderr) return { errorLine: null, errorMessage: "" };
+
+  const clean = String(stderr).trim();
+  let errorLine = null;
+  let errorMessage = "";
+
+  // Check for missing main function in C/C++/Java
+  if (
+    clean.toLowerCase().includes("main method not found") ||
+    clean.toLowerCase().includes("undefined reference to `main'") ||
+    clean.toLowerCase().includes("undefined reference to 'main'")
+  ) {
+    return {
+      errorLine: 1,
+      errorMessage: "Main method not found. Complete program with main() is required (CodeTantra style).",
+    };
+  }
+
+  // 1. Java (javac): Main.java:5: error: ';' expected
+  const javaMatch = clean.match(/(?:[A-Za-z0-9_.-]+\.java):(\d+):\s*(?:error:)?\s*([^\r\n]+)/i);
+
+  // 2. C / C++ (gcc / g++ / clang): solution.cpp:7:5: error: expected ';' before 'return'
+  const cppMatch = clean.match(/(?:[A-Za-z0-9_.-]+\.(?:cpp|c|cc|cxx|h)):(\d+)(?::\d+)?:\s*(?:error:)?\s*([^\r\n]+)/i);
+
+  // 3. Python: File "solution.py", line 4
+  const pyMatch = clean.match(/line\s+(\d+)/i);
+  const pyErrTypeMatch = clean.match(/((?:SyntaxError|IndentationError|TabError|NameError|TypeError|ValueError|IndexError|ZeroDivisionError):[^\r\n]+)/i);
+
+  // 4. JavaScript / Node.js: solution.js:4
+  const jsLineMatch = clean.match(/(?:solution\.js|eval|input):(\d+)/i);
+  const jsErrMatch = clean.match(/((?:SyntaxError|ReferenceError|TypeError):[^\r\n]+)/i);
+
+  if (javaMatch) {
+    errorLine = parseInt(javaMatch[1], 10);
+    errorMessage = `Line ${errorLine}: ${javaMatch[2]?.trim() || "Compilation error"}`;
+  } else if (cppMatch) {
+    errorLine = parseInt(cppMatch[1], 10);
+    errorMessage = `Line ${errorLine}: ${cppMatch[2]?.trim() || "Compilation error"}`;
+  } else if (pyMatch) {
+    errorLine = parseInt(pyMatch[1], 10);
+    const desc = pyErrTypeMatch ? pyErrTypeMatch[1].trim() : "SyntaxError: invalid syntax";
+    errorMessage = `Line ${errorLine}: ${desc}`;
+  } else if (jsLineMatch) {
+    errorLine = parseInt(jsLineMatch[1], 10);
+    const desc = jsErrMatch ? jsErrMatch[1].trim() : "SyntaxError in JavaScript code";
+    errorMessage = `Line ${errorLine}: ${desc}`;
+  } else {
+    const genericMatch = clean.match(/(?:line\s*|:)(\d+)/i);
+    if (genericMatch) {
+      errorLine = parseInt(genericMatch[1], 10);
+      errorMessage = `Line ${errorLine}: ${clean.split("\n")[0]}`;
+    } else {
+      errorMessage = clean.split("\n")[0] || "Compilation / Syntax Error";
+    }
+  }
+
+  return { errorLine, errorMessage };
 }
 
 /**
@@ -240,8 +310,9 @@ function checkCodeSecurity(code = "", language = "python") {
       "from socket",
       "import pty",
       "import ctypes",
-      "import sys",
-      "from sys",
+      "sys.modules",
+      "sys._getframe",
+      "sys.set_coroutine_origin_tracking_depth",
       "import importlib",
       "from importlib",
       "import builtins",
@@ -297,23 +368,15 @@ function checkCodeSecurity(code = "", language = "python") {
       'require("http")',
       "require('https')",
       'require("https")',
-      "require('fs')",
-      'require("fs")',
-      "require('path')",
-      'require("path")',
-      "require('os')",
-      'require("os")',
-      "require('crypto')",
-      'require("crypto")',
+      "require('child_process')",
       "require('cluster')",
-      'require("cluster")',
       "require('worker_threads')",
-      'require("worker_threads")',
       "require('vm')",
-      'require("vm")',
       "require('v8')",
-      'require("v8")',
-      "require(",
+      "fs.writefile",
+      "fs.unlink",
+      "fs.rm",
+      "fs.mkdir",
       "import(",
       "process.exit",
       "process.kill",
@@ -384,7 +447,8 @@ function checkCodeSecurity(code = "", language = "python") {
       /\b__code__\b/i,
     ],
     javascript: [
-      /\brequire\s*\(/i,
+      /\brequire\s*\(\s*['"](?!fs|readline)[^'"]+['"]\s*\)/i,
+      /\bfs\s*\.\s*(?:writeFile|unlink|rm|mkdir|appendFile|truncate|chmod|chown)/i,
       /\bimport\s*\(/i,
       /\beval\s*\(/i,
       /\bFunction\s*\(/i,
@@ -613,26 +677,26 @@ function runJava(code, input = "") {
   return new Promise((resolve) => {
     const startTime = Date.now();
 
-    // Check if code has a standard main entry point
+    // Strict CodeTantra check: complete program with main entry point is required
     const hasMainMethod = /public\s+static\s+void\s+main\s*\(/i.test(code);
     if (!hasMainMethod) {
-      // LeetCode / competitive method solution without driver scaffolding:
-      // Delegate directly to the intelligent AI sandbox evaluator
       return resolve({
         stdout: "",
-        stderr: "",
-        exitCode: 0,
+        stderr: "Main.java:1: error: Main method not found in class. Please define the main method as:\n   public static void main(String[] args)\nand read dynamic input using Scanner (as in CodeTantra).",
+        exitCode: 1,
         executionTimeMs: 0,
-        compileError: false,
-        isCompileError: false,
-        hostCompilerMissing: true,
+        compileError: true,
+        isCompileError: true,
+        errorLine: 1,
+        errorMessage: "Main method not found. Complete program with main() is required.",
+        hostCompilerMissing: false,
       });
     }
 
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-java-"));
 
-    let className = "Solution";
-    const classMatch = code.match(/public\s+class\s+([A-Za-z0-9_]+)/);
+    let className = "Main";
+    const classMatch = code.match(/(?:public\s+)?class\s+([A-Za-z0-9_]+)/);
     if (classMatch && classMatch[1]) {
       className = classMatch[1];
     }
@@ -737,6 +801,22 @@ function runJava(code, input = "") {
  * Automatically tries available C++ compilers ('g++', 'clang++', 'gcc')
  */
 async function runCpp(code, input = "") {
+  // Strict CodeTantra check: complete program with main() is required
+  const hasMain = /(?:int|void)\s+main\s*\(/i.test(code);
+  if (!hasMain) {
+    return {
+      stdout: "",
+      stderr: "solution.cpp:1: error: undefined reference to 'main'. A complete program with 'int main()' reading dynamic input from stdin is required (CodeTantra style).",
+      exitCode: 1,
+      executionTimeMs: 0,
+      compileError: true,
+      isCompileError: true,
+      errorLine: 1,
+      errorMessage: "undefined reference to 'main'",
+      hostCompilerMissing: false,
+    };
+  }
+
   const compilerBinaries = ["g++", "clang++", "gcc", "clang"];
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-cpp-"));
   const srcPath = path.join(tempDir, "solution.cpp");
@@ -873,24 +953,37 @@ ${code}
 Test Cases:
 ${JSON.stringify(testCases, null, 2)}
 
-STRICT EVALUATION INSTRUCTIONS:
-1. First, check if the candidate code has any SYNTAX or COMPILATION errors.
-   - If there is a syntax error or missing closing bracket/parenthesis/semicolon:
-     set "isCompilationError": true, "success": false, "stderr": "SyntaxError: <details with line number>", and set every test case "passed": false, "status": "Compilation Error", "actualOutput": "Compilation Error: <details>".
-2. If the candidate code is empty, blank, contains only comments, or is only a boilerplate template without a functioning solution:
+STRICT EVALUATION INSTRUCTIONS (CodeTantra Dynamic Input & Full Program Rules):
+1. MANDATORY PROGRAM STRUCTURE:
+   - In Java, the code MUST have a class and 'public static void main(String[] args)' that reads dynamic input from stdin (e.g. Scanner).
+   - In C and C++, the code MUST have 'int main()' that reads dynamic input from stdin (cin, scanf).
+   - In Python, the code should read dynamic input (sys.stdin or input()).
+   - In JavaScript, the code should read dynamic input (fs.readFileSync(0, 'utf-8') or readline).
+   - If Java, C, or C++ code does NOT have a main function/method:
+     set "isCompilationError": true, "success": false, "errorLine": 1, "errorMessage": "Main method not found. Complete program with main() is required (as in CodeTantra).", "stderr": "Compilation Error: Main method not found. Please define main() to read dynamic input from stdin.", and mark all test cases "status": "Compilation Error", "passed": false.
+
+2. SYNTAX AND COMPILATION ERRORS:
+   - Check if the code has any syntax errors, missing semicolons, undeclared variables, or unmatched brackets.
+   - If there is a syntax or compilation error:
+     set "isCompilationError": true, "success": false, "errorLine": <1-indexed line number of the error>, "errorMessage": "Line <line_number>: <concise error description>", "stderr": "Line <line_number>: <error description>", and mark all test cases "status": "Compilation Error", "passed": false.
+
+3. UNEDITED BOILERPLATE:
+   - If the code is just the default template or contains no actual logic:
      set "success": false, "stderr": "No solution code provided in editor.", and set every test case "passed": false, "status": "Failed", "actualOutput": "(No output produced — empty solution)".
-3. If the code executes without syntax errors:
-   - Simulate running the code on each testcase input.
-   - Compare actual computed output against expectedOutput.
-   - NEVER assume the code passes. If the code does not print or return the expected output, mark it as FAILED with the actual output produced.
+
+4. EXECUTION ON TEST CASES (When No Syntax Errors):
+   - Simulate running the code on each testcase input provided via standard input.
+   - Compare actual stdout against expectedOutput.
    - If output matches expectedOutput exactly (whitespace-trimmed): set "passed": true, "status": "Passed".
    - If output differs or nothing is printed: set "passed": false, "status": "Failed".
-   - If a runtime error occurs (IndexError, TypeError, division by zero): set "passed": false, "status": "Runtime Error", "actualOutput": "Runtime Error: <type>".
+   - If a runtime error occurs: set "passed": false, "status": "Runtime Error", "actualOutput": "Runtime Error: <type>".
 
 Return valid JSON in this EXACT structure:
 {
   "success": false,
   "isCompilationError": false,
+  "errorLine": null,
+  "errorMessage": "",
   "stdout": "standard output if any",
   "stderr": "error messages if any",
   "passedCount": 0,
@@ -919,23 +1012,30 @@ Return ONLY raw valid JSON.`;
     });
     const parsed = parseJsonSafely(raw?.data || raw);
     if (parsed && Array.isArray(parsed.testCaseResults)) {
-      const passedCount = parsed.testCaseResults.filter((t) => t.passed).length;
+      const isCompErr = !!parsed.isCompilationError;
+      const extracted = isCompErr ? extractErrorDetails(parsed.stderr || parsed.errorMessage || "", language) : { errorLine: null, errorMessage: "" };
+      const errLine = parsed.errorLine || extracted.errorLine;
+      const errMsg = parsed.errorMessage || extracted.errorMessage || (isCompErr ? "Compilation / Syntax Error" : "");
+
+      const passedCount = isCompErr ? 0 : parsed.testCaseResults.filter((t) => t.passed).length;
       const totalCount = parsed.testCaseResults.length;
       return {
-        success: parsed.success ?? (passedCount === totalCount && totalCount > 0),
-        isCompilationError: parsed.isCompilationError ?? false,
-        compilationError: parsed.isCompilationError ?? false,
+        success: !isCompErr && (parsed.success ?? (passedCount === totalCount && totalCount > 0)),
+        isCompilationError: isCompErr,
+        compilationError: isCompErr,
+        errorLine: errLine,
+        errorMessage: errMsg,
         stdout: parsed.stdout || "",
-        stderr: parsed.stderr || "",
+        stderr: parsed.stderr || errMsg || "",
         passedCount,
         totalCount,
         testCaseResults: parsed.testCaseResults.map((tc, idx) => ({
           testCaseId: tc.testCaseId || String(idx + 1),
           input: tc.input || "",
           expectedOutput: tc.expectedOutput || "",
-          actualOutput: tc.actualOutput || (tc.passed ? tc.expectedOutput : "(No output)"),
-          passed: !!tc.passed,
-          status: tc.status || (tc.passed ? "Passed" : "Failed"),
+          actualOutput: isCompErr ? `Compilation Error: ${errMsg}` : (tc.actualOutput || (tc.passed ? tc.expectedOutput : "(No output)")),
+          passed: isCompErr ? false : !!tc.passed,
+          status: isCompErr ? "Compilation Error" : (tc.status || (tc.passed ? "Passed" : "Failed")),
           executionTimeMs: tc.executionTimeMs || 12,
         })),
       };
@@ -992,6 +1092,12 @@ function isCodeEmptyOrBoilerplateOnly(code = "", language = "") {
     "return {};",
     "return [];",
     "write your code here",
+    // CodeTantra empty boilerplate templates
+    "import java.util.scanner; public class main { public static void main(string[] args) { scanner sc = new scanner(system.in); } }",
+    "#include <iostream> using namespace std; int main() { return 0; }",
+    "#include <stdio.h> int main() { return 0; }",
+    "import sys def main(): pass if __name__ == '__main__': main()",
+    "const fs = require('fs'); function main() { const input = fs.readfilesync(0, 'utf-8').trim(); } main();",
   ];
   if (trivialPatterns.includes(stripped)) return true;
 
@@ -1077,19 +1183,16 @@ async function executeCode({ code, language = "python", testCases = [], question
       runner = runJavaScript;
     } else if (lang.includes("java")) {
       const javacOk = await isJavacAvailable();
-      const hasMain = /public\s+static\s+void\s+main\s*\(/i.test(cleanCode);
-      if (javacOk && hasMain) {
+      if (javacOk) {
         hasNativeRunner = true;
         runner = runJava;
       } else {
-        // Missing javac or class/method without main: route directly to AI sandbox evaluator
         hasNativeRunner = false;
         runner = null;
       }
     } else if (lang.includes("cpp") || lang.includes("c++") || lang === "c") {
       const gppOk = await isGppAvailable();
-      const hasMain = /(int|void)\s+main\s*\(/i.test(cleanCode);
-      if (gppOk && hasMain) {
+      if (gppOk) {
         hasNativeRunner = true;
         runner = runCpp;
       } else {
@@ -1264,11 +1367,14 @@ async function executeCode({ code, language = "python", testCases = [], question
         }
       }
 
+      const errDetails = hasCompilationError ? extractErrorDetails(overallStderr, lang) : { errorLine: null, errorMessage: "" };
       const finalResult = {
         success: !hasCompilationError && totalCount > 0 && passedCount === totalCount,
         isCompilationError: hasCompilationError,
         compilationError: hasCompilationError,
         isRuntimeError: !hasCompilationError && results.some((r) => r.status === "Runtime Error"),
+        errorLine: errDetails.errorLine,
+        errorMessage: errDetails.errorMessage,
         language: lang,
         stdout: overallStdout,
         stderr: overallStderr,
