@@ -1089,12 +1089,13 @@ Return ONLY raw valid JSON.`;
         totalCount,
         testCaseResults: parsed.testCaseResults.map((tc, idx) => ({
           testCaseId: tc.testCaseId || String(idx + 1),
-          input: tc.input || "",
-          expectedOutput: tc.expectedOutput || "",
+          input: tc.input || (testCases[idx] ? testCases[idx].input : ""),
+          expectedOutput: tc.expectedOutput || (testCases[idx] ? testCases[idx].expectedOutput : ""),
           actualOutput: isCompErr ? `Compilation Error: ${errMsg}` : (tc.actualOutput || (tc.passed ? tc.expectedOutput : "(No output)")),
           passed: isCompErr ? false : !!tc.passed,
           status: isCompErr ? "Compilation Error" : (tc.status || (tc.passed ? "Passed" : "Failed")),
           executionTimeMs: tc.executionTimeMs || 12,
+          isHidden: Boolean(testCases[idx]?.isHidden),
         })),
       };
     }
@@ -1118,6 +1119,7 @@ Return ONLY raw valid JSON.`;
       passed: false,
       status: "Runtime Error",
       executionTimeMs: 0,
+      isHidden: Boolean(tc.isHidden),
     })),
   };
 }
@@ -1322,6 +1324,7 @@ async function executeCode({ code, language = "python", testCases = [], question
               status: "Compilation Error",
               executionTimeMs: res.executionTimeMs || 0,
               error: overallStderr,
+              isHidden: Boolean(remTc.isHidden),
             });
           }
           break;
@@ -1375,6 +1378,7 @@ async function executeCode({ code, language = "python", testCases = [], question
           status,
           executionTimeMs: res.executionTimeMs || 10,
           error: res.stderr || undefined,
+          isHidden: Boolean(tc.isHidden),
         });
       }
 

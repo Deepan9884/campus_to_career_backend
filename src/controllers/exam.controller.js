@@ -1476,7 +1476,12 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
       constraints: c.constraints,
       marks: c.marks,
       starterCodes: getEmptyStarterCodes(c.title), // STRICT: only empty starter templates
-      testCases: (c.testCases || []).filter((tc) => !tc.isHidden), // only show sample test cases
+      testCases: (c.testCases || []).map((tc) => ({
+        input: tc.input,
+        expectedOutput: tc.expectedOutput,
+        description: tc.description,
+        isHidden: Boolean(tc.isHidden),
+      })),
     })),
   }));
 
