@@ -180,6 +180,7 @@ function extractErrorDetails(stderr = "", lang = "") {
   if (!stderr) return { errorLine: null, errorMessage: "" };
 
   const clean = String(stderr).trim();
+  const normalizedLang = String(lang || "").toLowerCase().trim();
   let errorLine = null;
   let errorMessage = "";
 
@@ -196,33 +197,54 @@ function extractErrorDetails(stderr = "", lang = "") {
   }
 
   // 1. Java (javac): Main.java:5: error: ';' expected
-  const javaMatch = clean.match(/(?:[A-Za-z0-9_.-]+\.java):(\d+):\s*(?:error:)?\s*([^\r\n]+)/i);
+  const javaMatch = clean.match(/(?:[A-Za-z0-9_.-]+\.java):(\d+)(?::\d+)?:\s*(?:error:)?\s*([^\r\n]+)/i);
 
   // 2. C / C++ (gcc / g++ / clang): solution.cpp:7:5: error: expected ';' before 'return'
-  const cppMatch = clean.match(/(?:[A-Za-z0-9_.-]+\.(?:cpp|c|cc|cxx|h)):(\d+)(?::\d+)?:\s*(?:error:)?\s*([^\r\n]+)/i);
+  const cppMatch = clean.match(/(?:[A-Za-z0-9_.-]+\.(?:cpp|c|cc|cxx|h|hpp)):(\d+)(?::\d+)?:\s*(?:error:)?\s*([^\r\n]+)/i);
 
   // 3. Python: File "solution.py", line 4
-  const pyMatch = clean.match(/line\s+(\d+)/i);
+  const pyTraceMatch = clean.match(/File\s+"[^"]*",\s*line\s+(\d+)/i);
   const pyErrTypeMatch = clean.match(/((?:SyntaxError|IndentationError|TabError|NameError|TypeError|ValueError|IndexError|ZeroDivisionError):[^\r\n]+)/i);
 
   // 4. JavaScript / Node.js: solution.js:4
   const jsLineMatch = clean.match(/(?:solution\.js|eval|input):(\d+)/i);
   const jsErrMatch = clean.match(/((?:SyntaxError|ReferenceError|TypeError):[^\r\n]+)/i);
 
-  if (javaMatch) {
-    errorLine = parseInt(javaMatch[1], 10);
-    errorMessage = `Line ${errorLine}: ${javaMatch[2]?.trim() || "Compilation error"}`;
-  } else if (cppMatch) {
-    errorLine = parseInt(cppMatch[1], 10);
-    errorMessage = `Line ${errorLine}: ${cppMatch[2]?.trim() || "Compilation error"}`;
-  } else if (pyMatch) {
-    errorLine = parseInt(pyMatch[1], 10);
-    const desc = pyErrTypeMatch ? pyErrTypeMatch[1].trim() : "SyntaxError: invalid syntax";
-    errorMessage = `Line ${errorLine}: ${desc}`;
-  } else if (jsLineMatch) {
-    errorLine = parseInt(jsLineMatch[1], 10);
-    const desc = jsErrMatch ? jsErrMatch[1].trim() : "SyntaxError in JavaScript code";
-    errorMessage = `Line ${errorLine}: ${desc}`;
+  if (normalizedLang.includes("java") || javaMatch) {
+    if (javaMatch) {
+      errorLine = parseInt(javaMatch[1], 10);
+      errorMessage = `Line ${errorLine}: ${javaMatch[2]?.trim() || "Compilation error"}`;
+    } else {
+      const lineMatch = clean.match(/(?:line\s*|:)(\d+)/i);
+      if (lineMatch) {
+        errorLine = parseInt(lineMatch[1], 10);
+        errorMessage = `Line ${errorLine}: ${clean.split("\n")[0]}`;
+      } else {
+        errorMessage = clean.split("\n")[0] || "Java Compilation Error";
+      }
+    }
+  } else if (normalizedLang.includes("cpp") || normalizedLang.includes("c++") || normalizedLang === "c" || cppMatch) {
+    if (cppMatch) {
+      errorLine = parseInt(cppMatch[1], 10);
+      errorMessage = `Line ${errorLine}: ${cppMatch[2]?.trim() || "Compilation error"}`;
+    } else {
+      const lineMatch = clean.match(/(?:line\s*|:)(\d+)/i);
+      if (lineMatch) {
+        errorLine = parseInt(lineMatch[1], 10);
+        errorMessage = `Line ${errorLine}: ${clean.split("\n")[0]}`;
+      } else {
+        errorMessage = clean.split("\n")[0] || "C/C++ Compilation Error";
+      }
+    }
+  } else if (normalizedLang.includes("python") || normalizedLang === "py" || pyTraceMatch || pyErrTypeMatch) {
+    const lineMatch = pyTraceMatch || clean.match(/line\s+(\d+)/i);
+    if (lineMatch) errorLine = parseInt(lineMatch[1], 10);
+    const desc = pyErrTypeMatch ? pyErrTypeMatch[1].trim() : (clean.split("\n")[0] || "SyntaxError: invalid syntax");
+    errorMessage = errorLine ? `Line ${errorLine}: ${desc}` : desc;
+  } else if (normalizedLang.includes("javascript") || normalizedLang.includes("typescript") || jsLineMatch || jsErrMatch) {
+    if (jsLineMatch) errorLine = parseInt(jsLineMatch[1], 10);
+    const desc = jsErrMatch ? jsErrMatch[1].trim() : (clean.split("\n")[0] || "JavaScript Error");
+    errorMessage = errorLine ? `Line ${errorLine}: ${desc}` : desc;
   } else {
     const genericMatch = clean.match(/(?:line\s*|:)(\d+)/i);
     if (genericMatch) {
