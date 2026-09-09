@@ -24,6 +24,7 @@ const {
 } = require("../services/questionBank.service");
 const { generateContent } = require("../services/ai.service");
 const compilerService = require("../services/compiler.service");
+const { formatMathText } = require("../utils/formatMathText");
 
 /**
  * Heuristically detect programming language from candidate code if not specified
@@ -101,11 +102,17 @@ const createExam = asyncHandler(async (req, res) => {
     if (sec.type === "mcq") {
       sec.mcqQuestions?.forEach((q, qIdx) => {
         if (!q.questionId) q.questionId = `q-${sIdx + 1}-${qIdx + 1}`;
+        if (q.question) q.question = formatMathText(q.question);
+        if (Array.isArray(q.options)) q.options = q.options.map((o) => formatMathText(o));
+        if (q.correctAnswer) q.correctAnswer = formatMathText(q.correctAnswer);
+        if (q.explanation) q.explanation = formatMathText(q.explanation);
         totalMarks += Number(q.positiveMarks) || 1;
       });
     } else if (sec.type === "coding") {
       sec.codingQuestions?.forEach((c, cIdx) => {
         if (!c.id) c.id = `code-${sIdx + 1}-${cIdx + 1}`;
+        if (c.title) c.title = formatMathText(c.title);
+        if (c.problemStatement) c.problemStatement = formatMathText(c.problemStatement);
         totalMarks += Number(c.marks) || 10;
         // Strictly sanitize starter code to prevent any solution code leak
         if (!c.starterCodes || typeof c.starterCodes !== "object") {
@@ -682,7 +689,8 @@ Requirements:
 2. Exactly 4 clear options for each question.
 3. 1 correct option index (0, 1, 2, or 3).
 4. Detailed technical explanation.
-5. Strict JSON array output matching this schema:
+5. Clean, standard notation for all math, variables, and complexities (e.g. write V, E, O(N), O(E log V) instead of $V$, $E$, $O(N)$). Do NOT wrap variables in raw LaTeX dollar signs.
+6. Strict JSON array output matching this schema:
 [
   {
     "question": "Question text here...",
@@ -723,13 +731,13 @@ Output ONLY the raw JSON array.`;
     if (Array.isArray(parsed) && parsed.length > 0) {
       const formatted = parsed.map((q, idx) => ({
         questionId: `ai-mcq-${Date.now()}-${idx}`,
-        question: q.question,
-        options: q.options || [],
+        question: formatMathText(q.question),
+        options: (q.options || []).map((o) => formatMathText(o)),
         correctOptionIndex: Number(q.correctOptionIndex) || 0,
-        correctAnswer: q.options?.[q.correctOptionIndex] || q.correctAnswer || "",
+        correctAnswer: formatMathText(q.options?.[q.correctOptionIndex] || q.correctAnswer || ""),
         positiveMarks: q.positiveMarks || (difficulty === "hard" ? 3 : 2),
         negativeMarks: q.negativeMarks || 0.5,
-        explanation: q.explanation || "",
+        explanation: formatMathText(q.explanation || ""),
         topic: q.topic || topicStr,
         difficulty: q.difficulty || difficulty,
       }));
@@ -823,14 +831,16 @@ Output ONLY valid JSON matching this schema:
     if (parsed) {
       const challenge = {
         id: `ai-code-${Date.now()}`,
-        title: parsed.title || "Algorithm Challenge",
+        title: formatMathText(parsed.title || "Algorithm Challenge"),
         difficulty: parsed.difficulty || difficulty,
         category: parsed.category || topic,
-        problemStatement: parsed.problemStatement,
+        problemStatement: formatMathText(parsed.problemStatement || ""),
         diagramUrl: "",
         inputFormat: parsed.inputFormat || "Standard Input",
         outputFormat: parsed.outputFormat || "Standard Output",
-        constraints: parsed.constraints || [],
+        constraints: Array.isArray(parsed.constraints)
+          ? parsed.constraints.map((c) => formatMathText(c))
+          : parsed.constraints || [],
         marks: parsed.marks || 15,
         starterCodes: getEmptyStarterCodes(parsed.title), // STRICT: NO solution code!
         testCases: parsed.testCases || [],
