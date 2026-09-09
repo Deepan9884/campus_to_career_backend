@@ -967,30 +967,35 @@ Return ONLY raw valid JSON.`;
 function isCodeEmptyOrBoilerplateOnly(code = "", language = "") {
   if (!code || typeof code !== "string" || !code.trim()) return true;
 
-  let s = code
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(\/\/|#|--).*$/gm, "")
-    .replace(/""".*?"""/gs, "")
-    .replace(/'''.*?'''/gs, "")
-    .replace(/^\s*(#include|import|from|package|using\s+namespace)[^\n;]*;?/gm, "")
-    .replace(/ios_base::sync_with_stdio\([^)]*\);?/g, "")
-    .replace(/cin\.tie\([^)]*\);?/g, "")
-    .replace(/\b(pass|return\s+0;?)\b/g, "")
-    .replace(/[a-zA-Z0-9_]+\s*\(\s*\);?/g, "");
+  // Strip block comments (/* ... */)
+  let s = code.replace(/\/\*[\s\S]*?\*\//g, "");
+  // Strip Python docstrings
+  s = s.replace(/""".*?"""/gs, "").replace(/'''.*?'''/gs, "");
+  // Strip single line comments (// ..., # ..., -- ...)
+  s = s.replace(/(\/\/|#|--).*$/gm, "");
 
-  let prev;
-  do {
-    prev = s;
-    s = s.replace(/\{[^{}]*\}/g, "");
-  } while (s !== prev);
+  // If there's literally no non-comment code left
+  if (!s.trim()) return true;
 
-  s = s
-    .replace(/\b(int|void|public\s+static\s+void|func|function|class|public\s+class)\s+[a-zA-Z0-9_]+\s*(\([^)]*\))?/g, "")
-    .replace(/def\s+[a-zA-Z0-9_]+\s*\([^)]*\)\s*:/g, "")
-    .replace(/if\s+__name__\s*==\s*['"]__main__['"]\s*:/g, "")
-    .replace(/\s+/g, "");
+  // Check if what's left is strictly trivial starter placeholders only
+  const stripped = s.trim().replace(/\s+/g, " ").toLowerCase();
+  const trivialPatterns = [
+    "pass",
+    "pass;",
+    "return 0;",
+    "return 0",
+    "return;",
+    "return null;",
+    "return null",
+    "return false;",
+    "return true;",
+    "return {};",
+    "return [];",
+    "write your code here",
+  ];
+  if (trivialPatterns.includes(stripped)) return true;
 
-  return s.length === 0;
+  return false;
 }
 
 /**
