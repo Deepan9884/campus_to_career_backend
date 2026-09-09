@@ -696,19 +696,54 @@ function runJava(code, input = "") {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-java-"));
 
     let className = "Main";
-    const classMatch = code.match(/(?:public\s+)?class\s+([A-Za-z0-9_]+)/);
-    if (classMatch && classMatch[1]) {
-      className = classMatch[1];
+    // 1. Look for public class first
+    const publicClassMatch = code.match(/public\s+class\s+([A-Za-z0-9_]+)/);
+    if (publicClassMatch && publicClassMatch[1]) {
+      className = publicClassMatch[1];
+    } else {
+      // 2. Look for class containing public static void main
+      const classWithMainMatch = code.match(/class\s+([A-Za-z0-9_]+)[\s\S]*?public\s+static\s+void\s+main/);
+      if (classWithMainMatch && classWithMainMatch[1]) {
+        className = classWithMainMatch[1];
+      } else {
+        const anyClassMatch = code.match(/class\s+([A-Za-z0-9_]+)/);
+        if (anyClassMatch && anyClassMatch[1]) {
+          className = anyClassMatch[1];
+        }
+      }
     }
 
-    const cleanedCode = code.replace(/package\s+[a-zA-Z0-9_.]+;/g, "");
+    let cleanedCode = code.replace(/package\s+[a-zA-Z0-9_.]+;/g, "");
+
+    // Seamless Java Collections & I/O support: auto-import java.util and java.io if not explicitly imported
+    let prependedLines = 0;
+    let extraImports = "";
+    if (!/import\s+java\.util\./.test(cleanedCode)) {
+      extraImports += "import java.util.*;\n";
+      prependedLines++;
+    }
+    if (!/import\s+java\.io\./.test(cleanedCode)) {
+      extraImports += "import java.io.*;\n";
+      prependedLines++;
+    }
+    if (extraImports) {
+      cleanedCode = extraImports + cleanedCode;
+    }
+
     const filePath = path.join(tempDir, `${className}.java`);
     fs.writeFileSync(filePath, cleanedCode, { encoding: "utf8", mode: 0o600 });
 
     execFile("javac", [filePath], { cwd: tempDir, env: getSafeSubprocessEnv(), timeout: COMPILE_TIMEOUT_MS }, (compileErr, _compileStdout, compileStderr) => {
       const rawCompileErr = compileStderr || compileErr?.message || "";
       if (compileErr || compileStderr) {
-        const cleanErr = sanitizeStderr(rawCompileErr, tempDir, `${className}.java`);
+        let cleanErr = sanitizeStderr(rawCompileErr, tempDir, `${className}.java`);
+        // Offset error line numbers back to student's source code if helper imports were prepended
+        if (prependedLines > 0) {
+          cleanErr = cleanErr.replace(new RegExp(`(${className}\\.java):(\\d+)`, "gi"), (_, file, lineNum) => {
+            const adjusted = Math.max(1, parseInt(lineNum, 10) - prependedLines);
+            return `${file}:${adjusted}`;
+          });
+        }
         const isMissing = isHostCompilerMissing(rawCompileErr) || isHostCompilerMissing(cleanErr) || isHostCompilerMissing(compileErr?.message) || rawCompileErr.includes("javac:") || rawCompileErr.includes("javac not found");
         try {
           fs.rmSync(tempDir, { recursive: true, force: true });
@@ -954,16 +989,17 @@ Test Cases:
 ${JSON.stringify(testCases, null, 2)}
 
 STRICT EVALUATION INSTRUCTIONS (CodeTantra Dynamic Input & Full Program Rules):
-1. MANDATORY PROGRAM STRUCTURE:
+1. MANDATORY PROGRAM STRUCTURE & STANDARD LIBRARIES:
    - In Java, the code MUST have a class and 'public static void main(String[] args)' that reads dynamic input from stdin (e.g. Scanner).
-   - In C and C++, the code MUST have 'int main()' that reads dynamic input from stdin (cin, scanf).
+   - Standard Java Collections (java.util.List, ArrayList, Map, HashMap, Set, HashSet, Queue, LinkedList, PriorityQueue, Stack, Deque, Arrays, Collections, Scanner) and I/O (BufferedReader, InputStreamReader) are fully supported. Do NOT fail compilation solely for omitted 'import java.util.*' if standard Java collection classes are used.
+   - In C and C++, the code MUST have 'int main()' that reads dynamic input from stdin (cin, scanf). Standard library headers (<vector>, <iostream>, <algorithm>, <string>, <map>, <set>) are supported.
    - In Python, the code should read dynamic input (sys.stdin or input()).
    - In JavaScript, the code should read dynamic input (fs.readFileSync(0, 'utf-8') or readline).
    - If Java, C, or C++ code does NOT have a main function/method:
      set "isCompilationError": true, "success": false, "errorLine": 1, "errorMessage": "Main method not found. Complete program with main() is required (as in CodeTantra).", "stderr": "Compilation Error: Main method not found. Please define main() to read dynamic input from stdin.", and mark all test cases "status": "Compilation Error", "passed": false.
 
 2. SYNTAX AND COMPILATION ERRORS:
-   - Check if the code has any syntax errors, missing semicolons, undeclared variables, or unmatched brackets.
+   - Check if the code has any genuine syntax errors, missing semicolons, undeclared custom variables, or unmatched brackets.
    - If there is a syntax or compilation error:
      set "isCompilationError": true, "success": false, "errorLine": <1-indexed line number of the error>, "errorMessage": "Line <line_number>: <concise error description>", "stderr": "Line <line_number>: <error description>", and mark all test cases "status": "Compilation Error", "passed": false.
 
