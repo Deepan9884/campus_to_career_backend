@@ -312,6 +312,12 @@ function isHostCompilerMissing(stderr = "") {
     lower.includes("command not found") ||
     lower.includes("not found") ||
     lower.includes("enoent") ||
+    lower.includes("spawn unknown") ||
+    lower.includes("application control policy") ||
+    lower.includes("blocked this file") ||
+    lower.includes("failed to read unmanaged installs") ||
+    lower.includes("installing python") ||
+    lower.includes("python install manager") ||
     lower.includes("cannot find the path specified") ||
     lower.includes("no such file or directory") ||
     lower.includes("cannot spawn") ||
@@ -560,7 +566,7 @@ function checkCodeSecurity(code = "", language = "python") {
  */
 async function runPython(code, input = "") {
   const pythonCmds = process.platform === "win32"
-    ? [["python", []], ["py", ["-3"]], ["python3", []]]
+    ? [["python3", []], ["py", []], ["python", []]]
     : [["python3", []], ["python", []]];
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-py-"));
@@ -570,11 +576,24 @@ async function runPython(code, input = "") {
   for (const [cmd, extraArgs] of pythonCmds) {
     const res = await new Promise((resolve) => {
       const startTime = Date.now();
-      const proc = spawn(cmd, [...extraArgs, filePath], {
-        cwd: tempDir,
-        env: getSafeSubprocessEnv(),
-        timeout: EXECUTION_TIMEOUT_MS,
-      });
+      let proc;
+      try {
+        proc = spawn(cmd, [...extraArgs, filePath], {
+          cwd: tempDir,
+          env: getSafeSubprocessEnv(),
+          timeout: EXECUTION_TIMEOUT_MS,
+        });
+      } catch (spawnErr) {
+        return resolve({
+          stdout: "",
+          stderr: spawnErr.message,
+          exitCode: 127,
+          executionTimeMs: 0,
+          timedOut: false,
+          isCompileError: false,
+          hostCompilerMissing: true,
+        });
+      }
 
       let stdout = "";
       let stderr = "";
@@ -609,14 +628,15 @@ async function runPython(code, input = "") {
       proc.on("close", (exitCode) => {
         const elapsed = Date.now() - startTime;
         const cleanErr = sanitizeStderr(stderr, tempDir, "solution.py");
+        const isMissing = isHostCompilerMissing(stderr) || isHostCompilerMissing(cleanErr);
         resolve({
           stdout: stdout.trim(),
-          stderr: cleanErr,
-          exitCode,
+          stderr: isMissing ? "Python interpreter not functional on host" : cleanErr,
+          exitCode: isMissing ? 127 : exitCode,
           executionTimeMs: elapsed,
           timedOut: elapsed >= EXECUTION_TIMEOUT_MS,
-          isCompileError: isSyntaxOrCompileError(cleanErr, "python"),
-          hostCompilerMissing: false,
+          isCompileError: !isMissing && isSyntaxOrCompileError(cleanErr, "python"),
+          hostCompilerMissing: isMissing,
         });
       });
 
@@ -1037,6 +1057,15 @@ async function runCpp(code, input = "") {
  * Intelligent Code Evaluator fallback powered by Gemini with deterministic temperature (0.0)
  */
 async function runWithAiEvaluator(code, language, testCases = [], questionText = "", userId = null) {
+  const sanitizedTestCases = testCases.map((tc) => {
+    const rawInput = String(tc.input || "");
+    const adapted = adaptLeetCodeInput(rawInput, false);
+    return {
+      ...tc,
+      input: adapted && adapted !== rawInput ? adapted : rawInput,
+    };
+  });
+
   const prompt = `You are a strict automated code execution engine and compiler judge.
 Evaluate the candidate's ${language} code against the test cases.
 
@@ -1049,7 +1078,7 @@ ${code}
 \`\`\`
 
 Test Cases:
-${JSON.stringify(testCases, null, 2)}
+${JSON.stringify(sanitizedTestCases, null, 2)}
 
 STRICT EVALUATION INSTRUCTIONS (CodeTantra Dynamic Input & Full Program Rules):
 1. MANDATORY PROGRAM STRUCTURE & STANDARD LIBRARIES:
@@ -1211,7 +1240,10 @@ function isCodeEmptyOrBoilerplateOnly(code = "", language = "") {
  */
 function adaptLeetCodeInput(raw, includeCount = false) {
   if (!raw) return null;
-  const str = String(raw).trim();
+  let str = String(raw).trim();
+  // Strip leading "Input:" or "Input :" prefixes
+  str = str.replace(/^(?:Input\s*:\s*)+/i, "").trim();
+
   const varRegex = /(?:^|,|\n)\s*([a-zA-Z_]\w*)\s*=\s*(\[[^\]]*\]|'[^']*'|"[^"]*"|[^,\n]+)/g;
   const matches = [...str.matchAll(varRegex)];
 
@@ -1379,10 +1411,16 @@ async function executeCode({ code, language = "python", testCases = [], question
           .replace(/\r\n/g, "\n")
           .replace(/\\r\\n/g, "\n")
           .replace(/\\n/g, "\n");
-        let res = await runner(cleanCode, normalizedInput);
+        // Proactively adapt LeetCode parameter inputs (e.g. nums = [1, 1, 2] or Input: nums = [1, 1, 2])
+        // into clean stdin format (e.g. 1 1 2) so standard console code (input().split()) executes cleanly.
+        const proactiveAdapted = adaptLeetCodeInput(normalizedInput, false);
+        const inputToRun = (proactiveAdapted && proactiveAdapted !== normalizedInput) ? proactiveAdapted : normalizedInput;
 
-        // If execution failed with an input-parsing runtime error (e.g. ValueError: invalid literal for int(): 'nums')
-        // and input has LeetCode variable assignments (e.g. nums = [1, 1, 2]), retry with adapted clean stdin!
+        let res = await runner(cleanCode, inputToRun);
+
+        // If execution failed with an input-parsing runtime error (e.g. ValueError, EOFError),
+        // try adapting with element count first (e.g. 3\n1 1 2) for questions reading array size N first,
+        // or try the raw input if proactive adaptation was used.
         if (
           res.exitCode !== 0 &&
           res.stderr &&
@@ -1391,19 +1429,17 @@ async function executeCode({ code, language = "python", testCases = [], question
             res.stderr.includes("TypeError") ||
             res.stderr.includes("EOFError"))
         ) {
-          const adapted = adaptLeetCodeInput(normalizedInput, false);
-          if (adapted && adapted !== normalizedInput) {
-            const retryRes = await runner(cleanCode, adapted);
+          const adaptedWithCount = adaptLeetCodeInput(normalizedInput, true);
+          if (adaptedWithCount && adaptedWithCount !== inputToRun) {
+            const retryRes = await runner(cleanCode, adaptedWithCount);
             if (retryRes.exitCode === 0) {
               res = retryRes;
-            } else {
-              const adaptedWithCount = adaptLeetCodeInput(normalizedInput, true);
-              if (adaptedWithCount && adaptedWithCount !== adapted) {
-                const retryRes2 = await runner(cleanCode, adaptedWithCount);
-                if (retryRes2.exitCode === 0) {
-                  res = retryRes2;
-                }
-              }
+            }
+          }
+          if (res.exitCode !== 0 && inputToRun !== normalizedInput) {
+            const rawRetry = await runner(cleanCode, normalizedInput);
+            if (rawRetry.exitCode === 0) {
+              res = rawRetry;
             }
           }
         }
@@ -1585,5 +1621,6 @@ async function executeCode({ code, language = "python", testCases = [], question
 module.exports = {
   executeCode,
   checkCodeSecurity,
+  adaptLeetCodeInput,
 };
 

@@ -4,6 +4,7 @@
  * along with LeetCode/HackerRank link extraction & parsing (WITHOUT solution code).
  */
 const https = require("https");
+const { adaptLeetCodeInput } = require("./compiler.service");
 
 const PRE_DEVELOPED_MCQ_BANK = [
   // ── DSA & ALGORITHMS (EASY, MEDIUM, HARD) ───────────────────────────────────
@@ -742,8 +743,10 @@ function parseLeetCodeProblemData(q, sourceUrl) {
       const outputMatch = preContent.match(/Output:\s*([\s\S]*?)(?=Explanation:|$)/i);
 
       if (inputMatch && outputMatch) {
+        const rawIn = unescapeHtmlEntities(inputMatch[1]);
+        const cleanIn = adaptLeetCodeInput ? (adaptLeetCodeInput(rawIn) || rawIn) : rawIn;
         testCases.push({
-          input: unescapeHtmlEntities(inputMatch[1]),
+          input: cleanIn,
           expectedOutput: unescapeHtmlEntities(outputMatch[1]),
           description: `Example ${exIndex}`,
           isHidden: false,
@@ -756,9 +759,11 @@ function parseLeetCodeProblemData(q, sourceUrl) {
   if (testCases.length === 0 && q.exampleTestcaseList && q.exampleTestcaseList.length > 0) {
     const rawOutputs = Array.from((q.content || "").matchAll(/Output:\s*([^\n\r<]+)/gi));
     q.exampleTestcaseList.forEach((inputStr, idx) => {
+      const rawIn = unescapeHtmlEntities(inputStr);
+      const cleanIn = adaptLeetCodeInput ? (adaptLeetCodeInput(rawIn) || rawIn) : rawIn;
       const extractedOut = rawOutputs[idx] ? unescapeHtmlEntities(rawOutputs[idx][1]).replace(/[`*"]/g, "").trim() : "";
       testCases.push({
-        input: unescapeHtmlEntities(inputStr),
+        input: cleanIn,
         expectedOutput: extractedOut || "",
         description: `Sample case ${idx + 1}`,
         isHidden: false,
