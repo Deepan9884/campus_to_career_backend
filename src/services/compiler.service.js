@@ -1059,10 +1059,13 @@ async function runCpp(code, input = "") {
 async function runWithAiEvaluator(code, language, testCases = [], questionText = "", userId = null) {
   const sanitizedTestCases = testCases.map((tc) => {
     const rawInput = String(tc.input || "");
+    const rawExpected = String(tc.expectedOutput || "");
     const adapted = adaptLeetCodeInput(rawInput, false);
+    const cleanedExp = cleanExpectedOutput(rawExpected);
     return {
       ...tc,
       input: adapted && adapted !== rawInput ? adapted : rawInput,
+      expectedOutput: cleanedExp || rawExpected,
     };
   });
 
@@ -1283,6 +1286,20 @@ function adaptLeetCodeInput(raw, includeCount = false) {
 }
 
 /**
+ * Clean LeetCode style expected outputs (e.g. `2, nums = [1,2,_]` or `5, nums = [0,1,2,3,4,_,_,_,_,_]`)
+ * into the true expected return value (`2` or `5`).
+ */
+function cleanExpectedOutput(raw) {
+  if (!raw) return "";
+  let str = String(raw).trim();
+  str = str.replace(/^(?:Output\s*:\s*)+/i, "").trim();
+  str = str.replace(/,\s*[a-zA-Z_]\w*\s*=\s*\[[^\]]*\]/gi, "").trim();
+  str = str.replace(/,\s*[a-zA-Z_]\w*\s*=\s*[^,\n\r]+/gi, "").trim();
+  str = str.replace(/,\s*(?:where|with|hence|and)\b.*$/gi, "").trim();
+  return str;
+}
+
+/**
  * Main Code Execution & Test Case Verification Handler with High-Concurrency Throttling and Result Caching
  */
 async function executeCode({ code, language = "python", testCases = [], questionText = "", userId = null }) {
@@ -1480,6 +1497,7 @@ async function executeCode({ code, language = "python", testCases = [], question
         }
 
         const expectedTrimmed = String(tc.expectedOutput || "").trim().replace(/\r\n/g, "\n");
+        const cleanExp = cleanExpectedOutput(expectedTrimmed);
         const actualTrimmed = String(res.stdout || "").trim().replace(/\r\n/g, "\n");
 
         const normalizeForComparison = (str = "") =>
@@ -1507,7 +1525,11 @@ async function executeCode({ code, language = "python", testCases = [], question
         } else if (expectedTrimmed.length > 0) {
           passed =
             actualTrimmed === expectedTrimmed ||
-            normalizeForComparison(actualTrimmed) === normalizeForComparison(expectedTrimmed);
+            normalizeForComparison(actualTrimmed) === normalizeForComparison(expectedTrimmed) ||
+            (cleanExp && (
+              actualTrimmed === cleanExp ||
+              normalizeForComparison(actualTrimmed) === normalizeForComparison(cleanExp)
+            ));
           status = passed ? "Passed" : "Failed";
         } else if (res.stdout && res.exitCode === 0) {
           passed = true;
@@ -1622,5 +1644,6 @@ module.exports = {
   executeCode,
   checkCodeSecurity,
   adaptLeetCodeInput,
+  cleanExpectedOutput,
 };
 
