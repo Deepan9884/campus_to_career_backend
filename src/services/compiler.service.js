@@ -143,11 +143,35 @@ function sanitizeStderr(stderr = "", tempDir = "", fileName = "solution") {
 }
 
 /**
- * Check if the error message is a compilation / syntax error
+ * Check if the error message is a compile-time / syntax error.
+ * Runtime exceptions (ValueError, TypeError, NameError, IndexError, etc.) are NOT compile errors.
  */
 function isSyntaxOrCompileError(stderr = "", lang = "") {
   if (!stderr) return false;
   const lower = stderr.toLowerCase();
+  const normalizedLang = String(lang || "").toLowerCase();
+
+  // Python runtime exceptions — these happen at runtime, NOT at compile time.
+  // Do NOT classify them as compile errors (they are shown as "Runtime Error").
+  const PYTHON_RUNTIME_ERRORS = [
+    "valueerror:", "typeerror:", "nameerror:", "indexerror:", "keyerror:",
+    "attributeerror:", "runtimeerror:", "zerodivisionerror:", "overflowerror:",
+    "recursionerror:", "stopiteration:", "generatorexit:", "systemexit:",
+    "memoryerror:", "buffererror:", "arithmeticerror:", "lookuperror:",
+    "assertionerror:", "notimplementederror:", "oserror:", "ioerror:",
+    "filenotfounderror:", "permissionerror:", "timeouterror:",
+  ];
+  if (normalizedLang.includes("python") || normalizedLang === "py") {
+    if (PYTHON_RUNTIME_ERRORS.some((e) => lower.includes(e))) return false;
+  }
+
+  // JavaScript/Node.js runtime exceptions
+  const JS_RUNTIME_ERRORS = ["referenceerror:", "rangeerror:", "urierror:"];
+  if (normalizedLang.includes("javascript") || normalizedLang.includes("typescript") || normalizedLang === "js") {
+    if (JS_RUNTIME_ERRORS.some((e) => lower.includes(e))) return false;
+  }
+
+  // True compile / syntax errors (all languages)
   if (
     lower.includes("syntaxerror:") ||
     lower.includes("indentationerror:") ||
@@ -158,7 +182,6 @@ function isSyntaxOrCompileError(stderr = "", lang = "") {
     lower.includes("error: cannot find symbol") ||
     lower.includes("error: reached end of file while parsing") ||
     lower.includes("error: illegal start of expression") ||
-    lower.includes("error:") ||
     lower.includes("fatal error:") ||
     lower.includes("compilation error") ||
     lower.includes("undefined reference to `main'") ||
@@ -170,6 +193,17 @@ function isSyntaxOrCompileError(stderr = "", lang = "") {
   ) {
     return true;
   }
+
+  // For C/C++/Java: any "error:" line from the compiler is a compile error
+  if (
+    normalizedLang.includes("java") ||
+    normalizedLang.includes("cpp") ||
+    normalizedLang.includes("c++") ||
+    normalizedLang === "c"
+  ) {
+    if (lower.includes("error:")) return true;
+  }
+
   return false;
 }
 
@@ -237,8 +271,15 @@ function extractErrorDetails(stderr = "", lang = "") {
       }
     }
   } else if (normalizedLang.includes("python") || normalizedLang === "py" || pyTraceMatch || pyErrTypeMatch) {
-    const lineMatch = pyTraceMatch || clean.match(/line\s+(\d+)/i);
-    if (lineMatch) errorLine = parseInt(lineMatch[1], 10);
+    // For Python: use the LAST "line X" in the traceback, which is the actual error location.
+    // The first match is often an outer wrapper frame, not the student's code line.
+    const allLineMatches = [...clean.matchAll(/File\s+"[^"]*",\s*line\s+(\d+)/gi)];
+    if (allLineMatches.length > 0) {
+      errorLine = parseInt(allLineMatches[allLineMatches.length - 1][1], 10);
+    } else {
+      const simpleLineMatch = clean.match(/line\s+(\d+)/i);
+      if (simpleLineMatch) errorLine = parseInt(simpleLineMatch[1], 10);
+    }
     const desc = pyErrTypeMatch ? pyErrTypeMatch[1].trim() : (clean.split("\n")[0] || "SyntaxError: invalid syntax");
     errorMessage = errorLine ? `Line ${errorLine}: ${desc}` : desc;
   } else if (normalizedLang.includes("javascript") || normalizedLang.includes("typescript") || jsLineMatch || jsErrMatch) {
@@ -1165,6 +1206,51 @@ function isCodeEmptyOrBoilerplateOnly(code = "", language = "") {
 }
 
 /**
+ * Adapt LeetCode style test inputs (e.g. `nums = [1, 1, 2]` or `nums = [3, 2, 2, 3], val = 3`)
+ * into standard competitive programming stdin formats (space-separated, line-by-line).
+ */
+function adaptLeetCodeInput(raw, includeCount = false) {
+  if (!raw) return null;
+  const str = String(raw).trim();
+  const varRegex = /(?:^|,|\n)\s*([a-zA-Z_]\w*)\s*=\s*(\[[^\]]*\]|'[^']*'|"[^"]*"|[^,\n]+)/g;
+  const matches = [...str.matchAll(varRegex)];
+
+  if (matches.length > 0) {
+    const parts = [];
+    for (const m of matches) {
+      let val = m[2].trim();
+      if (val.startsWith("[") && val.endsWith("]")) {
+        const inner = val.slice(1, -1).trim();
+        const items = inner.length > 0
+          ? inner.split(",").map((x) => x.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean)
+          : [];
+        if (includeCount) {
+          parts.push(String(items.length));
+        }
+        parts.push(items.join(" "));
+      } else {
+        parts.push(val.replace(/^['"]|['"]$/g, ""));
+      }
+    }
+    return parts.join("\n");
+  }
+
+  // Standalone array: [1, 1, 2]
+  if (str.startsWith("[") && str.endsWith("]")) {
+    const inner = str.slice(1, -1).trim();
+    const items = inner.length > 0
+      ? inner.split(",").map((x) => x.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean)
+      : [];
+    if (includeCount) {
+      return `${items.length}\n${items.join(" ")}`;
+    }
+    return items.join(" ");
+  }
+
+  return null;
+}
+
+/**
  * Main Code Execution & Test Case Verification Handler with High-Concurrency Throttling and Result Caching
  */
 async function executeCode({ code, language = "python", testCases = [], questionText = "", userId = null }) {
@@ -1293,7 +1379,34 @@ async function executeCode({ code, language = "python", testCases = [], question
           .replace(/\r\n/g, "\n")
           .replace(/\\r\\n/g, "\n")
           .replace(/\\n/g, "\n");
-        const res = await runner(cleanCode, normalizedInput);
+        let res = await runner(cleanCode, normalizedInput);
+
+        // If execution failed with an input-parsing runtime error (e.g. ValueError: invalid literal for int(): 'nums')
+        // and input has LeetCode variable assignments (e.g. nums = [1, 1, 2]), retry with adapted clean stdin!
+        if (
+          res.exitCode !== 0 &&
+          res.stderr &&
+          (res.stderr.includes("invalid literal") ||
+            res.stderr.includes("ValueError") ||
+            res.stderr.includes("TypeError") ||
+            res.stderr.includes("EOFError"))
+        ) {
+          const adapted = adaptLeetCodeInput(normalizedInput, false);
+          if (adapted && adapted !== normalizedInput) {
+            const retryRes = await runner(cleanCode, adapted);
+            if (retryRes.exitCode === 0) {
+              res = retryRes;
+            } else {
+              const adaptedWithCount = adaptLeetCodeInput(normalizedInput, true);
+              if (adaptedWithCount && adaptedWithCount !== adapted) {
+                const retryRes2 = await runner(cleanCode, adaptedWithCount);
+                if (retryRes2.exitCode === 0) {
+                  res = retryRes2;
+                }
+              }
+            }
+          }
+        }
 
         if (res.stderr) {
           overallStderr = res.stderr;
