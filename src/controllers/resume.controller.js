@@ -78,9 +78,8 @@ async function extractTextFromFile(filePath, ext) {
 }
 
 const KNOWN_DUMMY_PROJECTS = [
-  "campus to career ai placement platform",
-  "real-time collaborative code editor",
-  "distributed file storage system",
+  "synthetic placeholder project alpha",
+  "real-time collaborative code editor demo mock",
 ];
 
 const KNOWN_DUMMY_EVENTS = [

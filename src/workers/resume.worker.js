@@ -32,14 +32,45 @@ async function processResumeAnalysis(data) {
       userId,
     });
 
-    const fallbackData = getDefaultResumeAnalysis(targetRole);
-    const analysis = (result.success && typeof result.data === "object" && result.data)
+    const fallbackData = getDefaultResumeAnalysis(targetRole, extractedText);
+    let analysis = (result.success && typeof result.data === "object" && result.data)
       ? result.data
       : fallbackData;
 
-    // Calculate or calibrate composite score across all 5 pillars
+    // Self-healing: if AI returned empty arrays for projects/internships/events but candidate resume contains them, augment from heuristic parsing
+    if ((!Array.isArray(analysis.projects) || analysis.projects.length === 0) && Array.isArray(fallbackData.projects) && fallbackData.projects.length > 0) {
+      analysis.projects = fallbackData.projects;
+    }
+    if ((!Array.isArray(analysis.internships) || analysis.internships.length === 0) && Array.isArray(fallbackData.internships) && fallbackData.internships.length > 0) {
+      analysis.internships = fallbackData.internships;
+    }
+    if ((!Array.isArray(analysis.eventsAndCompetitions) || analysis.eventsAndCompetitions.length === 0) && Array.isArray(fallbackData.eventsAndCompetitions) && fallbackData.eventsAndCompetitions.length > 0) {
+      analysis.eventsAndCompetitions = fallbackData.eventsAndCompetitions;
+    }
+
+    // Recalculate or calibrate composite score across all 5 pillars
     if (analysis.scoreBreakdown && analysis.scoreBreakdown.pillars) {
       const p = analysis.scoreBreakdown.pillars;
+      if (p.projectsAndPersonal) {
+        p.projectsAndPersonal.personalCount = (analysis.projects || []).filter((pr) => pr.projectType === "personal").length;
+        p.projectsAndPersonal.academicCount = (analysis.projects || []).filter((pr) => pr.projectType !== "personal").length;
+        if ((analysis.projects || []).length > 0 && (!p.projectsAndPersonal.score || p.projectsAndPersonal.score < 60)) {
+          p.projectsAndPersonal.score = Math.min(95, 75 + analysis.projects.length * 6);
+        }
+      }
+      if (p.internshipsAndWork) {
+        p.internshipsAndWork.count = (analysis.internships || []).length;
+        if ((analysis.internships || []).length > 0 && (!p.internshipsAndWork.score || p.internshipsAndWork.score < 60)) {
+          p.internshipsAndWork.score = Math.min(95, 75 + analysis.internships.length * 10);
+        }
+      }
+      if (p.eventsAndHackathons) {
+        p.eventsAndHackathons.count = (analysis.eventsAndCompetitions || []).length;
+        if ((analysis.eventsAndCompetitions || []).length > 0 && (!p.eventsAndHackathons.score || p.eventsAndHackathons.score < 50)) {
+          p.eventsAndHackathons.score = Math.min(95, 70 + analysis.eventsAndCompetitions.length * 5);
+        }
+      }
+
       const weightedScore = Math.round(
         ((p.internshipsAndWork?.score ?? 40) * 0.25) +
         ((p.projectsAndPersonal?.score ?? 60) * 0.25) +
@@ -108,7 +139,7 @@ async function processResumeAnalysis(data) {
     console.error(`[Worker] Error processing resume ${resumeId}:`, error);
     
     // Self-healing fallback: make sure the resume does not remain permanently broken
-    const fallbackData = getDefaultResumeAnalysis(targetRole);
+    const fallbackData = getDefaultResumeAnalysis(targetRole, extractedText);
     resume.atsScore = fallbackData.atsScore;
     resume.keywordBreakdown = fallbackData.keywordBreakdown;
     resume.strengths = fallbackData.strengths;
