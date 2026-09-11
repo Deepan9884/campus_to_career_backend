@@ -208,9 +208,56 @@ function isSyntaxOrCompileError(stderr = "", lang = "") {
 }
 
 /**
+ * Accurately resolve and clamp the error line number in candidate code.
+ * If compiler/AI reports an invalid line (e.g. beyond EOF) or if there's a missing semicolon (';' expected),
+ * pinpoints the exact statement missing the terminator.
+ */
+function findProbableSyntaxErrorLine(code = "", reportedLine = null, errorDescription = "") {
+  if (!code || typeof code !== "string") return reportedLine;
+  const lines = code.split("\n");
+  const total = lines.length;
+  if (total === 0) return reportedLine;
+
+  let targetLine = reportedLine;
+  const desc = String(errorDescription || "").toLowerCase();
+  const isMissingSemicolon = desc.includes("';'") || desc.includes("semicolon") || desc.includes("expected ';'");
+
+  if (isMissingSemicolon) {
+    // Start searching backwards from reportedLine (or last line if reportedLine exceeds total)
+    const startIdx = targetLine && targetLine <= total ? targetLine - 1 : total - 1;
+    for (let i = startIdx; i >= 0; i--) {
+      const trimmed = lines[i].trim();
+      if (!trimmed || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) continue;
+      if (trimmed === "}" || trimmed === "{" || trimmed.endsWith("{")) continue;
+      if (trimmed.startsWith("public class") || trimmed.startsWith("class ") || trimmed.startsWith("interface ")) continue;
+      if (/^(public|private|protected)?\s*static\s+void\s+main/i.test(trimmed)) continue;
+      if (/^(import|package)\s+/i.test(trimmed)) continue;
+
+      // Found a statement line! If it does not end with semicolon, colon, or brace, it's missing a semicolon!
+      if (!trimmed.endsWith(";") && !trimmed.endsWith("{") && !trimmed.endsWith("}") && !trimmed.endsWith(":")) {
+        return i + 1;
+      }
+      if (i <= startIdx && targetLine && targetLine <= total) {
+        return targetLine;
+      }
+    }
+  }
+
+  if (targetLine && targetLine > total) {
+    // Clamping to last non-empty line
+    for (let i = total - 1; i >= 0; i--) {
+      if (lines[i].trim().length > 0) return i + 1;
+    }
+    return total;
+  }
+
+  return targetLine ? Math.max(1, targetLine) : null;
+}
+
+/**
  * Extract 1-indexed line number and concise error message from compiler or interpreter stderr
  */
-function extractErrorDetails(stderr = "", lang = "") {
+function extractErrorDetails(stderr = "", lang = "", code = "") {
   if (!stderr) return { errorLine: null, errorMessage: "" };
 
   const clean = String(stderr).trim();
@@ -293,6 +340,15 @@ function extractErrorDetails(stderr = "", lang = "") {
       errorMessage = `Line ${errorLine}: ${clean.split("\n")[0]}`;
     } else {
       errorMessage = clean.split("\n")[0] || "Compilation / Syntax Error";
+    }
+  }
+
+  // Refine error line with source code context if available
+  if (code) {
+    const refinedLine = findProbableSyntaxErrorLine(code, errorLine, errorMessage || clean);
+    if (refinedLine && refinedLine !== errorLine) {
+      errorLine = refinedLine;
+      errorMessage = errorMessage.replace(/Line \d+:/, `Line ${errorLine}:`);
     }
   }
 
@@ -465,9 +521,14 @@ function checkCodeSecurity(code = "", language = "python") {
     java: [
       "runtime.getruntime",
       "processbuilder",
-      "java.io.",
       "java.io.file",
-      "java.net",
+      "java.io.fileinputstream",
+      "java.io.fileoutputstream",
+      "java.io.randomaccessfile",
+      "java.io.filewriter",
+      "java.io.filereader",
+      "java.nio.file",
+      "java.net.",
       "system.exit",
       "system.getenv",
       "system.getproperty",
@@ -796,16 +857,17 @@ function runJava(code, input = "") {
       }
     }
 
-    let cleanedCode = code.replace(/package\s+[a-zA-Z0-9_.]+;/g, "");
+    // Replace package declaration with comment of identical line count to preserve 1:1 line numbers
+    let cleanedCode = code.replace(/package\s+[a-zA-Z0-9_.]+;/g, "// package omitted");
 
-    // Seamless Java Collections & I/O support: auto-import java.util and java.io if not explicitly imported
+    // Seamless Java Collections & I/O support: auto-import only if collections/I/O classes are used and omitted
     let prependedLines = 0;
     let extraImports = "";
-    if (!/import\s+java\.util\./.test(cleanedCode)) {
+    if (!/import\s+java\.util\b/.test(cleanedCode) && /\b(?:Scanner|List|ArrayList|Map|HashMap|Set|HashSet|Queue|LinkedList|PriorityQueue|Stack|Deque|Arrays|Collections)\b/.test(cleanedCode)) {
       extraImports += "import java.util.*;\n";
       prependedLines++;
     }
-    if (!/import\s+java\.io\./.test(cleanedCode)) {
+    if (!/import\s+java\.io\b/.test(cleanedCode) && /\b(?:BufferedReader|InputStreamReader|PrintWriter|StringTokenizer|IOException)\b/.test(cleanedCode)) {
       extraImports += "import java.io.*;\n";
       prependedLines++;
     }
@@ -822,12 +884,13 @@ function runJava(code, input = "") {
         let cleanErr = sanitizeStderr(rawCompileErr, tempDir, `${className}.java`);
         // Offset error line numbers back to student's source code if helper imports were prepended
         if (prependedLines > 0) {
-          cleanErr = cleanErr.replace(new RegExp(`(${className}\\.java):(\\d+)`, "gi"), (_, file, lineNum) => {
+          cleanErr = cleanErr.replace(/(?:[A-Za-z0-9_.-]+\.java):(\d+)/gi, (_, lineNum) => {
             const adjusted = Math.max(1, parseInt(lineNum, 10) - prependedLines);
-            return `${file}:${adjusted}`;
+            return `${className}.java:${adjusted}`;
           });
         }
         const isMissing = isHostCompilerMissing(rawCompileErr) || isHostCompilerMissing(cleanErr) || isHostCompilerMissing(compileErr?.message) || rawCompileErr.includes("javac:") || rawCompileErr.includes("javac not found");
+        const errDetails = isMissing ? { errorLine: null, errorMessage: "" } : extractErrorDetails(cleanErr, "java", code);
         try {
           fs.rmSync(tempDir, { recursive: true, force: true });
         } catch {}
@@ -838,6 +901,8 @@ function runJava(code, input = "") {
           executionTimeMs: Date.now() - startTime,
           compileError: !isMissing,
           isCompileError: !isMissing,
+          errorLine: errDetails.errorLine,
+          errorMessage: errDetails.errorMessage,
           hostCompilerMissing: isMissing,
         });
       }
@@ -1069,15 +1134,21 @@ async function runWithAiEvaluator(code, language, testCases = [], questionText =
     };
   });
 
+  const candidateLines = String(code || "").split("\n");
+  const totalCandidateLines = candidateLines.length;
+  const numberedCandidateCode = candidateLines
+    .map((line, idx) => `${String(idx + 1).padStart(3, " ")} | ${line}`)
+    .join("\n");
+
   const prompt = `You are a strict automated code execution engine and compiler judge.
 Evaluate the candidate's ${language} code against the test cases.
 
 Problem Context:
 ${questionText || "Write code to solve the challenge according to the specifications."}
 
-Candidate Code:
+Candidate Code (${totalCandidateLines} total lines, 1-indexed line numbers shown):
 \`\`\`${language}
-${code}
+${numberedCandidateCode}
 \`\`\`
 
 Test Cases:
@@ -1096,7 +1167,8 @@ STRICT EVALUATION INSTRUCTIONS (CodeTantra Dynamic Input & Full Program Rules):
 2. SYNTAX AND COMPILATION ERRORS:
    - Check if the code has any genuine syntax errors, missing semicolons, undeclared custom variables, or unmatched brackets.
    - If there is a syntax or compilation error:
-     set "isCompilationError": true, "success": false, "errorLine": <1-indexed line number of the error>, "errorMessage": "Line <line_number>: <concise error description>", "stderr": "Line <line_number>: <error description>", and mark all test cases "status": "Compilation Error", "passed": false.
+     set "isCompilationError": true, "success": false, "errorLine": <1-indexed line number between 1 and ${totalCandidateLines} from the numbered code above>, "errorMessage": "Line <line_number>: <concise error description>", "stderr": "Line <line_number>: <error description>", and mark all test cases "status": "Compilation Error", "passed": false.
+     CRITICAL: errorLine MUST be an integer between 1 and ${totalCandidateLines}. For missing semicolons, report the line of the statement missing the semicolon.
 
 3. UNEDITED BOILERPLATE:
    - If the code is just the default template or contains no actual logic:
@@ -1144,9 +1216,17 @@ Return ONLY raw valid JSON.`;
     const parsed = parseJsonSafely(raw?.data || raw);
     if (parsed && Array.isArray(parsed.testCaseResults)) {
       const isCompErr = !!parsed.isCompilationError;
-      const extracted = isCompErr ? extractErrorDetails(parsed.stderr || parsed.errorMessage || "", language) : { errorLine: null, errorMessage: "" };
-      const errLine = parsed.errorLine || extracted.errorLine;
-      const errMsg = parsed.errorMessage || extracted.errorMessage || (isCompErr ? "Compilation / Syntax Error" : "");
+      const extracted = isCompErr ? extractErrorDetails(parsed.stderr || parsed.errorMessage || "", language, code) : { errorLine: null, errorMessage: "" };
+      let errLine = parsed.errorLine || extracted.errorLine;
+      let errMsg = parsed.errorMessage || extracted.errorMessage || (isCompErr ? "Compilation / Syntax Error" : "");
+
+      if (isCompErr) {
+        errLine = findProbableSyntaxErrorLine(code, errLine, parsed.stderr || errMsg || "");
+        if (errLine) {
+          errMsg = errMsg.replace(/^Line\s+\d+:\s*/i, "").trim();
+          errMsg = `Line ${errLine}: ${errMsg || "Syntax error"}`;
+        }
+      }
 
       const passedCount = isCompErr ? 0 : parsed.testCaseResults.filter((t) => t.passed).length;
       const totalCount = parsed.testCaseResults.length;
@@ -1158,6 +1238,7 @@ Return ONLY raw valid JSON.`;
         errorMessage: errMsg,
         stdout: parsed.stdout || "",
         stderr: parsed.stderr || errMsg || "",
+        executionTimeMs: 42,
         passedCount,
         totalCount,
         testCaseResults: parsed.testCaseResults.map((tc, idx) => ({
