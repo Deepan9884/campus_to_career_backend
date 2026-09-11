@@ -77,6 +77,99 @@ async function extractTextFromFile(filePath, ext) {
   return trimmed;
 }
 
+const KNOWN_DUMMY_PROJECTS = [
+  "campus to career ai placement platform",
+  "real-time collaborative code editor",
+  "distributed file storage system",
+];
+
+const KNOWN_DUMMY_EVENTS = [
+  "smart india hackathon (sih)",
+  "college annual coding marathon",
+  "smart india hackathon",
+];
+
+const KNOWN_DUMMY_COMPANIES = [
+  "tech solutions inc.",
+];
+
+function sanitizeResumeDocument(resume) {
+  if (!resume) return false;
+  let modified = false;
+  const rawTextLower = (resume.extractedText || "").toLowerCase();
+
+  if (Array.isArray(resume.projects) && resume.projects.length > 0) {
+    const originalLen = resume.projects.length;
+    resume.projects = resume.projects.filter((p) => {
+      const titleLower = (p.title || "").toLowerCase().trim();
+      const isKnownDummy = KNOWN_DUMMY_PROJECTS.some((dummy) => titleLower.includes(dummy));
+      return !(isKnownDummy && !rawTextLower.includes(titleLower));
+    });
+    if (resume.projects.length !== originalLen) modified = true;
+  }
+
+  if (Array.isArray(resume.eventsAndCompetitions) && resume.eventsAndCompetitions.length > 0) {
+    const originalLen = resume.eventsAndCompetitions.length;
+    resume.eventsAndCompetitions = resume.eventsAndCompetitions.filter((e) => {
+      const nameLower = (e.name || "").toLowerCase().trim();
+      const isKnownDummy = KNOWN_DUMMY_EVENTS.some((dummy) => nameLower.includes(dummy));
+      return !(isKnownDummy && !rawTextLower.includes(nameLower));
+    });
+    if (resume.eventsAndCompetitions.length !== originalLen) modified = true;
+  }
+
+  if (Array.isArray(resume.internships) && resume.internships.length > 0) {
+    const originalLen = resume.internships.length;
+    resume.internships = resume.internships.filter((i) => {
+      const compLower = (i.company || "").toLowerCase().trim();
+      const isKnownDummy = KNOWN_DUMMY_COMPANIES.some((dummy) => compLower.includes(dummy));
+      return !(isKnownDummy && !rawTextLower.includes(compLower));
+    });
+    if (resume.internships.length !== originalLen) modified = true;
+  }
+
+  if (modified) {
+    if (resume.scoreBreakdown && resume.scoreBreakdown.pillars) {
+      const p = resume.scoreBreakdown.pillars;
+      if (p.projectsAndPersonal) {
+        p.projectsAndPersonal.personalCount = (resume.projects || []).filter((pr) => pr.projectType === "personal").length;
+        p.projectsAndPersonal.academicCount = (resume.projects || []).filter((pr) => pr.projectType !== "personal").length;
+        if ((resume.projects || []).length === 0) {
+          p.projectsAndPersonal.score = 60;
+          p.projectsAndPersonal.summary = "No independent projects detected on resume. Build and showcase 2-3 production-ready projects.";
+        }
+      }
+      if (p.eventsAndHackathons) {
+        p.eventsAndHackathons.count = (resume.eventsAndCompetitions || []).length;
+        if ((resume.eventsAndCompetitions || []).length === 0) {
+          p.eventsAndHackathons.score = 35;
+          p.eventsAndHackathons.summary = "No competitive hackathons, coding contests, or technical event participation detected.";
+        }
+      }
+      if (p.internshipsAndWork) {
+        p.internshipsAndWork.count = (resume.internships || []).length;
+        if ((resume.internships || []).length === 0) {
+          p.internshipsAndWork.score = 40;
+          p.internshipsAndWork.totalMonths = 0;
+          p.internshipsAndWork.summary = "No formal corporate internships or employment detected on resume.";
+        }
+      }
+      const weightedScore = Math.round(
+        ((p.internshipsAndWork?.score ?? 40) * 0.25) +
+        ((p.projectsAndPersonal?.score ?? 60) * 0.25) +
+        ((p.skillsAndKeywords?.score ?? 75) * 0.25) +
+        ((p.eventsAndHackathons?.score ?? 35) * 0.15) +
+        ((p.formatAndStructure?.score ?? 75) * 0.10)
+      );
+      resume.atsScore = Math.min(100, Math.max(0, weightedScore));
+      p.overallAtsScore = resume.atsScore;
+      resume.scoreBreakdown.overallAtsScore = resume.atsScore;
+    }
+  }
+
+  return modified;
+}
+
 /**
  * POST /api/resume/upload
  * Upload a resume PDF/DOCX, extract text, analyze via Gemini, return results.
@@ -120,7 +213,14 @@ const uploadResume = asyncHandler(async (req, res) => {
     await processResumeAnalysis(jobData);
 
     const updatedResume = await Resume.findById(resume._id);
-    return ApiResponse.success(updatedResume).send(res);
+    if (updatedResume) {
+      const cleaned = sanitizeResumeDocument(updatedResume);
+      if (cleaned) {
+        await updatedResume.save();
+      }
+      return ApiResponse.success(updatedResume).send(res);
+    }
+    return ApiResponse.success(resume).send(res);
   } catch (error) {
     if (error.statusCode) throw error;
 
@@ -208,6 +308,11 @@ const getResumeById = asyncHandler(async (req, res) => {
 
   if (!resume || resume.user.toString() !== req.user._id.toString()) {
     throw ApiError.notFound("Resume not found");
+  }
+
+  const cleaned = sanitizeResumeDocument(resume);
+  if (cleaned) {
+    await resume.save();
   }
 
   return ApiResponse.success(resume).send(res);
