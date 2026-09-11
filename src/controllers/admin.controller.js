@@ -24,6 +24,7 @@ const { generateContent } = require("../services/ai.service");
 const { invalidateUserCache } = require("../middleware/auth.middleware");
 const { decrypt, isEncrypted } = require("../services/encryption.service");
 const cache = require("../services/cache.service");
+const { calculateStudentReadiness } = require("../services/careerReadiness.service");
 
 function escapeRegex(str) {
   return (str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -172,13 +173,13 @@ async function calculateCohortMetricsBatch(users, menteeSet, mentorId) {
       ).length;
 
       const skillGapMatchPct = latestGap?.matchPercentage || 0;
-      const codingScore = Math.min(100, Math.round(totalProblemsSolved * 1.0 + repoCount * 10));
-      const eventScore = Math.min(100, Math.round(verifiedEventsCount * 30 + userEvents.length * 10));
+      const codingScore = Math.min(100, Math.round(totalProblemsSolved * 1.0 + repoCount * 12));
+      const eventScore = Math.min(100, Math.round(verifiedEventsCount * 35 + userEvents.length * 10));
 
       const overallReadiness = Math.round(
-        skillGapMatchPct * 0.30 +
-        resumeScore * 0.20 +
-        avgInterviewScore * 0.20 +
+        resumeScore * 0.25 +
+        avgInterviewScore * 0.25 +
+        skillGapMatchPct * 0.20 +
         codingScore * 0.15 +
         eventScore * 0.15
       );
@@ -436,17 +437,14 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
     (e) => e.verificationResult?.isVerified || e.result === "winner" || e.result === "runner-up" || e.result === "finalist"
   );
 
-  const skillGapMatchPct = latestGap?.matchPercentage || 0;
-  const codingScore = Math.min(100, Math.round(totalProblemsSolved * 1.0 + repoAnalyses.length * 10));
-  const eventScore = Math.min(100, Math.round(verifiedEvents.length * 30 + events.length * 10));
+  const readinessData = await calculateStudentReadiness(student._id);
 
-  const overallReadinessPct = Math.round(
-    skillGapMatchPct * 0.30 +
-    resumeScore * 0.20 +
-    avgInterviewScore * 0.20 +
-    codingScore * 0.15 +
-    eventScore * 0.15
-  );
+  const overallReadinessPct = readinessData.overall;
+  const skillGapMatchPct = readinessData.skills;
+  const resumeScore = readinessData.resume;
+  const avgInterviewScore = readinessData.interview;
+  const codingScore = readinessData.coding;
+  const eventScore = readinessData.events;
 
   const isBlocked =
     student.isProctoringBlocked === true ||

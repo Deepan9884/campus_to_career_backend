@@ -6,6 +6,7 @@ const RoleSkill = require("../models/RoleSkill.model");
 const SkillGapAnalysis = require("../models/SkillGapAnalysis.model");
 const LearningRoadmap = require("../models/LearningRoadmap.model");
 const aiService = require("../services/ai.service");
+const { calculateStudentReadiness } = require("../services/careerReadiness.service");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/ApiResponse");
 const ApiError = require("../utils/ApiError");
@@ -65,15 +66,17 @@ const getAnalyticsOverview = asyncHandler(async (req, res) => {
   const achievements = computeAchievements(resumes, interviews, repoCount, userSkills.length);
 
   // Overview stats
+  const [readinessData, activities] = await Promise.all([
+    calculateStudentReadiness(userId),
+    buildActivityTimeline(userId),
+  ]);
+
   const daysOnPlatform = Math.max(
     1,
     Math.ceil((now.getTime() - new Date(req.user.createdAt).getTime()) / 86400000),
   );
   const featuresUsed = featureUsage.filter((f) => f.value > 0).length;
-  const readiness = latestGapAnalysis?.matchPercentage || 0;
-
-  // Activity timeline (latest 8 items across all modules)
-  const activities = await buildActivityTimeline(userId);
+  const readiness = readinessData.overall;
 
   return ApiResponse.success({
     overview: {

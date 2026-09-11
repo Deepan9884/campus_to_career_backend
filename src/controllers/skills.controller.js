@@ -12,6 +12,7 @@ const aiService = require("../services/ai.service");
 const notificationService = require("../services/notification.service");
 const activityLogService = require("../services/activityLog.service");
 const badgeService = require("../services/badge.service");
+const { calculateStudentReadiness } = require("../services/careerReadiness.service");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
@@ -493,18 +494,14 @@ const getLatestAnalysis = asyncHandler(async (req, res) => {
     (e) => e.verificationResult?.isVerified || e.result === "winner" || e.result === "runner-up" || e.result === "finalist"
   ).length;
 
-  const skillGapMatchPct = latestAnalysis ? latestAnalysis.matchPercentage : (userSkills.length > 0 ? Math.min(100, userSkills.length * 15) : 0);
-  const resumeScore = latestResume ? (latestResume.atsScore || 0) : 0;
-  const codingScore = Math.min(100, Math.round((totalProblemsSolved * 1.0) + (repoCount * 10)));
-  const eventScore = Math.min(100, Math.round((verifiedEventsCount * 30) + (totalEventsCount * 10)));
+  // Calculate unified career readiness across the platform
+  const readinessData = await calculateStudentReadiness(userId);
 
-  const overallReadinessPct = Math.round(
-    (skillGapMatchPct * 0.30) +
-    (resumeScore * 0.20) +
-    (avgInterviewScore * 0.20) +
-    (codingScore * 0.15) +
-    (eventScore * 0.15)
-  );
+  const skillGapMatchPct = readinessData.skills;
+  const resumeScore = readinessData.resume;
+  const codingScore = readinessData.coding;
+  const eventScore = readinessData.events;
+  const overallReadinessPct = readinessData.overall;
 
   const liveStrategy = [];
   if (skillGapMatchPct < 70) {
@@ -512,7 +509,7 @@ const getLatestAnalysis = asyncHandler(async (req, res) => {
       type: "skill",
       title: "Close Skill Gaps",
       description: latestAnalysis?.gaps?.[0] ? `Target skill: ${latestAnalysis.gaps[0].skillName}` : "Add and verify your core technical skills.",
-      impact: "+15% Readiness",
+      impact: "+20% Readiness",
     });
   }
   if (resumeScore < 75) {
@@ -520,7 +517,7 @@ const getLatestAnalysis = asyncHandler(async (req, res) => {
       type: "resume",
       title: "Optimize ATS Resume",
       description: latestResume ? `Latest ATS match is ${latestResume.atsScore}%. Add quantified achievements.` : "Analyze your resume to boost ATS compatibility.",
-      impact: "+20% Readiness",
+      impact: "+25% Readiness",
     });
   }
   if (interviews.length < 2 || avgInterviewScore < 75) {
@@ -528,7 +525,7 @@ const getLatestAnalysis = asyncHandler(async (req, res) => {
       type: "interview",
       title: "Practice AI Mock Interviews",
       description: interviews.length === 0 ? "Take your first mock interview." : `Avg score is ${avgInterviewScore}%. Take another mock interview to boost confidence.`,
-      impact: "+20% Readiness",
+      impact: "+25% Readiness",
     });
   }
   if (totalProblemsSolved < 20) {
