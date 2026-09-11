@@ -26,6 +26,9 @@ function initEmailService() {
       tls: {
         rejectUnauthorized: false,
       },
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 10000,
     });
   } else {
     transporter = nodemailer.createTransport({
@@ -36,6 +39,9 @@ function initEmailService() {
       tls: {
         rejectUnauthorized: false,
       },
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 10000,
     });
   }
 
@@ -113,6 +119,7 @@ async function sendMailPayload(opts) {
   // 1. Resend HTTP API — works immediately (free tier only allows from onboarding@resend.dev)
   if (env.RESEND_API_KEY) {
     try {
+      const fromAddress = env.RESEND_FROM || `${SENDER_NAME} <onboarding@resend.dev>`;
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: {
@@ -120,7 +127,7 @@ async function sendMailPayload(opts) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          from:     `${SENDER_NAME} <onboarding@resend.dev>`,
+          from:     fromAddress,
           reply_to: SENDER_EMAIL,
           to:       Array.isArray(opts.to) ? opts.to : [opts.to],
           subject:  opts.subject,
@@ -133,13 +140,17 @@ async function sendMailPayload(opts) {
         console.log(`[Email via Resend] Delivered to ${opts.to} (ID: ${data.id})`);
         return true;
       }
-      console.warn(`[Email via Resend] Error (${res.status}):`, JSON.stringify(data));
+      if (res.status === 403 && JSON.stringify(data).includes("testing emails to your own email address")) {
+        console.warn(`⚠️ [Email via Resend 403] Resend free-tier sandbox only allows sending to the account owner. Cannot deliver to ${opts.to}. Trying fallback...`);
+      } else {
+        console.warn(`[Email via Resend] Error (${res.status}):`, JSON.stringify(data));
+      }
     } catch (err) {
       console.error(`[Email via Resend] Request failed:`, err.message);
     }
   }
 
-  // 2. Brevo HTTP API — from campustocareer25@gmail.com (sender must be verified in Brevo)
+  // 2. Brevo HTTP API — from campustocareer25@gmail.com (sender must be verified in Brevo dashboard)
   if (env.BREVO_API_KEY) {
     try {
       const toList = Array.isArray(opts.to)
@@ -185,11 +196,32 @@ async function sendMailPayload(opts) {
     console.log(`[Email via SMTP] Delivered to ${opts.to} (MessageId: ${result.messageId})`);
     return true;
   } catch (err) {
-    if (err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED" || err.message?.includes("timeout")) {
-      console.error(`🚨 [Email] SMTP blocked on Render. Add RESEND_API_KEY or BREVO_API_KEY to env vars.`);
-    } else {
-      console.error(`[Email via SMTP] Delivery failed to ${opts.to}:`, err.message);
+    const isNetworkError = err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED" || err.message?.includes("timeout");
+    if (isNetworkError) {
+      console.warn(`[Email via SMTP] Primary port failed (${err.code || err.message}). Attempting port 587 STARTTLS fallback...`);
+      try {
+        const altTransporter = nodemailer.createTransport({
+          host: "smtp.gmail.com",
+          port: 587,
+          secure: false,
+          auth: {
+            user: env.SMTP_USER || "campustocareer25@gmail.com",
+            pass: env.SMTP_PASS || "zjyeqegzjembcjty",
+          },
+          tls: { rejectUnauthorized: false },
+          connectionTimeout: 8000,
+          greetingTimeout: 8000,
+          socketTimeout: 10000,
+        });
+        const altResult = await altTransporter.sendMail(opts);
+        console.log(`[Email via SMTP (Port 587 Fallback)] Delivered to ${opts.to} (MessageId: ${altResult.messageId})`);
+        return true;
+      } catch (altErr) {
+        console.error(`🚨 [Email] Both SMTP ports (465 & 587) timed out on Render. Cloud hosting blocks SMTP ports. Brevo API (port 443) or verified domain is recommended.`);
+        throw altErr;
+      }
     }
+    console.error(`[Email via SMTP] Delivery failed to ${opts.to}:`, err.message);
     throw err;
   }
 };
