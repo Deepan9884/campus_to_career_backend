@@ -209,8 +209,8 @@ function isSyntaxOrCompileError(stderr = "", lang = "") {
 
 /**
  * Accurately resolve and clamp the error line number in candidate code.
- * If compiler/AI reports an invalid line (e.g. beyond EOF) or if there's a missing semicolon (';' expected),
- * pinpoints the exact statement missing the terminator.
+ * If compiler/AI reports an invalid line (e.g. beyond EOF, on an empty line, or on a comment/brace)
+ * or if there's a missing semicolon (';' expected), pinpoints the exact statement missing the terminator.
  */
 function findProbableSyntaxErrorLine(code = "", reportedLine = null, errorDescription = "") {
   if (!code || typeof code !== "string") return reportedLine;
@@ -222,33 +222,85 @@ function findProbableSyntaxErrorLine(code = "", reportedLine = null, errorDescri
   const desc = String(errorDescription || "").toLowerCase();
   const isMissingSemicolon = desc.includes("';'") || desc.includes("semicolon") || desc.includes("expected ';'");
 
-  if (isMissingSemicolon) {
-    // Start searching backwards from reportedLine (or last line if reportedLine exceeds total)
-    const startIdx = targetLine && targetLine <= total ? targetLine - 1 : total - 1;
-    for (let i = startIdx; i >= 0; i--) {
-      const trimmed = lines[i].trim();
-      if (!trimmed || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) continue;
-      if (trimmed === "}" || trimmed === "{" || trimmed.endsWith("{")) continue;
-      if (trimmed.startsWith("public class") || trimmed.startsWith("class ") || trimmed.startsWith("interface ")) continue;
-      if (/^(public|private|protected)?\s*static\s+void\s+main/i.test(trimmed)) continue;
-      if (/^(import|package)\s+/i.test(trimmed)) continue;
+  const isStatementCandidate = (lineStr) => {
+    if (!lineStr) return false;
+    const t = lineStr.trim();
+    if (!t) return false;
+    if (t.startsWith("//") || t.startsWith("/*") || t.startsWith("*")) return false;
+    if (t === "}" || t === "{" || t.endsWith("{")) return false;
+    if (t.startsWith("public class") || t.startsWith("class ") || t.startsWith("interface ")) return false;
+    if (/^(public|private|protected)?\s*static\s+void\s+main/i.test(t)) return false;
+    if (/^(import|package)\s+/i.test(t)) return false;
+    return true;
+  };
 
-      // Found a statement line! If it does not end with semicolon, colon, or brace, it's missing a semicolon!
-      if (!trimmed.endsWith(";") && !trimmed.endsWith("{") && !trimmed.endsWith("}") && !trimmed.endsWith(":")) {
+  const isMissingTerminator = (lineStr) => {
+    if (!isStatementCandidate(lineStr)) return false;
+    const t = lineStr.trim();
+    return !t.endsWith(";") && !t.endsWith("{") && !t.endsWith("}") && !t.endsWith(":");
+  };
+
+  if (isMissingSemicolon) {
+    const candidateIdx = targetLine && targetLine <= total ? targetLine - 1 : total - 1;
+
+    // 1. Direct check: Does the target line itself miss a semicolon?
+    if (candidateIdx >= 0 && candidateIdx < total && isMissingTerminator(lines[candidateIdx])) {
+      return candidateIdx + 1;
+    }
+
+    // 2. Check adjacent lines: If targetLine is empty or a brace, check the line directly below (candidateIdx + 1)
+    if (candidateIdx + 1 < total && isMissingTerminator(lines[candidateIdx + 1])) {
+      return candidateIdx + 2;
+    }
+
+    // 3. Check the line directly above (candidateIdx - 1)
+    if (candidateIdx - 1 >= 0 && isMissingTerminator(lines[candidateIdx - 1])) {
+      return candidateIdx;
+    }
+
+    // 4. Scan forward from target line (up to 4 lines) to find the statement
+    for (let i = candidateIdx + 1; i < Math.min(total, candidateIdx + 5); i++) {
+      if (isMissingTerminator(lines[i])) {
         return i + 1;
       }
-      if (i <= startIdx && targetLine && targetLine <= total) {
-        return targetLine;
+    }
+
+    // 5. Scan backward from target line to find the unclosed statement
+    for (let i = candidateIdx - 1; i >= 0; i--) {
+      if (isMissingTerminator(lines[i])) {
+        return i + 1;
+      }
+    }
+
+    // 6. Global scan for any statement missing semicolon in the entire file
+    for (let i = 0; i < total; i++) {
+      if (isMissingTerminator(lines[i])) {
+        return i + 1;
       }
     }
   }
 
+  // If targetLine is out of range, clamp to closest statement
   if (targetLine && targetLine > total) {
-    // Clamping to last non-empty line
     for (let i = total - 1; i >= 0; i--) {
-      if (lines[i].trim().length > 0) return i + 1;
+      if (isStatementCandidate(lines[i])) return i + 1;
     }
     return total;
+  }
+
+  // If target line is an empty line or comment, find the nearest statement
+  if (targetLine && targetLine >= 1 && targetLine <= total) {
+    const curr = lines[targetLine - 1].trim();
+    if (!curr || curr.startsWith("//")) {
+      // Check next line first
+      if (targetLine < total && isStatementCandidate(lines[targetLine])) {
+        return targetLine + 1;
+      }
+      // Check previous line
+      if (targetLine > 1 && isStatementCandidate(lines[targetLine - 2])) {
+        return targetLine - 1;
+      }
+    }
   }
 
   return targetLine ? Math.max(1, targetLine) : null;
@@ -1220,11 +1272,13 @@ Return ONLY raw valid JSON.`;
       let errLine = parsed.errorLine || extracted.errorLine;
       let errMsg = parsed.errorMessage || extracted.errorMessage || (isCompErr ? "Compilation / Syntax Error" : "");
 
+      let outStderr = parsed.stderr || errMsg || "";
       if (isCompErr) {
         errLine = findProbableSyntaxErrorLine(code, errLine, parsed.stderr || errMsg || "");
         if (errLine) {
           errMsg = errMsg.replace(/^Line\s+\d+:\s*/i, "").trim();
           errMsg = `Line ${errLine}: ${errMsg || "Syntax error"}`;
+          outStderr = outStderr.replace(/^Line\s+\d+:/im, `Line ${errLine}:`);
         }
       }
 
@@ -1237,7 +1291,7 @@ Return ONLY raw valid JSON.`;
         errorLine: errLine,
         errorMessage: errMsg,
         stdout: parsed.stdout || "",
-        stderr: parsed.stderr || errMsg || "",
+        stderr: outStderr,
         executionTimeMs: 42,
         passedCount,
         totalCount,
@@ -1385,7 +1439,8 @@ function cleanExpectedOutput(raw) {
  */
 async function executeCode({ code, language = "python", testCases = [], questionText = "", userId = null }) {
   const lang = String(language).toLowerCase().trim();
-  const rawCode = String(code || "").trim();
+  // Preserve leading newlines byte-for-byte so editor line numbers remain 1:1 with compiler/AI diagnostics
+  const rawCode = String(code || "").replace(/\s+$/, "");
 
   // Validate presence of real solution code (ignoring starter boilerplate & comments)
   if (isCodeEmptyOrBoilerplateOnly(rawCode, lang)) {
@@ -1411,7 +1466,7 @@ async function executeCode({ code, language = "python", testCases = [], question
     };
   }
 
-  const cleanCode = rawCode.replace(/^(#|\/\/|--)\s*write your code here\s*$/gmi, "").trim();
+  const cleanCode = rawCode.replace(/^(#|\/\/|--)\s*write your code here\s*$/gmi, "").replace(/\s+$/, "");
 
   const defaultTestCases = (testCases && testCases.length > 0)
     ? testCases
