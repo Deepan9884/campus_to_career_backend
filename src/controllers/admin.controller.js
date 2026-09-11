@@ -408,14 +408,6 @@ const getStudent360Detail = asyncHandler(async (req, res) => {
     ProctoringViolation.find({ userId: studentId }).sort({ createdAt: -1 }).limit(20).lean(),
   ]);
 
-  const latestResume = resumes.find((r) => r.status === "completed") || resumes[0] || null;
-  const completedInterviews = interviews.filter((i) => i.status === "completed");
-  const latestGap = gapAnalyses.find((g) => g.status === "completed") || gapAnalyses[0] || null;
-
-  const resumeScore = latestResume?.atsScore || 0;
-  const avgInterviewScore = completedInterviews.length > 0
-    ? Math.round(completedInterviews.reduce((acc, i) => acc + (i.overallScore || 0), 0) / completedInterviews.length)
-    : 0;
 
   let totalProblemsSolved = 0;
   const platformBreakdown = codingProfiles.map((cp) => {
