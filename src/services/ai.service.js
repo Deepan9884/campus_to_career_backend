@@ -579,42 +579,105 @@ function generateContextualFallback(feature, prompt, responseSchema) {
 
     const matched = extractedSkills.length > 0
       ? extractedSkills
-      : ["JavaScript", "TypeScript", "React", "Node.js", "Express", "REST APIs", "Git", "SQL"];
+      : ["JavaScript", "React", "Node.js", "Express", "REST APIs", "Git", "SQL"];
 
     const allMissing = ["Docker", "Kubernetes", "AWS Cloud", "CI/CD Pipelines", "Automated Testing (Jest)", "Redis Caching", "Microservices Architecture"];
     const missing = allMissing.filter((m) => !matched.some((s) => m.toLowerCase().includes(s.toLowerCase()))).slice(0, 4);
 
-    // Calculate score based on keyword richness and structure
-    let score = 75;
-    if (matched.length >= 8) score += 10;
-    else if (matched.length >= 5) score += 6;
-    if (promptText.toLowerCase().includes("experience")) score += 4;
-    if (promptText.toLowerCase().includes("project")) score += 4;
-    score = Math.min(94, Math.max(72, score));
+    const hasInternMention = promptText.toLowerCase().includes("intern");
+    const hasProjectMention = promptText.toLowerCase().includes("project");
+    const hasContestMention = promptText.toLowerCase().includes("hackathon") || promptText.toLowerCase().includes("contest");
 
-    let inferredRole = "Full Stack Engineer";
+    const internshipScore = hasInternMention ? 60 : 40;
+    const projectScore = hasProjectMention ? 65 : 55;
+    const skillsScore = Math.min(90, 60 + matched.length * 3);
+    const eventsScore = hasContestMention ? 55 : 35;
+    const formatScore = 75;
+
+    const weightedScore = Math.round(
+      (internshipScore * 0.25) +
+      (projectScore * 0.25) +
+      (skillsScore * 0.25) +
+      (eventsScore * 0.15) +
+      (formatScore * 0.10)
+    );
+
+    let inferredRole = "Software Engineer";
     if (promptText.toLowerCase().includes("frontend") || (hasReact && !hasNode)) inferredRole = "Frontend Developer";
     else if (promptText.toLowerCase().includes("backend") || (hasNode && !hasReact)) inferredRole = "Backend Engineer";
     else if (promptText.toLowerCase().includes("data") || promptText.toLowerCase().includes("python")) inferredRole = "Data Engineer / Python Developer";
 
     return {
-      atsScore: score,
+      atsScore: weightedScore,
+      inferredTargetRole: inferredRole,
+      summary: `Technical resume reviewed for ${inferredRole} roles. Identified core technical proficiencies; adding verifiable projects, measurable metrics, and competitive experience will improve ATS rating.`,
       keywordBreakdown: {
         matched,
         missing: missing.length > 0 ? missing : ["Docker", "CI/CD", "Automated Testing"],
       },
       strengths: [
-        `Strong technical foundation demonstrated with modern industry tools (${matched.slice(0, 3).join(", ")})`,
-        "Clear section layout highlighting practical development projects and engineering experience",
-        "Effective alignment with contemporary software development practices and API workflows",
+        `Demonstrated technical aptitude with modern tools (${matched.slice(0, 4).join(", ")})`,
+        "Clean, readable resume layout compatible with automated ATS parsers",
+        "Clear baseline of technical and engineering concepts",
       ],
       improvements: [
-        "Include quantifiable metric outcomes (e.g. 'Improved API response latency by 35%' or 'Handled 10k+ daily queries')",
-        "Add continuous integration and automated testing highlights to showcase production readiness",
-        "Detail system architecture trade-offs, database indexing, or caching strategies utilized",
+        "Include distinct personal or academic projects with GitHub repositories and live deployments",
+        "Quantify project and work achievements with measurable metric outcomes (e.g. latency, user scale)",
+        "Participate in hackathons or coding contests to build competitive milestones",
       ],
-      summary: `High-impact technical resume demonstrating solid foundations in ${matched.slice(0, 3).join(", ")} with hands-on project accomplishments and strong ATS potential.`,
-      inferredTargetRole: inferredRole,
+      internships: [],
+      projects: [],
+      eventsAndCompetitions: [],
+      scoreBreakdown: {
+        overallAtsScore: weightedScore,
+        pillars: {
+          internshipsAndWork: {
+            score: internshipScore,
+            weight: 25,
+            totalMonths: 0,
+            count: 0,
+            summary: hasInternMention
+              ? "Potential work or internship references detected; verify dates and add metric deliverables."
+              : "No formal corporate internships or professional employment detected on resume.",
+          },
+          projectsAndPersonal: {
+            score: projectScore,
+            weight: 25,
+            personalCount: 0,
+            academicCount: 0,
+            summary: hasProjectMention
+              ? "Project references detected in text; ensure each has explicit GitHub links and architectural metrics."
+              : "No distinct independent projects detected on resume. Build and showcase 2-3 production-ready projects.",
+          },
+          skillsAndKeywords: {
+            score: skillsScore,
+            weight: 25,
+            matchedCount: matched.length,
+            missingCount: missing.length,
+            summary: `Matched ${matched.length} key technical skills relevant to ${inferredRole}.`,
+          },
+          eventsAndHackathons: {
+            score: eventsScore,
+            weight: 15,
+            count: 0,
+            summary: hasContestMention
+              ? "Extracurricular references identified; ensure competition rankings and dates are specified."
+              : "No competitive hackathons, coding contests, or technical event participation detected.",
+          },
+          formatAndStructure: {
+            score: formatScore,
+            weight: 10,
+            hasMetrics: promptText.toLowerCase().includes("%") || /\b\d+\s*users\b/i.test(promptText),
+            readability: "Good",
+            summary: "Structure is clean and parseable; incorporate quantified metric outcomes to improve ATS ranking.",
+          },
+        },
+      },
+      recommendations: {
+        experienceAdvice: "Target entry-level internships, research assistantships, or contribute to open-source software to build verifiable industry experience.",
+        projectAdvice: "Develop 2-3 full-stack applications with modern frameworks, containerize them with Docker, and link live demos.",
+        eventsAdvice: "Participate in competitive programming contests and national hackathons to establish competitive proofs.",
+      },
     };
   }
 

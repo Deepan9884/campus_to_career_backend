@@ -41,16 +41,16 @@ async function processResumeAnalysis(data) {
     if (analysis.scoreBreakdown && analysis.scoreBreakdown.pillars) {
       const p = analysis.scoreBreakdown.pillars;
       const weightedScore = Math.round(
-        ((p.internshipsAndWork?.score ?? 75) * 0.25) +
-        ((p.projectsAndPersonal?.score ?? 80) * 0.25) +
-        ((p.skillsAndKeywords?.score ?? 85) * 0.25) +
-        ((p.eventsAndHackathons?.score ?? 70) * 0.15) +
-        ((p.formatAndStructure?.score ?? 80) * 0.10)
+        ((p.internshipsAndWork?.score ?? 40) * 0.25) +
+        ((p.projectsAndPersonal?.score ?? 60) * 0.25) +
+        ((p.skillsAndKeywords?.score ?? 75) * 0.25) +
+        ((p.eventsAndHackathons?.score ?? 35) * 0.15) +
+        ((p.formatAndStructure?.score ?? 75) * 0.10)
       );
       resume.atsScore = Math.min(100, Math.max(0, weightedScore));
       analysis.scoreBreakdown.overallAtsScore = resume.atsScore;
     } else {
-      resume.atsScore = Math.round(analysis.atsScore || 80);
+      resume.atsScore = Math.round(analysis.atsScore || 72);
     }
 
     resume.keywordBreakdown = analysis.keywordBreakdown || { matched: [], missing: [] };
@@ -58,9 +58,9 @@ async function processResumeAnalysis(data) {
     resume.improvements = Array.isArray(analysis.improvements) ? analysis.improvements : fallbackData.improvements;
     resume.summary = analysis.summary || fallbackData.summary;
     resume.inferredTargetRole = analysis.inferredTargetRole || targetRole || "Software Engineer";
-    resume.internships = Array.isArray(analysis.internships) ? analysis.internships : (fallbackData.internships || []);
-    resume.projects = Array.isArray(analysis.projects) ? analysis.projects : (fallbackData.projects || []);
-    resume.eventsAndCompetitions = Array.isArray(analysis.eventsAndCompetitions) ? analysis.eventsAndCompetitions : (fallbackData.eventsAndCompetitions || []);
+    resume.internships = Array.isArray(analysis.internships) ? analysis.internships : [];
+    resume.projects = Array.isArray(analysis.projects) ? analysis.projects : [];
+    resume.eventsAndCompetitions = Array.isArray(analysis.eventsAndCompetitions) ? analysis.eventsAndCompetitions : [];
     resume.scoreBreakdown = analysis.scoreBreakdown || fallbackData.scoreBreakdown;
     resume.recommendations = analysis.recommendations || fallbackData.recommendations;
     resume.status = "completed";
@@ -115,9 +115,9 @@ async function processResumeAnalysis(data) {
     resume.improvements = fallbackData.improvements;
     resume.summary = fallbackData.summary;
     resume.inferredTargetRole = targetRole || fallbackData.inferredTargetRole;
-    resume.internships = fallbackData.internships;
-    resume.projects = fallbackData.projects;
-    resume.eventsAndCompetitions = fallbackData.eventsAndCompetitions;
+    resume.internships = Array.isArray(fallbackData.internships) ? fallbackData.internships : [];
+    resume.projects = Array.isArray(fallbackData.projects) ? fallbackData.projects : [];
+    resume.eventsAndCompetitions = Array.isArray(fallbackData.eventsAndCompetitions) ? fallbackData.eventsAndCompetitions : [];
     resume.scoreBreakdown = fallbackData.scoreBreakdown;
     resume.recommendations = fallbackData.recommendations;
     resume.status = "completed";

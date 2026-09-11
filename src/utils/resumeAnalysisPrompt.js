@@ -30,10 +30,17 @@ Evaluate the resume specifically against this role's industry standards and seni
   }
 
   prompt += `
-CRITICAL EXTRACTION & MULTI-DIMENSIONAL EVALUATION CRITERIA:
+CRITICAL EXTRACTION & FACTUAL GROUNDING DIRECTIVE (ABSOLUTE ZERO-HALLUCINATION):
+- You must extract ONLY factual, verifiable data that is explicitly and demonstrably present in the candidate's resume text above.
+- NEVER invent, fabricate, assume, simulate, extrapolate, or hallucinate ANY internship, company name, project, hackathon, competition, club, certification, or award that is not written directly in the candidate's resume text.
+- If the candidate's resume has NO internships mentioned: you MUST return "internships": []. Do NOT generate hypothetical or example internships.
+- If the candidate's resume has NO projects mentioned: you MUST return "projects": []. Do NOT generate placeholder or example projects.
+- If the candidate's resume has NO hackathons, coding contests, or events: you MUST return "eventsAndCompetitions": []. Do NOT generate placeholder or example hackathons or contests.
+- NEVER copy names mentioned in prompt instructions into the output unless the candidate's resume text explicitly and verbatim mentions them.
+- If an extracted array is empty ([]), reflect that honestly in the corresponding pillar score and count (e.g., count: 0, score: 30-45), and provide constructive advice in recommendations.
 
 1. INTERNSHIPS & PROFESSIONAL WORK EXPERIENCE:
-   - Extract ALL professional work, summer internships, co-ops, research internships, or industry traineeships.
+   - Extract ALL professional work, summer internships, co-ops, research internships, or industry traineeships explicitly stated in the resume.
    - For each entry:
      * role: Exact job title / designation (e.g. "Software Engineer Intern", "Frontend Developer Intern").
      * company: Name of company, startup, or lab.
@@ -47,7 +54,7 @@ CRITICAL EXTRACTION & MULTI-DIMENSIONAL EVALUATION CRITERIA:
    - If the candidate has ZERO internships, return an empty array [] and explicitly address this gap in "recommendations.experienceAdvice".
 
 2. PROJECTS (DISTINGUISH PERSONAL PROJECTS vs ACADEMIC/COURSEWORK):
-   - Extract ALL projects mentioned in the resume.
+   - Extract ALL projects explicitly mentioned in the resume.
    - Categorize each project type precisely:
      * "personal": Self-driven side projects, open-source repos, hobby apps, independent SaaS prototypes built outside of syllabus.
      * "academic": College mini-projects, class assignments, lab coursework, semester capstone.
@@ -55,7 +62,7 @@ CRITICAL EXTRACTION & MULTI-DIMENSIONAL EVALUATION CRITERIA:
      * "hackathon": Prototype built during a competitive hackathon.
      * "client": Freelance or client project.
    - For each project:
-     * title: Project title.
+     * title: Project title as written in resume.
      * projectType: "personal" | "academic" | "capstone" | "hackathon" | "client".
      * duration: Date or duration stated (e.g. "3 months", "Jan 2024 - Mar 2024", or "Duration not specified").
      * durationMonths: Estimated duration in months as a number (e.g. 1, 2, 3), or null.
@@ -65,26 +72,28 @@ CRITICAL EXTRACTION & MULTI-DIMENSIONAL EVALUATION CRITERIA:
      * highlights: Array of 1-3 major architectural or technical highlights.
      * complexityScore: Number 0-100 indicating technical depth (e.g., simple HTML/CSS or basic calculator = 30-45; full-stack with database, authentication, state management = 70-85; distributed system, ML pipeline, microservices, cloud deployment = 85-98).
      * feedback: Specific actionable suggestion to improve this project's presentation (e.g. mention Docker containerization, CI/CD, system architecture, performance benchmarking).
+   - If the candidate has ZERO projects, return an empty array [] and explicitly address this gap in "recommendations.projectAdvice".
 
 3. EVENT PARTICIPATION & EXTRACURRICULARS:
-   - Extract hackathons (e.g. Smart India Hackathon, MLH, internal hackathons), coding contests (LeetCode/CodeChef/Codeforces rating or contests), technical symposiums, paper presentations, workshops, tech club leadership, open source contributions, or technical certifications.
+   - Extract competitive hackathons, coding contests, technical symposiums, paper presentations, workshops, tech club leadership, open source contributions, or technical certifications explicitly documented in the candidate's resume.
    - For each:
-     * name: Name of event, competition, platform, or organization.
+     * name: Exact name of event, competition, platform, or organization stated in resume.
      * category: "hackathon" | "coding_contest" | "conference" | "workshop" | "leadership" | "certification" | "other".
-     * roleOrAchievement: e.g., "Winner (1st Place)", "Top 5 Finalist", "Participant", "Club President", "Top 10% LeetCode".
+     * roleOrAchievement: e.g., "Winner (1st Place)", "Top 5 Finalist", "Participant", "Club President", "Contestant".
      * yearOrDate: Date or year stated (e.g., "2024").
      * skillsDemonstrated: Array of key skills demonstrated.
      * feedback: 1-sentence assessment of how this event strengthens their profile and how to highlight it better.
+   - If the candidate has ZERO events or hackathons, return an empty array [] and explicitly address this gap in "recommendations.eventsAdvice".
 
 4. 5-PILLAR ATS SCORING SYSTEM:
    Score each of the 5 pillars from 0 to 100 based on rigorous criteria:
    - "internshipsAndWork" (Weight 25%):
-     * Score based on total duration, quality of companies, relevance to target role, and quantifiable metrics. (No internships: max score 45 unless offset by extraordinary industry-grade open source).
+     * Score based on total duration, quality of companies, relevance to target role, and quantifiable metrics. (No internships: score 30-45).
      * totalMonths: Sum of all internship/work months.
      * count: Number of work experiences.
      * summary: Clear 1-sentence evaluation of their practical industry experience.
    - "projectsAndPersonal" (Weight 25%):
-     * Score based on personal project initiative, architectural complexity, tech stack modernness, live links, and duration.
+     * Score based on personal project initiative, architectural complexity, tech stack modernness, live links, and duration. (No projects: score 30-45).
      * personalCount: Number of self-driven personal projects.
      * academicCount: Number of academic/capstone projects.
      * summary: Clear 1-sentence evaluation of project depth and balance.
@@ -94,7 +103,7 @@ CRITICAL EXTRACTION & MULTI-DIMENSIONAL EVALUATION CRITERIA:
      * missingCount: Count of critical missing keywords.
      * summary: Evaluation of technical skill breadth and depth.
    - "eventsAndHackathons" (Weight 15%):
-     * Score based on competitive spirit, hackathon participation/wins, coding contest track record, tech community leadership. (Zero events: score 30-40).
+     * Score based on competitive spirit, hackathon participation/wins, coding contest track record, tech community leadership. (Zero events: score 25-40).
      * count: Number of events/competitions detected.
      * summary: Evaluation of competitive engagement outside classroom.
    - "formatAndStructure" (Weight 10%):
@@ -290,141 +299,71 @@ const resumeResponseSchema = {
  * Fallback data provider if AI API is temporarily unavailable.
  */
 function getDefaultResumeAnalysis(targetRole) {
-  const resolvedRole = targetRole || "Full Stack Developer";
+  const resolvedRole = targetRole || "Software Developer";
   return {
-    atsScore: 82,
+    atsScore: 72,
     inferredTargetRole: resolvedRole,
-    summary: `Solid technical resume aligned with ${resolvedRole} roles, featuring hands-on project work and core web competencies.`,
+    summary: `Technical resume reviewed for ${resolvedRole} roles. Core competencies identified; adding verified personal projects, metric-driven achievements, and competitive milestones will elevate ATS ranking.`,
     keywordBreakdown: {
-      matched: ["JavaScript", "TypeScript", "React", "Node.js", "Express", "REST APIs", "Git", "MongoDB", "SQL"],
+      matched: ["JavaScript", "React", "Node.js", "Express", "REST APIs", "Git", "SQL"],
       missing: ["Docker", "Kubernetes", "CI/CD Pipelines", "Automated Testing (Jest/Playwright)", "Redis"],
     },
     strengths: [
-      "Demonstrated practical full-stack capabilities with modern JavaScript/TypeScript ecosystem",
-      "Clear technical stack separation across frontend, backend, and database architecture",
-      "Strong initiative evidenced by self-driven development and practical deployment",
+      "Readable structure and clean layout compatible with modern ATS parsers",
+      "Identifiable core software and web development technologies",
+      "Solid foundation for entry into technical software roles",
     ],
     improvements: [
-      "Incorporate quantified metric outcomes (e.g., latency reduction, user volume, test coverage) into project bullets",
-      "Highlight CI/CD pipelines, containerization (Docker), and automated testing practices",
-      "Include explicit duration timelines (months) and live deployment links for all personal projects",
+      "Add distinct personal and academic projects with GitHub repositories and live deployments",
+      "Incorporate quantified metric outcomes (e.g., latency reduction, user volume, test coverage)",
+      "Participate in hackathons or coding contests to build competitive milestones",
     ],
-    internships: [
-      {
-        role: "Software Engineering Intern",
-        company: "Tech Solutions Inc.",
-        duration: "Jun 2024 - Aug 2024",
-        durationMonths: 3,
-        technologies: ["React", "TypeScript", "TailwindCSS", "REST APIs"],
-        keyResponsibilities: [
-          "Developed modular React components for internal analytics dashboard",
-          "Optimized API query latency by implementing client-side caching",
-          "Collaborated in Agile sprint planning and code reviews",
-        ],
-        metricsIdentified: true,
-        qualityRating: "Good",
-        feedback: "Strong 3-month internship experience. Add exact percentage metrics for the API latency optimization.",
-      },
-    ],
-    projects: [
-      {
-        title: "Campus to Career AI Placement Platform",
-        projectType: "personal",
-        duration: "3 months (Jan 2024 - Mar 2024)",
-        durationMonths: 3,
-        techStack: ["React", "Node.js", "Express", "MongoDB", "TailwindCSS"],
-        description: "Full-stack career readiness portal with interactive mock interview simulation, resume scoring, and skill benchmarking.",
-        hasLiveOrRepoLink: true,
-        highlights: ["JWT authentication", "Role-based access control", "Responsive dashboard"],
-        complexityScore: 85,
-        feedback: "Excellent personal project exhibiting full-stack depth. Mention unit test coverage and automated deployment to make it top-tier.",
-      },
-      {
-        title: "Real-Time Collaborative Code Editor",
-        projectType: "personal",
-        duration: "2 months (Nov 2023 - Dec 2023)",
-        durationMonths: 2,
-        techStack: ["Socket.io", "React", "Node.js", "Monaco Editor"],
-        description: "Browser-based collaborative programming workspace supporting multi-user synchronization and syntax highlighting.",
-        hasLiveOrRepoLink: true,
-        highlights: ["WebSockets synchronization", "Conflict resolution logic"],
-        complexityScore: 80,
-        feedback: "Great demonstration of real-time networking protocols. Add system architecture details in bullet points.",
-      },
-      {
-        title: "Distributed File Storage System",
-        projectType: "academic",
-        duration: "4 months (Course Capstone)",
-        durationMonths: 4,
-        techStack: ["Java", "Spring Boot", "MySQL"],
-        description: "Academic capstone project implementing chunked file transfer, fault-tolerant replication, and metadata indexing.",
-        hasLiveOrRepoLink: false,
-        highlights: ["Replication management", "SHA-256 integrity verification"],
-        complexityScore: 78,
-        feedback: "Strong academic capstone. Add a public GitHub link and deployment instructions.",
-      },
-    ],
-    eventsAndCompetitions: [
-      {
-        name: "Smart India Hackathon (SIH)",
-        category: "hackathon",
-        roleOrAchievement: "Finalist (Top 10 Team)",
-        yearOrDate: "2024",
-        skillsDemonstrated: ["Rapid Prototyping", "Full Stack Development", "Team Pitching"],
-        feedback: "High-value competitive achievement. Highlight the specific technical problem your team solved.",
-      },
-      {
-        name: "College Annual Coding Marathon",
-        category: "coding_contest",
-        roleOrAchievement: "2nd Place Winner",
-        yearOrDate: "2023",
-        skillsDemonstrated: ["Algorithms", "Data Structures", "Time Complexity Optimization"],
-        feedback: "Demonstrates problem-solving stamina. Mention your contest rating or rank percentiles.",
-      },
-    ],
+    internships: [],
+    projects: [],
+    eventsAndCompetitions: [],
     scoreBreakdown: {
-      overallAtsScore: 82,
+      overallAtsScore: 72,
       pillars: {
         internshipsAndWork: {
-          score: 80,
+          score: 40,
           weight: 25,
-          totalMonths: 3,
-          count: 1,
-          summary: "1 relevant internship (3 months) completed with modern web stack exposure.",
+          totalMonths: 0,
+          count: 0,
+          summary: "No formal corporate internships or employment detected on resume.",
         },
         projectsAndPersonal: {
-          score: 86,
+          score: 60,
           weight: 25,
-          personalCount: 2,
-          academicCount: 1,
-          summary: "2 self-driven personal projects and 1 capstone project demonstrating solid technical depth.",
+          personalCount: 0,
+          academicCount: 0,
+          summary: "No independent projects detected on resume. Build and showcase 2-3 production-ready projects.",
         },
         skillsAndKeywords: {
-          score: 84,
+          score: 75,
           weight: 25,
-          matchedCount: 9,
+          matchedCount: 7,
           missingCount: 5,
-          summary: "Strong core JavaScript/React/Node stack; cloud DevOps and CI/CD tools can be strengthened.",
+          summary: "Core programming fundamentals detected; expand targeted industry frameworks and databases.",
         },
         eventsAndHackathons: {
-          score: 78,
+          score: 35,
           weight: 15,
-          count: 2,
-          summary: "Demonstrated competitive drive with hackathon finalist placement and coding contest success.",
+          count: 0,
+          summary: "No competitive hackathons, coding contests, or technical event participation detected.",
         },
         formatAndStructure: {
-          score: 82,
+          score: 75,
           weight: 10,
-          hasMetrics: true,
+          hasMetrics: false,
           readability: "Good",
-          summary: "Clean formatting with strong action verbs; more numerical KPIs will maximize ATS parsing.",
+          summary: "Structure is clean; incorporate quantified metric outcomes and action verbs to improve ATS ranking.",
         },
       },
     },
     recommendations: {
-      experienceAdvice: "Target 1 additional internship or contribute actively to production open-source repositories to build a multi-experience narrative.",
-      projectAdvice: "Build a cloud-native microservice personal project with Docker, Redis caching, and CI/CD deployment on AWS or GCP.",
-      eventsAdvice: "Participate in national-level open-source initiatives (like GSoC or Hacktoberfest) and weekly competitive programming contests to bolster rank.",
+      experienceAdvice: "Seek entry-level internships, freelance opportunities, or contribute to recognized open-source repositories to build verifiable work experience.",
+      projectAdvice: "Develop 2-3 full-stack projects solving real problems, deploy them with CI/CD, and include GitHub repository links.",
+      eventsAdvice: "Register for upcoming hackathons and practice on competitive programming platforms to build verifiable achievement proofs.",
     },
   };
 }
