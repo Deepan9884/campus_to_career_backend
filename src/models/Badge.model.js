@@ -2,12 +2,23 @@ const mongoose = require("mongoose");
 
 const VALID_BADGES = [
     "First Steps",
+    "First Resume",
     "Resume Ready",
+    "Score Above 80",
+    "Interview Rookie",
     "Interview Warmup",
+    "Interview Veteran",
     "Interview Pro",
-    "Code Explorer",
+    "5 Interviews",
+    "STAR Communicator",
+    "Skill Explorer",
     "Gap Closer",
+    "Skill Collector",
+    "Code Explorer",
+    "Project Pro",
     "Roadmap Builder",
+    "Strategist",
+    "Placement Ready",
     "Quiz Streak",
     "High Scorer",
 ];
@@ -22,7 +33,6 @@ const badgeSchema = new mongoose.Schema(
         },
         badgeId: {
             type: String,
-            enum: VALID_BADGES,
             required: true,
         },
         earnedAt: {

@@ -7,6 +7,7 @@ const SkillGapAnalysis = require("../models/SkillGapAnalysis.model");
 const LearningRoadmap = require("../models/LearningRoadmap.model");
 const aiService = require("../services/ai.service");
 const { calculateStudentReadiness } = require("../services/careerReadiness.service");
+const { evaluateUserBadges } = require("../services/badge.service");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiResponse = require("../utils/ApiResponse");
 const ApiError = require("../utils/ApiError");
@@ -21,37 +22,42 @@ const getAnalyticsOverview = asyncHandler(async (req, res) => {
     repoCount,
     userSkills,
     latestGapAnalysis,
+    badgeEval,
   ] = await Promise.all([
     Resume.find({ user: userId, status: { $ne: "failed" }, atsScore: { $ne: null } })
-      .select("atsScore createdAt")
+      .select("atsScore targetRole createdAt")
       .sort({ createdAt: 1 })
       .lean(),
     InterviewSession.find({ user: userId, status: { $ne: "failed" }, overallScore: { $ne: null } })
-      .select("overallScore targetRole createdAt rounds.roundType")
+      .select("overallScore targetRole createdAt")
       .sort({ createdAt: 1 })
       .lean(),
     RepoAnalysis.countDocuments({ user: userId, status: { $ne: "failed" } }),
-    UserSkill.find({ user: userId }).select("name level").lean(),
+    UserSkill.find({ user: userId }).select("name category createdAt").lean(),
     SkillGapAnalysis.findOne({ user: userId, status: { $ne: "failed" } })
-      .select("targetRole matchedSkills gaps matchPercentage")
+      .select("matchPercentage targetRole createdAt")
       .sort({ createdAt: -1 })
       .lean(),
+    evaluateUserBadges(userId).catch(() => ({ achievements: [] })),
   ]);
 
-  // Resume trend: group by date
-  const resumeTrend = resumes.map((r) => ({
-    date: formatDate(r.createdAt),
+  // Resume trend: chronological sequence of scores
+  const resumeTrend = resumes.map((r, i) => ({
+    iteration: `v${i + 1}`,
     score: r.atsScore,
+    date: r.createdAt.toISOString().split("T")[0],
+    role: r.targetRole || "General",
   }));
 
-  // Interview trend: each session
-  const interviewTrend = interviews.map((i, idx) => ({
-    name: `Int ${idx + 1}`,
-    score: i.overallScore,
-    type: i.targetRole || "General",
+  // Interview trend: chronological sequence of scores
+  const interviewTrend = interviews.map((iv, i) => ({
+    session: `#${i + 1}`,
+    score: iv.overallScore,
+    date: iv.createdAt.toISOString().split("T")[0],
+    role: iv.targetRole || "Technical",
   }));
 
-  // Skill radar: from role skill bank + user skills
+  // Skill radar: user skills vs role benchmark
   const skillRadar = await buildSkillRadar(userId, latestGapAnalysis);
 
   // Feature usage: count across all collections
@@ -62,8 +68,8 @@ const getAnalyticsOverview = asyncHandler(async (req, res) => {
     { name: "Skills", value: userSkills.length },
   ];
 
-  // Achievements
-  const achievements = computeAchievements(resumes, interviews, repoCount, userSkills.length);
+  // Authoritative Unified Achievements & Trophies
+  const achievements = badgeEval.achievements || [];
 
   // Overview stats
   const [readinessData, activities] = await Promise.all([
@@ -116,65 +122,6 @@ async function buildSkillRadar(userId, gapAnalysis) {
       : 0,
     target: b.importance === "core" ? 85 : 65,
   }));
-}
-
-function computeAchievements(resumes, interviews, repoCount, skillCount) {
-  const hasResume = resumes.length > 0;
-  const hasInterview = interviews.length > 0;
-  const bestResumeScore = resumes.length > 0
-    ? Math.max(...resumes.map((r) => r.atsScore))
-    : 0;
-  const bestInterviewScore = interviews.length > 0
-    ? Math.max(...interviews.map((i) => i.overallScore))
-    : 0;
-
-  return [
-    {
-      name: "First Resume",
-      desc: "Upload your first resume",
-      earned: hasResume,
-      tier: "bronze",
-      progress: hasResume ? 100 : 0,
-    },
-    {
-      name: "Interview Rookie",
-      desc: "Complete first mock interview",
-      earned: hasInterview,
-      tier: "bronze",
-      progress: hasInterview ? 100 : 0,
-    },
-    {
-      name: "5 Interviews",
-      desc: "Complete 5 mock interviews",
-      earned: interviews.length >= 5,
-      tier: "silver",
-      progress: Math.min(100, Math.round((interviews.length / 5) * 100)),
-    },
-    {
-      name: "Score Above 80",
-      desc: "Reach an 80+ score on any assessment",
-      earned: bestResumeScore >= 80 || bestInterviewScore >= 80,
-      tier: "gold",
-      progress: Math.min(
-        100,
-        Math.round((Math.max(bestResumeScore, bestInterviewScore) / 80) * 100),
-      ),
-    },
-    {
-      name: "Project Pro",
-      desc: "Analyze 10 GitHub repos",
-      earned: repoCount >= 10,
-      tier: "silver",
-      progress: Math.min(100, Math.round((repoCount / 10) * 100)),
-    },
-    {
-      name: "Skill Collector",
-      desc: "Add 10 skills to your profile",
-      earned: skillCount >= 10,
-      tier: "silver",
-      progress: Math.min(100, Math.round((skillCount / 10) * 100)),
-    },
-  ];
 }
 
 async function buildActivityTimeline(userId) {
