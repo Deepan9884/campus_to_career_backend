@@ -499,12 +499,25 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
     ...rawMenteeIds,
     ...directMentees.map((d) => d._id.toString())
   ])).map((id) => new mongoose.Types.ObjectId(id));
+  const validMenteeIdStrings = allMenteeObjectIds.map((id) => id.toString());
 
   // Auto-sync mentor's mentees field in DB
   if (currentUser && Array.isArray(currentUser.mentees) && currentUser.mentees.length !== allMenteeObjectIds.length) {
     currentUser.mentees = allMenteeObjectIds;
     await currentUser.save();
   }
+
+  // Find all mentors to exclude them from student list
+  const mentorDocs = await User.find({
+    $or: [
+      { role: { $in: ["admin", "ADMIN", "mentor", "MENTOR", "faculty", "FACULTY", "hod", "HOD", "staff", "STAFF"] } },
+      { mentees: { $exists: true, $not: { $size: 0 } } },
+    ],
+  }).select("_id email").lean();
+  const allMentorIds = mentorDocs.map((m) => m._id.toString());
+  const allMentorEmails = mentorDocs.map((m) => (m.email || "").toLowerCase().trim()).filter(Boolean);
+
+  const isSuperAdmin = currentUser?.role === "admin" || req.user.role === "admin" || currentUser?.role === "ADMIN";
 
   // STRICT RULE: Super Dream Track displays assigned mentees of the logged-in mentor
   const assignedOr = [{ assignedMentor: req.user._id }];
@@ -524,8 +537,14 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
         { role: "" },
       ],
     },
-    { $or: assignedOr },
   ];
+
+  // If mentor has assigned mentees, filter strictly to them. If admin has no assigned mentees yet, show candidate students
+  if (allMenteeObjectIds.length > 0) {
+    baseConditions.push({ $or: assignedOr });
+  } else if (!isSuperAdmin) {
+    baseConditions.push({ $or: assignedOr });
+  }
 
   if (search) {
     const safeSearch = escapeRegex(search);
@@ -622,7 +641,7 @@ const getAdminSuperDreamCohort = asyncHandler(async (req, res) => {
         lastActivityAt: sd?.lastActivityAt || u.createdAt,
         recentMovements,
         hasFullData: true,
-        isAssignedToMe: validMenteeIdStrings.includes(u._id.toString()) || u.assignedMentor?.toString() === req.user._id.toString(),
+        isAssignedToMe: validMenteeIdStrings.includes(u._id.toString()) || u.assignedMentor?.toString() === req.user._id.toString() || isSuperAdmin,
       };
     })
   );
