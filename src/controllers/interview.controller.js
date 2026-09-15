@@ -818,7 +818,8 @@ Return JSON array:
   const sampleItemsFromBank = (bankQs) =>
     bankQs.map((q) => ({
       questionId: q._id,
-      questionText: q.questionText,
+      // Fall back across alias keys so a stem stored under `question` never renders blank.
+      questionText: q.questionText || q.question || q.prompt || "",
       itemType: q.itemType,
       options: q.options,
       correctOptionIndex: q.correctOptionIndex,
