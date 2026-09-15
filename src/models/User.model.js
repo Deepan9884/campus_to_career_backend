@@ -91,6 +91,10 @@ const userSchema = new mongoose.Schema(
     twoFactorSecret: { type: String, select: false }, // speakeasy TOTP secret, excluded from default queries
     refreshToken: { type: String, select: false },
     refreshTokenVersion: { type: Number, default: 0 },
+    // Single-use grace slot for concurrent refresh races (two tabs/apps refreshing
+    // at once). Holds the PREVIOUS refresh hash for ~60s after rotation.
+    previousRefreshToken: { type: String, select: false, default: null },
+    previousRefreshExpires: { type: Date, select: false, default: null },
     failedLoginAttempts: { type: Number, default: 0 },
     lockUntil: { type: Date, default: null },
     lastFailedLogin: { type: Date, default: null },

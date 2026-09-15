@@ -97,13 +97,17 @@ function getCookieValue(req, name) {
   return undefined;
 }
 
-/** Set the httpOnly refreshToken cookie with strict cross-origin protection for production. */
+/** Set the httpOnly refreshToken cookie. Production frontends live on different
+ * origins (Vercel) than the API, so the cookie MUST be SameSite=None (with
+ * Secure) or browsers will withhold it on cross-site refresh calls and every
+ * session will die when the 15-minute access token expires. Token rotation
+ * with reuse detection remains the CSRF/replay mitigation. */
 function setRefreshTokenCookie(res, token) {
   const maxAge = parseDurationToMs(env.JWT_REFRESH_EXPIRES_IN);
   res.cookie("refreshToken", token, {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
-    sameSite: env.NODE_ENV === "production" ? "strict" : "lax", // Changed from "none" to "strict" for CSRF protection
+    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
     maxAge,
   });
 }
@@ -742,7 +746,7 @@ const logout = asyncHandler(async (req, res) => {
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
-    sameSite: env.NODE_ENV === "production" ? "strict" : "lax",
+    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
   });
 
   return ApiResponse.success(null, "Logged out successfully").send(res);
@@ -763,7 +767,9 @@ const refreshToken = asyncHandler(async (req, res) => {
 
   // Support both `_id` (used by current model) and `sub` (JWT standard claim).
   const userId = decoded._id || decoded.sub;
-  const user = await User.findById(userId).select("+refreshToken +refreshTokenVersion");
+  const user = await User.findById(userId).select(
+    "+refreshToken +refreshTokenVersion +previousRefreshToken +previousRefreshExpires"
+  );
   if (!user || !user.refreshToken) {
     throw ApiError.unauthorized("Invalid refresh token");
   }
@@ -784,14 +790,48 @@ const refreshToken = asyncHandler(async (req, res) => {
   const updatedUser = await User.findOneAndUpdate(
     { _id: userId, refreshTokenVersion: currentVersion },
     {
-      $set: { refreshToken: newHash },
+      // Stash the superseded hash for a short single-use grace window so a
+      // concurrent refresh from another tab/app doesn't nuke that session.
+      $set: {
+        refreshToken: newHash,
+        previousRefreshToken: user.refreshToken,
+        previousRefreshExpires: new Date(Date.now() + 60 * 1000),
+      },
       $inc: { refreshTokenVersion: 1 },
     },
     { new: true },
   );
 
-  // CAS failure: concurrent request already rotated, indicating reuse
+  // CAS failure: either a concurrent rotation just won the race, or the token
+  // is being replayed. Distinguish via the single-use grace slot.
   if (!updatedUser) {
+    const fresh = await User.findById(userId).select(
+      "+refreshTokenVersion +previousRefreshToken +previousRefreshExpires"
+    );
+    const inGrace =
+      fresh &&
+      fresh.previousRefreshToken &&
+      fresh.previousRefreshExpires &&
+      fresh.previousRefreshExpires > new Date() &&
+      (await compareToken(rawToken, fresh.previousRefreshToken));
+
+    if (inGrace) {
+      // Legit race: rotate once more from current state and burn the grace slot.
+      const graceVersion = fresh.refreshTokenVersion || 0;
+      const graceRotated = await User.findOneAndUpdate(
+        { _id: userId, refreshTokenVersion: graceVersion },
+        {
+          $set: { refreshToken: newHash, previousRefreshToken: null, previousRefreshExpires: null },
+          $inc: { refreshTokenVersion: 1 },
+        },
+        { new: true }
+      );
+      if (graceRotated) {
+        console.warn(`[Auth] Refresh race absorbed via grace window (user ${userId})`);
+        setRefreshTokenCookie(res, newRefreshToken);
+        return ApiResponse.success({ accessToken: newAccessToken }).send(res);
+      }
+    }
     throw ApiError.unauthorized("Invalid or already-used refresh token");
   }
 
@@ -1089,7 +1129,7 @@ const logoutAll = asyncHandler(async (req, res) => {
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
-    sameSite: env.NODE_ENV === "production" ? "strict" : "lax",
+    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
   });
   return ApiResponse.success(null, "Logged out of all sessions").send(res);
 });
@@ -1541,7 +1581,7 @@ const deleteAccount = asyncHandler(async (req, res) => {
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
-    sameSite: env.NODE_ENV === "production" ? "strict" : "lax",
+    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
   });
 
   return ApiResponse.success(
