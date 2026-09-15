@@ -65,9 +65,11 @@ function validatePasswordStrength(password) {
     issues.push('Password must contain at least one number');
   }
 
-  // Check for special character
-  if (!/[@$!%*?&]/.test(password)) {
-    issues.push('Password must contain at least one special character (@$!%*?&)');
+  // Check for special character — any non-alphanumeric symbol counts.
+  // (Must stay in sync with the student app's strength meter, which treats
+  // any symbol such as _ # - + = / . , : ; as a special character.)
+  if (!/[^a-zA-Z0-9]/.test(password)) {
+    issues.push('Password must contain at least one special character (e.g. @$!%*?&_#-)');
   }
 
   // Check for common passwords
@@ -130,7 +132,8 @@ function validatePasswordMiddleware(field = 'password') {
       return res.status(400).json({
         success: false,
         message: 'Password does not meet security requirements',
-        issues: validation.issues
+        issues: validation.issues,
+        errors: validation.issues
       });
     }
 
