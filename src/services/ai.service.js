@@ -357,7 +357,7 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
   let lastClassification = null;
 
   // Maximum attempts distributed across available keys & fallback models
-  const maxAttempts = Math.max(3, Math.min(6, keyPool.poolSize * 2));
+  const maxAttempts = Math.max(modelsToTry.length, Math.min(8, (keyPool.poolSize || 1) * 2));
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const clientEntry = keyPool.getClient();
@@ -432,8 +432,24 @@ async function generateContent({ prompt, responseSchema, model, feature = "gener
       lastError = error;
       lastClassification = classifyError(error);
 
+      const errLower = (error.message || "").toLowerCase();
+      const isCapacityOrModelError =
+        errLower.includes("capacity") ||
+        errLower.includes("503") ||
+        errLower.includes("unavailable") ||
+        errLower.includes("not found") ||
+        errLower.includes("no such host") ||
+        errLower.includes("wsarecv") ||
+        errLower.includes("connection attempt failed");
+
       const isQuota = isQuotaError(error);
-      keyPool.reportError(clientEntry, isQuota);
+
+      // Only put API key on long cooldown if it's an actual account quota exhaustion
+      if (!isCapacityOrModelError) {
+        keyPool.reportError(clientEntry, isQuota);
+      } else {
+        console.warn(`[AI Engine] Model ${currentModel} error (${error.message}). Fast-failing to next candidate model.`);
+      }
 
       // If bad request (schema or prompt syntax error), do not retry identically
       if (isBadRequest(error)) {
@@ -751,12 +767,15 @@ function generateContextualFallback(feature, prompt, responseSchema) {
     const eventsScore = hasEvents ? Math.min(95, 70 + eventsAndCompetitions.length * 5) : (promptText.toLowerCase().includes("hackathon") ? 55 : 35);
     const formatScore = 75;
 
-    const weightedScore = Math.round(
-      (internshipScore * 0.25) +
-      (projectScore * 0.25) +
-      (skillsScore * 0.25) +
-      (eventsScore * 0.15) +
-      (formatScore * 0.10)
+    const weightedScore = Math.max(
+      65,
+      Math.round(
+        (internshipScore * 0.25) +
+        (projectScore * 0.25) +
+        (skillsScore * 0.25) +
+        (eventsScore * 0.15) +
+        (formatScore * 0.10)
+      )
     );
 
     let inferredRole = "Full Stack Developer";
@@ -844,7 +863,101 @@ function generateContextualFallback(feature, prompt, responseSchema) {
 
 
 
-  // 3. Interview Question Selection
+  // 3. Interview HR & Behavioral Question Generation
+  if (
+    feature === "interview-hr-resume-generation" ||
+    feature === "interview-hr-privacy-generation" ||
+    feature.includes("hr-resume") ||
+    feature.includes("hr-privacy")
+  ) {
+    const roleMatch = promptText.match(/target role:\s*([^\n.]+)/i);
+    const role = roleMatch ? roleMatch[1].trim() : "Software Engineer";
+
+    const { projects } = extractHeuristicSections(promptText);
+    const p1 = projects[0]?.title || "key software project";
+    const p2 = projects[1]?.title || "web/backend service";
+
+    return [
+      {
+        questionText: `Walk me through the architecture and technical design tradeoffs of your ${p1}. What was your specific personal contribution and how did you choose your tech stack?`,
+        projectContext: p1,
+        idealAnswerPoints: [
+          "Situation & Task: Clear system architecture context and user requirements",
+          "Action: Concrete design patterns, component modularity, and technical tradeoffs",
+          "Result: Quantifiable reliability, performance metrics, and key lessons learned",
+        ],
+      },
+      {
+        questionText: `Tell me about a challenging bug, performance bottleneck, or unexpected outage you encountered while developing a project (such as ${p2}). How did you diagnose and resolve it?`,
+        projectContext: p2,
+        idealAnswerPoints: [
+          "Situation: Precise error symptoms, latency spikes, or failure conditions",
+          "Action: Profiling tools, debugging methodology, and the targeted architectural fix",
+          "Result: Verified resolution with measurable improvement in system stability",
+        ],
+      },
+      {
+        questionText: `Describe a situation where you had to deliver an engineering milestone under a tight deadline or shifting requirements. How did you prioritize tasks and ensure quality?`,
+        projectContext: "Prioritization & Engineering Execution",
+        idealAnswerPoints: [
+          "Situation: Conflicting priorities, tight graduation deadlines, or shifting scope",
+          "Action: Modular milestone decomposition and proactive stakeholder communication",
+          "Result: On-time delivery with zero critical regression bugs",
+        ],
+      },
+      {
+        questionText: `How do you handle constructive code review feedback or differing technical opinions when collaborating with team members or mentors?`,
+        projectContext: "Team Collaboration & Engineering Culture",
+        idealAnswerPoints: [
+          "Situation: Competing technical approaches or critical feedback received on a PR",
+          "Action: Objective benchmarking, open discussion of tradeoffs, and maintainability focus",
+          "Result: High-quality merged implementation and strengthened team trust",
+        ],
+      },
+      {
+        questionText: `As a ${role} candidate, how do you approach learning unfamiliar technologies or tools quickly when a project requires them? Give an example.`,
+        projectContext: "Continuous Learning & Adaptability",
+        idealAnswerPoints: [
+          "Situation: Need to rapidly adopt a new framework, library, or API standard",
+          "Action: Hands-on experimentation, studying documentation, and writing minimal POCs",
+          "Result: Successful production integration and broader technical competence",
+        ],
+      },
+    ];
+  }
+
+  // 3b. Interview Coding Problem Generation
+  if (feature === "interview-coding-selection" || feature.includes("coding-selection")) {
+    return [
+      {
+        questionText: "Implement an algorithm to find the longest substring without repeating characters in a given string. Discuss time and space complexities.",
+        starterCode: "def solve(s: str) -> int:\n    # Write your solution here\n    pass",
+        testCases: [
+          { input: "abcabcbb", expectedOutput: "3", description: "Standard mixed string" },
+          { input: "bbbbb", expectedOutput: "1", description: "All repeating characters" },
+          { input: "pwwkew", expectedOutput: "3", description: "Non-contiguous substring" },
+        ],
+        idealAnswerPoints: [
+          "Use a sliding window with a hash map/set to track visited characters in O(n) time",
+          "Properly update left pointer to skip duplicates without quadratic backtracking",
+        ],
+      },
+      {
+        questionText: "Given an array of integers and a target sum, find two distinct indices whose values sum to the target.",
+        starterCode: "def solve(nums: list[int], target: int) -> list[int]:\n    # Write your solution here\n    pass",
+        testCases: [
+          { input: "[2, 7, 11, 15], 9", expectedOutput: "[0, 1]", description: "Pair at start" },
+          { input: "[3, 2, 4], 6", expectedOutput: "[1, 2]", description: "Pair in middle" },
+        ],
+        idealAnswerPoints: [
+          "One-pass hash table lookup yielding O(n) time and O(n) space complexity",
+          "Handle cases where numbers cannot be used more than once",
+        ],
+      },
+    ];
+  }
+
+  // 3c. Generic Interview Question Selection
   if (feature.includes("selection")) {
     const idMatches = promptText.match(/ID:\s*([a-f0-9]{24})/gi) || [];
     const ids = idMatches.map((m) => m.replace(/ID:\s*/i, "").trim());
@@ -862,7 +975,7 @@ function generateContextualFallback(feature, prompt, responseSchema) {
   }
 
   // 4. Interview Scoring
-  if (feature.includes("scoring") || feature.includes("interview")) {
+  if (feature.includes("scoring") || feature.includes("evaluat") || feature === "interview-scoring") {
     const questionBlocks = promptText.split(/--- Question \d+ ---/i).slice(1);
     const count = Math.max(1, questionBlocks.length || 3);
     const perQuestionFeedback = [];

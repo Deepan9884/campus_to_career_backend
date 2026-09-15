@@ -91,10 +91,27 @@ class KeyPoolManager {
 const keyPool = new KeyPoolManager(env.GEMINI_API_KEYS);
 const primaryClientEntry = keyPool.getClient() || { client: new GoogleGenAI({ apiKey: env.GEMINI_API_KEY || "dummy" }) };
 
-const defaultModel = env.GEMINI_MODEL_DEFAULT;
-const fallbackModel = env.GEMINI_MODEL_FALLBACK;
+function sanitizeModelName(name) {
+  if (!name || typeof name !== "string") return "gemini-2.5-flash";
+  const trimmed = name.trim();
+  if (/^gemini-3/i.test(trimmed)) {
+    console.warn(`[Gemini Config] Model "${trimmed}" is not a recognized Gemini production release. Routing automatically to "gemini-2.5-flash".`);
+    return "gemini-2.5-flash";
+  }
+  return trimmed;
+}
+
+const defaultModel = sanitizeModelName(env.GEMINI_MODEL_DEFAULT);
+const fallbackModel = sanitizeModelName(env.GEMINI_MODEL_FALLBACK);
+const STABLE_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-flash-lite-latest",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+  "gemini-1.5-pro",
+];
 const modelFallbackList = Array.from(
-  new Set([defaultModel, fallbackModel, ...env.GEMINI_FALLBACK_MODELS])
+  new Set([defaultModel, fallbackModel, ...(env.GEMINI_FALLBACK_MODELS || []).map(sanitizeModelName), ...STABLE_MODELS])
 ).filter(Boolean);
 
 module.exports = {
