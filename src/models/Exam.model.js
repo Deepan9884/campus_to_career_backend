@@ -143,9 +143,21 @@ const examSchema = new mongoose.Schema(
     },
     targetAudience: {
       type: String,
-      enum: ["all", "mentees", "selected"],
+      enum: ["all", "mentees", "selected", "batch"],
       default: "all",
       index: true,
+    },
+    // Saved batch this exam was published from (traceability only — the
+    // authoritative candidate list is the assignedStudents snapshot below).
+    batchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Batch",
+      default: null,
+    },
+    batchName: {
+      type: String,
+      default: "",
+      trim: true,
     },
     assignedStudents: [
       {

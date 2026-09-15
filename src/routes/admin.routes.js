@@ -27,6 +27,7 @@ const {
   exportStudentsCohortCsv,
 } = require("../controllers/admin.controller");
 const aiCostController = require("../controllers/aiCost.controller");
+const batchController = require("../controllers/batch.controller");
 
 const router = Router();
 
@@ -154,5 +155,12 @@ router.post(
   verifyRole(["admin"]),
   aiCostController.estimatePromptCost
 );
+
+// Saved reusable student batches (per-mentor; admins see all)
+router.get("/batches", batchController.listBatches);
+router.post("/batches", batchController.createBatch);
+router.get("/batches/:id", batchController.getBatch);
+router.patch("/batches/:id", batchController.updateBatch);
+router.delete("/batches/:id", batchController.deleteBatch);
 
 module.exports = router;

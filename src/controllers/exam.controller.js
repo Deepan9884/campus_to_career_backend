@@ -69,6 +69,34 @@ async function recalculateExamRanks(examId) {
 }
 
 // ── ADMIN: CREATE EXAM ────────────────────────────────────────────────────────
+
+/**
+ * Resolve a saved batch into member IDs (snapshotted onto the exam).
+ * Mentors may only use their own batches; admins may use any batch.
+ * @returns {{ memberIds: string[], batch: object }}
+ */
+async function resolveBatchAudience(batchId, req, extraIds = []) {
+  const Batch = require("../models/Batch.model");
+  const batchQuery = { _id: batchId };
+  if (req.user.role !== "admin") {
+    batchQuery.createdBy = req.user._id;
+  }
+  const batch = await Batch.findOne(batchQuery).lean();
+  if (!batch) {
+    throw new ApiError(400, "Selected batch was not found. Pick another batch or save a new one.");
+  }
+  const memberIds = Array.from(
+    new Set([
+      ...(Array.isArray(extraIds) ? extraIds : []).map((id) => id.toString()),
+      ...(batch.studentIds || []).map((id) => id.toString()),
+    ])
+  );
+  if (memberIds.length === 0) {
+    throw new ApiError(400, "Selected batch has no students. Add members to the batch first.");
+  }
+  return { memberIds, batch };
+}
+
 const createExam = asyncHandler(async (req, res) => {
   const {
     title,
@@ -78,8 +106,9 @@ const createExam = asyncHandler(async (req, res) => {
     difficulty = "Medium",
     durationMinutes = 60,
     passingScorePercentage = 60,
-    targetAudience = "all", // "all", "mentees", "selected"
+    targetAudience = "all", // "all", "mentees", "selected", "batch"
     assignedStudents = [],
+    batchId = null,
     sections = [],
     proctoringConfig,
     isScheduled = false,
@@ -146,6 +175,15 @@ const createExam = asyncHandler(async (req, res) => {
 
   // Resolve assignedStudents if targetAudience is "mentees"
   let resolvedAssignedStudents = Array.isArray(assignedStudents) ? assignedStudents : [];
+  let resolvedBatchId = null;
+  let resolvedBatchName = "";
+  if (targetAudience === "batch") {
+    // Reusable saved batch: snapshot its current members into assignedStudents.
+    const { memberIds, batch } = await resolveBatchAudience(batchId, req, resolvedAssignedStudents);
+    resolvedAssignedStudents = memberIds;
+    resolvedBatchId = batch._id;
+    resolvedBatchName = batch.name || "";
+  }
   if (targetAudience === "mentees") {
     const creatorUser = await User.findById(req.user._id).lean();
     const menteeIds = (creatorUser?.mentees || []).map((id) => id.toString());
@@ -176,6 +214,8 @@ const createExam = asyncHandler(async (req, res) => {
     totalMarks: totalMarks || 100,
     targetAudience,
     assignedStudents: resolvedAssignedStudents,
+    batchId: resolvedBatchId,
+    batchName: resolvedBatchName,
     sections,
     proctoringConfig: proctoringConfig || {
       webcamRequired: false,
@@ -2153,7 +2193,7 @@ const blockStudentExamSession = asyncHandler(async (req, res) => {
 // ── ADMIN: ASSIGN STUDENTS / BATCH TO EXAM ──────────────────────────────────
 const assignExamStudents = asyncHandler(async (req, res) => {
   const { examId } = req.params;
-  const { targetAudience = "selected", assignedStudents = [] } = req.body;
+  const { targetAudience = "selected", assignedStudents = [], batchId = null } = req.body;
 
   const exam = await Exam.findById(examId);
   if (!exam) {
@@ -2162,6 +2202,14 @@ const assignExamStudents = asyncHandler(async (req, res) => {
 
   exam.targetAudience = targetAudience;
   exam.assignedStudents = Array.isArray(assignedStudents) ? assignedStudents : [];
+  exam.batchId = null;
+  exam.batchName = "";
+  if (targetAudience === "batch") {
+    const { memberIds, batch } = await resolveBatchAudience(batchId, req, exam.assignedStudents);
+    exam.assignedStudents = memberIds;
+    exam.batchId = batch._id;
+    exam.batchName = batch.name || "";
+  }
   await exam.save();
 
   // Send email alerts and notifications to all assigned students
