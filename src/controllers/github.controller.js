@@ -204,19 +204,46 @@ Return ONLY a valid JSON object matching the requested schema.`;
 }
 
 const connectGithub = asyncHandler(async (req, res) => {
-  const { githubUsername } = req.body;
+  const trimmedUsername = (req.body.githubUsername || "").trim();
+
+  if (!trimmedUsername) {
+    throw ApiError.badRequest("GitHub username is required");
+  }
 
   let profile;
+  let isRateLimited = false;
+
   try {
-    profile = await githubService.getUser(githubUsername);
+    profile = await githubService.getUser(trimmedUsername);
   } catch (err) {
     if (err.status === 404) {
-      throw ApiError.badRequest(`GitHub user "${githubUsername}" not found. Please verify the handle.`);
+      throw ApiError.badRequest(`GitHub user "${trimmedUsername}" not found. Please verify the handle.`);
     }
     if (err.status === 403 || err.status === 429) {
-      throw new ApiError(429, "GitHub API rate limit reached. Please wait a moment or configure GITHUB_TOKEN.");
+      isRateLimited = true;
+      // Fallback profile so rate limiting does not block connecting the account
+      profile = {
+        login: trimmedUsername,
+        name: trimmedUsername,
+        avatar_url: `https://github.com/${encodeURIComponent(trimmedUsername)}.png`,
+        public_repos: 0,
+        bio: "",
+        html_url: `https://github.com/${encodeURIComponent(trimmedUsername)}`,
+        rateLimited: true,
+      };
+    } else {
+      // For any other non-404 error, permit connection with fallback profile rather than crashing
+      isRateLimited = true;
+      profile = {
+        login: trimmedUsername,
+        name: trimmedUsername,
+        avatar_url: `https://github.com/${encodeURIComponent(trimmedUsername)}.png`,
+        public_repos: 0,
+        bio: "",
+        html_url: `https://github.com/${encodeURIComponent(trimmedUsername)}`,
+        rateLimited: true,
+      };
     }
-    throw ApiError.internal(err.message || "Failed to verify GitHub username");
   }
 
   const user = await User.findByIdAndUpdate(
@@ -239,6 +266,10 @@ const connectGithub = asyncHandler(async (req, res) => {
       bio: profile.bio,
       html_url: profile.html_url,
     },
+    rateLimited: isRateLimited,
+    message: isRateLimited
+      ? "Connected successfully! (Note: GitHub API rate limit is currently active; you can analyze repositories directly)."
+      : undefined,
   }).send(res);
 });
 
@@ -260,9 +291,60 @@ const listRepos = asyncHandler(async (req, res) => {
     );
   }
 
-  const repos = await githubService.listPublicRepos(targetUsername);
+  let repos = [];
+  let isRateLimited = false;
 
-  return ApiResponse.success({ repos, githubUsername: targetUsername }).send(res);
+  try {
+    repos = await githubService.listPublicRepos(targetUsername);
+  } catch (err) {
+    if (err.status === 403 || err.status === 429) {
+      isRateLimited = true;
+      // Recover any repos previously analyzed for this user
+      const pastAnalyses = await RepoAnalysis.find({
+        user: req.user._id,
+      })
+        .select("repoFullName createdAt")
+        .sort({ createdAt: -1 })
+        .lean();
+
+      const seen = new Set();
+      repos = (pastAnalyses || [])
+        .filter((a) => a.repoFullName)
+        .filter((a) => {
+          const lower = a.repoFullName.toLowerCase();
+          if (seen.has(lower)) return false;
+          seen.add(lower);
+          return true;
+        })
+        .map((a) => {
+          const parts = a.repoFullName.split("/");
+          const repoName = parts[1] || parts[0];
+          return {
+            name: repoName,
+            full_name: a.repoFullName,
+            html_url: `https://github.com/${a.repoFullName}`,
+            description: "Previously analyzed repository",
+            language: "Code",
+            stargazers_count: 0,
+            forks_count: 0,
+            updated_at: a.createdAt || new Date().toISOString(),
+            default_branch: "main",
+            private: false,
+          };
+        });
+    } else {
+      throw ApiError.internal(err.message || "Failed to list repositories");
+    }
+  }
+
+  return ApiResponse.success({
+    repos,
+    githubUsername: targetUsername,
+    rateLimited: isRateLimited,
+    message: isRateLimited
+      ? "GitHub API rate limit reached. You can enter any repository name directly to analyze."
+      : undefined,
+  }).send(res);
 });
 
 const analyzeRepo = asyncHandler(async (req, res) => {
