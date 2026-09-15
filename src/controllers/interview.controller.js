@@ -856,48 +856,12 @@ Return JSON array:
     };
   }
 
-  const adapted = selectionResult.data;
-  if (!Array.isArray(adapted) || adapted.length === 0) {
-    return { items: sampleItemsFromBank(candidates), bankEmpty: false };
-  }
-
-  const items = adapted.map((item) => {
-    const original = candidates.find((c) => c._id.toString() === item.originalQuestionId);
-    if (!original) {
-      // shouldn't happen if Gemini respects IDs, but keep session resilient
-      return {
-        questionId: null,
-        questionText: item.adaptedText || "Error loading question",
-        itemType: "open_ended",
-        options: undefined,
-        correctOptionIndex: null,
-        idealAnswerPoints: undefined,
-        selectedOptionIndex: null,
-        answer: null,
-        isCorrect: null,
-        score: null,
-        feedback: null,
-        answeredAt: null,
-      };
-    }
-
-    return {
-      questionId: original._id,
-      questionText: item.adaptedText || original.questionText,
-      itemType: original.itemType,
-      options: original.options,
-      correctOptionIndex: original.correctOptionIndex,
-      idealAnswerPoints: original.idealAnswerPoints,
-      selectedOptionIndex: null,
-      answer: null,
-      isCorrect: null,
-      score: null,
-      feedback: null,
-      answeredAt: null,
-    };
-  });
-
-  return { items, bankEmpty: items.length === 0 };
+  // Difficulty filtering emptied the pool — serve curated questions instead of
+  // crashing on the (removed) AI-selection path below.
+  return {
+    items: getZeroFailureRoundQuestions(roundType, targetRole, difficulty, questionCount),
+    bankEmpty: false,
+  };
 }
 
 async function scoreGeminiRound(round, { roundType, targetRole, userId, resumeSnippet }) {
