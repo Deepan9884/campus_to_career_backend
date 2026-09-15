@@ -816,24 +816,44 @@ Return JSON array:
   candidates = candidates.slice(0, actualCount);
 
   const sampleItemsFromBank = (bankQs) =>
-    bankQs.map((q) => ({
-      questionId: q._id,
-      // Fall back across alias keys so a stem stored under `question` never renders blank.
-      questionText: q.questionText || q.question || q.prompt || "",
-      itemType: q.itemType,
-      options: q.options,
-      correctOptionIndex: q.correctOptionIndex,
-      idealAnswerPoints: q.idealAnswerPoints,
-      selectedOptionIndex: null,
-      answer: null,
-      isCorrect: null,
-      score: null,
-      feedback: null,
-      answeredAt: null,
-    }));
+    bankQs
+      .map((q) => ({
+        questionId: q._id,
+        // Fall back across alias keys so a stem stored under `question` never renders blank.
+        questionText: q.questionText || q.question || q.prompt || "",
+        itemType: q.itemType,
+        options: q.options,
+        correctOptionIndex: q.correctOptionIndex,
+        idealAnswerPoints: q.idealAnswerPoints,
+        selectedOptionIndex: null,
+        answer: null,
+        isCorrect: null,
+        score: null,
+        feedback: null,
+        answeredAt: null,
+      }))
+      // Never serve a stem-less item: a blank question is worse than one fewer question.
+      .filter((item) => {
+        const hasStem = typeof item.questionText === "string" && item.questionText.trim().length > 0;
+        if (!hasStem) {
+          console.warn(
+            `[InterviewController] Dropping bank question with empty stem (id=${item.questionId}, type=${item.itemType}, round=${roundType})`
+          );
+        }
+        return hasStem;
+      });
 
   if (candidates.length > 0) {
-    return { items: sampleItemsFromBank(candidates), bankEmpty: false };
+    const sampled = sampleItemsFromBank(candidates);
+    if (sampled.length > 0) {
+      return { items: sampled, bankEmpty: false };
+    }
+    // Every bank entry had an empty stem — fall back to curated questions
+    // rather than serving a blank question.
+    return {
+      items: getZeroFailureRoundQuestions(roundType, targetRole, difficulty, questionCount),
+      bankEmpty: false,
+    };
   }
 
   const adapted = selectionResult.data;
