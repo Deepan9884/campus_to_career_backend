@@ -23,6 +23,7 @@ const {
   getStudentAvailableExams,
   getStudentExamForTaking,
   submitStudentExam,
+  postExamHeartbeat,
   getStudentMyResults,
   reportStudentExamBlocked,
   getStudentExamBlockStatus,
@@ -54,6 +55,18 @@ const reportBlockedLimiter = rateLimit({
   message: {
     success: false,
     message: "Too many status report requests",
+  },
+});
+
+const heartbeatLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  message: {
+    success: false,
+    message: "Too many heartbeat requests, please slow down",
   },
 });
 
@@ -139,6 +152,7 @@ router.get("/student/my-results", getStudentMyResults);
 router.get("/student/:examId", getStudentExamForTaking);
 router.get("/student/:examId/block-status", getStudentExamBlockStatus);
 router.post("/student/:examId/report-blocked", reportBlockedLimiter, reportStudentExamBlocked);
+router.post("/student/:examId/heartbeat", heartbeatLimiter, postExamHeartbeat);
 router.post("/student/:examId/submit", examSubmitLimiter, submitStudentExam);
 
 module.exports = router;

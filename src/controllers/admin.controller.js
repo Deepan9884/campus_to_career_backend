@@ -45,6 +45,36 @@ function ensurePlainName(rawName, email) {
 }
 
 /**
+ * Normalize ExamSubmission.violationDetails (stored as plain strings such as
+ * "Tab Switch / Window Unfocused strike") into the { violationType, detectedAt }
+ * objects the admin live-proctoring UI renders in its telemetry pills/timeline.
+ */
+function normalizeViolationDetails(details) {
+  if (!Array.isArray(details)) return [];
+  return details.slice(0, 50).map((d) => {
+    if (d && typeof d === "object" && (d.violationType || d.type)) {
+      return {
+        violationType: d.violationType || d.type,
+        detectedAt: d.detectedAt || d.timestamp || null,
+      };
+    }
+    const text = String(d || "").toLowerCase();
+    let violationType = "other";
+    if (text.includes("tab")) violationType = "tab_switch";
+    else if (text.includes("eye") || text.includes("gaze")) violationType = "eye_tracking_violation";
+    else if (text.includes("face")) violationType = "face_detection";
+    else if (text.includes("copy") || text.includes("paste") || text.includes("cut") || text.includes("clipboard")) violationType = "copy_paste";
+    else if (text.includes("screenshot") || text.includes("printscreen") || text.includes("capture")) violationType = "screenshot_attempt";
+    else if (text.includes("fullscreen") || text.includes("full-screen")) violationType = "fullscreen_exit";
+    else if (text.includes("right-click") || text.includes("right click") || text.includes("context")) violationType = "right_click";
+    else if (text.includes("camera") || text.includes("webcam") || text.includes("video")) violationType = "camera_violation";
+    else if (text.includes("audio") || text.includes("voice") || text.includes("mic")) violationType = "audio_violation";
+    else if (text.includes("window") || text.includes("focus") || text.includes("blur")) violationType = "window_blur";
+    return { violationType, detectedAt: null, label: String(d || "") };
+  });
+}
+
+/**
  * High-performance batched metrics calculator.
  * Fetches all student telemetries in 6 bulk queries instead of 6*N individual queries.
  */
@@ -1419,6 +1449,14 @@ const getLiveProctoringFeed = asyncHandler(async (_req, res) => {
   let totalBlockedCount = 0;
   let activeExams = [];
 
+  // A candidate counts as "online right now" only with a fresh heartbeat.
+  const ACTIVE_HEARTBEAT_MS = 10 * 60 * 1000;
+  // Recently finished exams stay visible so today's activity never vanishes.
+  const RECENT_FINISHED_MS = 48 * 60 * 60 * 1000;
+  const nowMs = Date.now();
+  const startOfToday = new Date();
+  startOfToday.setUTCHours(0, 0, 0, 0);
+
   try {
     [blockedUsers, recentViolations, totalBlockedCount, activeExams] = await Promise.all([
       User.find({ isProctoringBlocked: true })
@@ -1433,11 +1471,20 @@ const getLiveProctoringFeed = asyncHandler(async (_req, res) => {
         .lean(),
       User.countDocuments({ isProctoringBlocked: true }),
       Exam.find({
-        status: { $in: ["active", "scheduled"] },
-        isPublished: true,
+        $or: [
+          { status: { $in: ["active", "scheduled"] }, isPublished: true },
+          {
+            status: { $in: ["completed", "stopped"] },
+            $or: [
+              { updatedAt: { $gte: new Date(nowMs - RECENT_FINISHED_MS) } },
+              { stoppedAt: { $gte: new Date(nowMs - RECENT_FINISHED_MS) } },
+            ],
+          },
+        ],
       })
-        .select("title examType category difficulty durationMinutes totalMarks status isScheduled scheduledStartTime scheduledEndTime")
-        .sort({ createdAt: -1 })
+        .select("title examType category difficulty durationMinutes totalMarks status isScheduled scheduledStartTime scheduledEndTime updatedAt stoppedAt")
+        .sort({ updatedAt: -1 })
+        .limit(25)
         .lean(),
     ]);
   } catch (err) {
@@ -1451,6 +1498,7 @@ const getLiveProctoringFeed = asyncHandler(async (_req, res) => {
       examSubmissions = await ExamSubmission.find({
         examId: { $in: activeExamIds },
       })
+        .select("examId userId studentName studentEmail studentAvatar registerNumber status isBlocked violationsCount violationDetails proctoringIntegrity totalScore durationSeconds submittedAt updatedAt")
         .populate("userId", "name email avatar targetRole isProctoringBlocked proctoringBlockedAt profile")
         .sort({ updatedAt: -1 })
         .lean();
@@ -1458,6 +1506,17 @@ const getLiveProctoringFeed = asyncHandler(async (_req, res) => {
       console.warn("[getLiveProctoringFeed] ExamSubmissions query error:", err.message);
     }
   }
+
+  const isFresh = (s) => {
+    const t = s.updatedAt ? new Date(s.updatedAt).getTime() : 0;
+    return Number.isFinite(t) && nowMs - t <= ACTIVE_HEARTBEAT_MS;
+  };
+  const isBlockedSub = (s) => Boolean(s.isBlocked || s.userId?.isProctoringBlocked);
+  const isSubmittedSub = (s) => s.status === "submitted" || s.status === "evaluated";
+  const isSeenToday = (s) => {
+    const candidates = [s.updatedAt, s.submittedAt].filter(Boolean).map((d) => new Date(d).getTime());
+    return candidates.some((t) => Number.isFinite(t) && t >= startOfToday.getTime());
+  };
 
   const examsWithTakers = (activeExams || []).map((exam) => {
     const subs = (examSubmissions || []).filter((s) => s.examId && exam._id && s.examId.toString() === exam._id.toString());
@@ -1469,9 +1528,11 @@ const getLiveProctoringFeed = asyncHandler(async (_req, res) => {
       difficulty: exam.difficulty || "medium",
       durationMinutes: exam.durationMinutes || 60,
       status: exam.status || "active",
-      activeCount: subs.length,
-      blockedCount: subs.filter((s) => s.isBlocked || s.userId?.isProctoringBlocked).length,
-      warningCount: subs.filter((s) => !s.isBlocked && (s.violationsCount || 0) > 0).length,
+      activeCount: subs.filter((s) => !isBlockedSub(s) && s.status === "in_progress" && isFresh(s)).length,
+      submittedCount: subs.filter((s) => isSubmittedSub(s)).length,
+      todayCount: subs.filter((s) => isSeenToday(s)).length,
+      blockedCount: subs.filter((s) => isBlockedSub(s)).length,
+      warningCount: subs.filter((s) => !isBlockedSub(s) && (s.violationsCount || 0) > 0).length,
       candidates: subs.map((s) => ({
         submissionId: s._id,
         studentId: s.userId?._id || s.userId,
@@ -1480,10 +1541,12 @@ const getLiveProctoringFeed = asyncHandler(async (_req, res) => {
         avatar: s.userId?.avatar || s.studentAvatar || "",
         registerNumber: s.registerNumber || s.userId?.profile?.registerNumber || "N/A",
         targetRole: s.userId?.targetRole || "Candidate",
-        status: s.isBlocked || s.userId?.isProctoringBlocked ? "blocked" : (s.violationsCount || 0) > 0 ? "warning" : s.status || "in_progress",
+        status: isBlockedSub(s) ? "blocked" : (s.violationsCount || 0) > 0 ? "warning" : s.status || "in_progress",
+        isActiveNow: !isBlockedSub(s) && s.status === "in_progress" && isFresh(s),
+        isSubmitted: isSubmittedSub(s),
         violationsCount: s.violationsCount || 0,
-        violationDetails: s.violationDetails || [],
-        proctoringIntegrity: s.proctoringIntegrity || 100,
+        violationDetails: normalizeViolationDetails(s.violationDetails),
+        proctoringIntegrity: s.proctoringIntegrity ?? 100,
         totalScore: s.totalScore || 0,
         durationSeconds: s.durationSeconds || 0,
         submittedAt: s.submittedAt,
@@ -1504,12 +1567,22 @@ const getLiveProctoringFeed = asyncHandler(async (_req, res) => {
     return v;
   });
 
+  const totalActiveCandidates = (examsWithTakers || []).reduce(
+    (acc, e) => acc + (e.activeCount || 0),
+    0
+  );
+  const totalTodayCandidates = (examsWithTakers || []).reduce(
+    (acc, e) => acc + (e.todayCount || 0),
+    0
+  );
+
   return ApiResponse.success({
     totalBlockedCount: totalBlockedCount || 0,
     blockedUsers: formattedBlockedUsers,
     recentViolations: formattedViolations,
     activeExamsCount: (activeExams || []).length,
-    totalActiveCandidates: (examSubmissions || []).length,
+    totalActiveCandidates,
+    totalTodayCandidates,
     examsWithTakers,
   }).send(res);
 });

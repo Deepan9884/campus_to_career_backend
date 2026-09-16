@@ -480,23 +480,30 @@ const stopExam = asyncHandler(async (req, res) => {
   try {
     const studentIds = await ExamSubmission.distinct("userId", { examId });
     for (const sid of studentIds) {
-      const notif = await Notification.create({
-        user: sid,
-        type: "exam_stopped",
-        title: "Assessment Concluded",
-        message: `The examination '${exam.title}' has been concluded by the faculty/administrator. Your results have been calculated up to the stoppage point.`,
-        actionUrl: "/tests",
-        read: false,
-      });
-      notificationService.pushToOpenConnections(sid, notif);
-      
-      // Send email alert to student explaining the lock
-      emailService.sendProctoringBlockedEmail(student, {
-        examTitle: (await Exam.findById(examId).select("title").lean())?.title || "Assessment",
-        reason: reason || "Manual disqualification by faculty / mentor",
-        violationCount: 3,
-        mentorName: req.user.name || "Your Mentor",
-      }).catch((e) => console.error("[Email] Failed to send block email:", e.message));
+      try {
+        const notif = await Notification.create({
+          user: sid,
+          type: "exam_stopped",
+          title: "Assessment Concluded",
+          message: `The examination '${exam.title}' has been concluded by the faculty/administrator. Your results have been calculated up to the stoppage point.`,
+          actionUrl: "/tests",
+          read: false,
+        });
+        notificationService.pushToOpenConnections(sid, notif);
+
+        // Send email alert to student explaining the conclusion
+        const stoppedStudent = await User.findById(sid).select("name email").lean();
+        if (stoppedStudent) {
+          emailService.sendProctoringBlockedEmail(stoppedStudent, {
+            examTitle: exam.title || "Assessment",
+            reason: "Assessment concluded by faculty / administrator",
+            violationCount: 0,
+            mentorName: req.user.name || "Your Mentor",
+          }).catch((e) => console.error("[Email] Failed to send stop email:", e.message));
+        }
+      } catch (perStudentErr) {
+        console.error("[Exam] Failed to notify stopped-exam student:", perStudentErr.message);
+      }
     }
   } catch (err) {
     console.error("[Exam] Failed to broadcast stop notification:", err);
@@ -645,6 +652,8 @@ const getExamResults = asyncHandler(async (req, res) => {
       durationSeconds: sub.durationSeconds,
       proctoringIntegrity: sub.proctoringIntegrity,
       violationsCount: sub.violationsCount,
+      isBlocked: Boolean(sub.isBlocked),
+      blockedReason: sub.blockedReason || "",
       status: sub.status,
       submittedAt: sub.submittedAt,
     };
@@ -1486,6 +1495,56 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
     );
   }
 
+  // ── LIVE SESSION TRACKING ──
+  // Register (or refresh) an in_progress session the moment a candidate is
+  // cleared to take the exam. Without this, the admin live-proctoring radar
+  // and the results table only ever see submitted papers — in-progress
+  // candidates are invisible (0 active) and non-submitters never appear.
+  // $setOnInsert guarantees existing scores/status are never overwritten.
+  // Staff previewing an exam must not pollute candidate results.
+  const previewRole = String(req.user?.role || "student").toLowerCase();
+  const isStaffPreview = ["admin", "mentor", "faculty", "hod", "staff"].includes(previewRole);
+  if (!isStaffPreview) {
+    try {
+      const sessionUser = await User.findById(studentId)
+        .select("name email avatar profile registerNumber")
+        .lean();
+      await ExamSubmission.updateOne(
+        { examId, userId: studentId },
+        {
+          $setOnInsert: {
+            examId,
+            userId: studentId,
+            studentName: sessionUser?.name || req.user?.name || "Student",
+            studentEmail: sessionUser?.email || req.user?.email || "",
+            studentAvatar: sessionUser?.avatar || "",
+            registerNumber:
+              sessionUser?.profile?.registerNumber ||
+              sessionUser?.registerNumber ||
+              "N/A",
+            sectionScores: [],
+            questionScores: [],
+            totalScore: 0,
+            maxScore: exam.totalMarks || 100,
+            percentage: 0,
+            passed: false,
+            durationSeconds: 0,
+            proctoringIntegrity: 100,
+            violationsCount: 0,
+            violationDetails: [],
+            isBlocked: false,
+            status: "in_progress",
+            submittedAt: null,
+          },
+          $set: { updatedAt: new Date() },
+        },
+        { upsert: true }
+      );
+    } catch (sessErr) {
+      console.warn("[Exam] Failed to track live exam session:", sessErr.message);
+    }
+  }
+
   // Sanitize MCQ questions so correct answers are not leaked to client!
   const sanitizedSections = exam.sections.map((sec) => ({
     sectionId: sec.sectionId,
@@ -1845,6 +1904,137 @@ const submitStudentExam = asyncHandler(async (req, res) => {
         isResultDisclosed: exam.isResultDisclosed, // false by default
       },
       "Exam submitted successfully!"
+    )
+  );
+});
+
+// ── STUDENT: LIVE HEARTBEAT (PROVES CANDIDATE IS ACTIVELY WRITING) ───────────
+// Called by the exam client every ~30s while the test is open. Refreshes
+// updatedAt so the admin live-proctoring radar can distinguish candidates who
+// are writing RIGHT NOW from stale/abandoned in_progress sessions.
+const postExamHeartbeat = asyncHandler(async (req, res) => {
+  const { examId } = req.params;
+  const studentId = req.user._id;
+  const { durationSeconds, violationsCount, violationDetails } = req.body || {};
+
+  let sub = await ExamSubmission.findOne({ examId, userId: studentId });
+  if (!sub) {
+    // Self-heal: candidates already writing when this endpoint shipped (or
+    // whose take-request raced) have no session doc yet. Create one only if
+    // this student is genuinely authorized to take the exam right now —
+    // never for staff previews, blocked users, or closed windows.
+    try {
+      const hbExam = await Exam.findById(examId).lean();
+      const previewRole = String(req.user?.role || "student").toLowerCase();
+      const hbUserBlock = await evaluateAndAutoUnblockUser(req.user);
+      let windowOpen = true;
+      if (hbExam?.isScheduled) {
+        const nowHb = new Date();
+        if (hbExam.scheduledStartTime && new Date(hbExam.scheduledStartTime) > nowHb) {
+          windowOpen = false;
+        }
+        const effEnd = hbExam.scheduledEndTime
+          ? new Date(hbExam.scheduledEndTime)
+          : hbExam.scheduledStartTime
+          ? new Date(new Date(hbExam.scheduledStartTime).getTime() + (Number(hbExam.durationMinutes) || 60) * 60 * 1000)
+          : null;
+        if (effEnd && nowHb.getTime() > effEnd.getTime() + 5 * 60 * 1000) {
+          windowOpen = false;
+        }
+      }
+      const canCreate =
+        hbExam &&
+        hbExam.isPublished &&
+        hbExam.status !== "stopped" &&
+        windowOpen &&
+        !hbUserBlock.isBlocked &&
+        !["admin", "mentor", "faculty", "hod", "staff"].includes(previewRole) &&
+        isStudentAuthorizedForExam(hbExam, studentId, req.user);
+      if (canCreate) {
+        const hbUser = await User.findById(studentId)
+          .select("name email avatar profile registerNumber")
+          .lean();
+        sub = await ExamSubmission.findOneAndUpdate(
+          { examId, userId: studentId },
+          {
+            $setOnInsert: {
+              examId,
+              userId: studentId,
+              studentName: hbUser?.name || req.user?.name || "Student",
+              studentEmail: hbUser?.email || req.user?.email || "",
+              studentAvatar: hbUser?.avatar || "",
+              registerNumber:
+                hbUser?.profile?.registerNumber || hbUser?.registerNumber || "N/A",
+              sectionScores: [],
+              questionScores: [],
+              totalScore: 0,
+              maxScore: hbExam.totalMarks || 100,
+              percentage: 0,
+              passed: false,
+              durationSeconds: 0,
+              proctoringIntegrity: 100,
+              violationsCount: 0,
+              violationDetails: [],
+              isBlocked: false,
+              status: "in_progress",
+              submittedAt: null,
+            },
+            $set: { updatedAt: new Date() },
+          },
+          { upsert: true, new: true }
+        );
+      }
+    } catch (healErr) {
+      console.warn("[Exam] Heartbeat session heal failed:", healErr.message);
+    }
+  }
+  if (!sub) {
+    return res.status(200).json(
+      new ApiResponse(
+        200,
+        { ok: true, tracked: false, reason: "no-session" },
+        "No live session to refresh"
+      )
+    );
+  }
+
+  // Never resurrect finished papers — submit owns those transitions.
+  if (sub.status !== "in_progress") {
+    return res.status(200).json(
+      new ApiResponse(
+        200,
+        { ok: true, tracked: false, status: sub.status },
+        "Session already finalized"
+      )
+    );
+  }
+
+  const update = { updatedAt: new Date() };
+  if (Number.isFinite(Number(durationSeconds))) {
+    update.durationSeconds = Math.max(0, Number(durationSeconds));
+  }
+  if (Number.isFinite(Number(violationsCount))) {
+    update.violationsCount = Math.max(
+      sub.violationsCount || 0,
+      Number(violationsCount)
+    );
+    if (Array.isArray(violationDetails) && violationDetails.length > 0) {
+      update.violationDetails = Array.from(
+        new Set([
+          ...(sub.violationDetails || []),
+          ...violationDetails.map(String).slice(0, 20),
+        ])
+      ).slice(0, 50);
+    }
+  }
+
+  await ExamSubmission.updateOne({ _id: sub._id }, { $set: update });
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      { ok: true, tracked: true, serverTime: new Date().toISOString() },
+      "Heartbeat recorded"
     )
   );
 });
@@ -2408,6 +2598,7 @@ module.exports = {
   getStudentAvailableExams,
   getStudentExamForTaking,
   submitStudentExam,
+  postExamHeartbeat,
   getStudentMyResults,
   reportStudentExamBlocked,
   getStudentExamBlockStatus,
