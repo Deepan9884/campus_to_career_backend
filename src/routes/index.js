@@ -19,6 +19,7 @@ const adminRoutes = require("./admin.routes");
 const proctoringRoutes = require("./proctoring.routes");
 const superDreamRoutes = require("./superDream.routes");
 const examRoutes = require("./exam.routes");
+const foreignLanguageRoutes = require("./foreignLanguage.routes");
 
 const router = Router();
 
@@ -83,5 +84,8 @@ router.use("/super-dream", superDreamRoutes);
 
 // Comprehensive Exam & Assessment routes
 router.use("/exams", examRoutes);
+
+// Foreign Language Routes
+router.use("/foreign-language", foreignLanguageRoutes);
 
 module.exports = router;
