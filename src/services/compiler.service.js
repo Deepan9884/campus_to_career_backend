@@ -102,27 +102,34 @@ function releaseExecutionSlot() {
  * while providing necessary OS-level runtime variables for Windows and Linux.
  */
 function getSafeSubprocessEnv() {
-  return {
-    PATH: process.env.PATH || "",
-    SystemRoot: process.env.SystemRoot || "C:\\Windows",
-    WINDIR: process.env.WINDIR || "C:\\Windows",
-    PATHEXT: process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD",
-    TEMP: os.tmpdir(),
-    TMP: os.tmpdir(),
+  const baseEnv = {
+    ...process.env,
     NODE_ENV: "production",
     LANG: "en_US.UTF-8",
     PYTHONUNBUFFERED: "1",
     PYTHONIOENCODING: "utf-8",
-    // Explicitly nullify access to all process secrets
-    MONGODB_URI: "",
-    JWT_SECRET: "",
-    JWT_REFRESH_SECRET: "",
-    GEMINI_API_KEY: "",
-    GEMINI_API_KEYS: "",
-    GITHUB_TOKEN: "",
-    RESET_TOKEN_SECRET: "",
-    SMTP_PASS: "",
   };
+  // Explicitly nullify access to all process secrets
+  const secrets = [
+    "MONGODB_URI",
+    "JWT_SECRET",
+    "JWT_REFRESH_SECRET",
+    "GEMINI_API_KEY",
+    "GEMINI_API_KEYS",
+    "GITHUB_TOKEN",
+    "RESET_TOKEN_SECRET",
+    "SMTP_PASS",
+    "SMTP_USER",
+    "SMTP_HOST",
+    "ENCRYPTION_KEY",
+    "RESEND_API_KEY",
+    "BREVO_API_KEY",
+    "NVIDIA_API_KEY",
+  ];
+  for (const s of secrets) {
+    baseEnv[s] = "";
+  }
+  return baseEnv;
 }
 
 /**
@@ -416,24 +423,19 @@ function isHostCompilerMissing(stderr = "") {
   return (
     lower.includes("not recognized as an internal or external command") ||
     lower.includes("is not recognized as an operable program") ||
-    lower.includes("is not recognized") ||
     lower.includes("command not found") ||
-    lower.includes("not found") ||
     lower.includes("enoent") ||
     lower.includes("spawn unknown") ||
+    lower.includes("cannot spawn") ||
     lower.includes("application control policy") ||
     lower.includes("blocked this file") ||
     lower.includes("failed to read unmanaged installs") ||
-    lower.includes("installing python") ||
-    lower.includes("python install manager") ||
     lower.includes("cannot find the path specified") ||
-    lower.includes("no such file or directory") ||
-    lower.includes("cannot spawn") ||
-    (lower.includes("javac") && lower.includes("not found")) ||
-    (lower.includes("g++") && lower.includes("not found")) ||
-    (lower.includes("gcc") && lower.includes("not found")) ||
-    (lower.includes("python") && lower.includes("not found")) ||
-    (lower.includes("python3") && lower.includes("not found")) ||
+    (lower.includes("javac") && (lower.includes("not found") || lower.includes("not recognized") || lower.includes("no such file"))) ||
+    (lower.includes("g++") && (lower.includes("not found") || lower.includes("not recognized") || lower.includes("no such file"))) ||
+    (lower.includes("gcc") && (lower.includes("not found") || lower.includes("not recognized") || lower.includes("no such file"))) ||
+    (lower.includes("python") && (lower.includes("not found") || lower.includes("not recognized") || lower.includes("no such file"))) ||
+    (lower.includes("python3") && (lower.includes("not found") || lower.includes("not recognized") || lower.includes("no such file"))) ||
     lower.includes("java compiler (javac) not available") ||
     lower.includes("/bin/sh: 1: javac") ||
     lower.includes("/bin/sh: 1: g++") ||
@@ -874,7 +876,7 @@ function runJava(code, input = "") {
     const startTime = Date.now();
 
     // Strict CodeTantra check: complete program with main entry point is required
-    const hasMainMethod = /public\s+static\s+void\s+main\s*\(/i.test(code);
+    const hasMainMethod = /(?:public\s+static|static\s+public)\s+void\s+main\s*\(/i.test(code);
     if (!hasMainMethod) {
       return resolve({
         stdout: "",
@@ -897,8 +899,8 @@ function runJava(code, input = "") {
     if (publicClassMatch && publicClassMatch[1]) {
       className = publicClassMatch[1];
     } else {
-      // 2. Look for class containing public static void main
-      const classWithMainMatch = code.match(/class\s+([A-Za-z0-9_]+)[\s\S]*?public\s+static\s+void\s+main/);
+      // 2. Look for class containing main
+      const classWithMainMatch = code.match(/class\s+([A-Za-z0-9_]+)[\s\S]*?(?:public\s+static|static\s+public)\s+void\s+main/i);
       if (classWithMainMatch && classWithMainMatch[1]) {
         className = classWithMainMatch[1];
       } else {
@@ -959,7 +961,7 @@ function runJava(code, input = "") {
         });
       }
 
-      const javaProcess = spawn("java", [className], {
+      const javaProcess = spawn("java", ["-cp", ".", className], {
         cwd: tempDir,
         env: getSafeSubprocessEnv(),
         timeout: EXECUTION_TIMEOUT_MS,
@@ -1712,11 +1714,19 @@ async function executeCode({ code, language = "python", testCases = [], question
       const passedCount = results.filter((r) => r.passed).length;
       const totalCount = results.length;
 
-      // If native execution produced 0 passes but code contains valid function definitions (e.g. def / function / class),
-      // fallback to the intelligent AI sandbox runner to evaluate function return values against test cases.
-      const hasFunctionSyntax = /(def\s+[a-zA-Z0-9_]+|function\s+[a-zA-Z0-9_]+|class\s+[a-zA-Z0-9_]+|const\s+[a-zA-Z0-9_]+\s*=\s*\([^)]*\)\s*=>)/.test(cleanCode);
-      if (passedCount === 0 && !hasCompilationError && hasFunctionSyntax) {
-        console.info("[CompilerService] Native runner produced 0 stdout for function-based code. Evaluating with AI sandbox engine.");
+      // Check if code has an explicit main entry point
+      const hasExecutableEntryPoint =
+        /(?:public\s+static|static\s+public)\s+void\s+main\s*\(/i.test(cleanCode) ||
+        /(?:int|void)\s+main\s*\(/i.test(cleanCode) ||
+        /__name__\s*==\s*['"]__main__['"]/.test(cleanCode);
+
+      // Only delegate to AI sandbox if native runner produced zero stdout AND zero stderr AND code has NO main entry point
+      const isFunctionOnlyCode =
+        /(?:def\s+[a-zA-Z0-9_]+|function\s+[a-zA-Z0-9_]+|const\s+[a-zA-Z0-9_]+\s*=\s*\([^)]*\)\s*=>)/.test(cleanCode) &&
+        !hasExecutableEntryPoint;
+
+      if (passedCount === 0 && !hasCompilationError && isFunctionOnlyCode && !overallStdout.trim() && !overallStderr.trim()) {
+        console.info("[CompilerService] Native runner produced 0 stdout for function-based code without entry point. Evaluating with AI sandbox engine.");
         const aiResult = await runWithAiEvaluator(cleanCode, lang, defaultTestCases, questionText, userId);
         if (aiResult && Array.isArray(aiResult.testCaseResults) && aiResult.testCaseResults.length > 0) {
           const finalResult = {
