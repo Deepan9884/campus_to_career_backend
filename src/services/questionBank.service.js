@@ -1021,7 +1021,8 @@ function generateSmartQuizQuestions({ skillName = "Software Engineering", subTop
   const lowerSub = targetSubTopic.toLowerCase();
   const combined = `${lowerSkill} ${lowerSub}`;
 
-  const isJs = /javascript|typescript|react|next|node|express|vue|angular|frontend|web/i.test(combined);
+  const isHtmlCss = /html|css|markup|styling|sass|scss|flexbox|grid|tailwind|bootstrap/i.test(combined);
+  const isJs = !isHtmlCss && /javascript|typescript|react|next|node|express|vue|angular/i.test(combined);
   const isPython = /python|django|fastapi|pandas|numpy|data\s*science|machine\s*learning|ai/i.test(combined);
   const isJava = /java\b|spring|springboot|hibernate|jvm/i.test(combined);
   const isCpp = /c\+\+|cpp|\bc\b|rust|golang|go\b/i.test(combined);
@@ -1030,7 +1031,95 @@ function generateSmartQuizQuestions({ skillName = "Software Engineering", subTop
 
   // Section 1: 5 Foundational MCQs
   let s1Questions = [];
-  if (isJs) {
+  if (isHtmlCss) {
+    s1Questions = [
+      {
+        questionId: "s1_q1",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "easy",
+        questionText: "In HTML5, which semantic element should be used to encapsulate self-contained content that could be independently distributed or syndicated (such as a blog post, news article, or product card)?",
+        options: [
+          "A) <article>",
+          "B) <section>",
+          "C) <div>",
+          "D) <aside>",
+        ],
+        correctAnswer: "A) <article>",
+        explanation: "<article> represents a complete, self-contained composition in a document, whereas <section> represents a generic standalone section and <div> carries no semantic meaning.",
+        keyPoints: ["HTML5 semantic structure", "Accessibility and SEO best practices"],
+      },
+      {
+        questionId: "s1_q2",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "easy",
+        questionText: "In CSS, how does setting 'box-sizing: border-box;' affect an element compared to the default 'content-box'?",
+        options: [
+          "A) The specified width and height include content, padding, and border, preventing added padding from expanding the element's exterior dimensions",
+          "B) It strips all borders and margins from the element",
+          "C) It forces the element to ignore its width property and fit content strictly",
+          "D) It converts the element into an inline-level element",
+        ],
+        correctAnswer: "A) The specified width and height include content, padding, and border, preventing added padding from expanding the element's exterior dimensions",
+        explanation: "With 'border-box', padding and border are absorbed within the declared width and height, providing predictable responsive layouts.",
+        keyPoints: ["CSS Box Model sizing", "box-sizing: border-box vs content-box"],
+      },
+      {
+        questionId: "s1_q3",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: "Given the HTML element '<button id=\"submit-btn\" class=\"btn primary\">Submit</button>', which of the following CSS selectors has the highest specificity weight and will apply its style?",
+        options: [
+          "A) #submit-btn { color: red; }",
+          "B) button.btn.primary { color: blue; }",
+          "C) .btn.primary { color: green; }",
+          "D) button[type='submit'] { color: orange; }",
+        ],
+        correctAnswer: "A) #submit-btn { color: red; }",
+        explanation: "An ID selector carries specificity weight (0,1,0,0), which overrides any quantity of combined class (0,0,1,0) and element (0,0,0,1) selectors.",
+        keyPoints: ["CSS Specificity hierarchy", "Cascade and selector weighting"],
+      },
+      {
+        questionId: "s1_q4",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: "In modern responsive CSS layout design, what is the fundamental conceptual difference between CSS Flexbox and CSS Grid?",
+        options: [
+          "A) Flexbox is primarily 1-dimensional (arranging items along either a row OR a column), whereas CSS Grid is 2-dimensional (handling rows AND columns simultaneously)",
+          "B) Flexbox is only supported on mobile browsers, while Grid only works on desktop",
+          "C) CSS Grid cannot align items vertically, whereas Flexbox can",
+          "D) Flexbox requires JavaScript execution, while CSS Grid is pure HTML",
+        ],
+        correctAnswer: "A) Flexbox is primarily 1-dimensional (arranging items along either a row OR a column), whereas CSS Grid is 2-dimensional (handling rows AND columns simultaneously)",
+        explanation: "Flexbox is designed for 1-dimensional component layouts along a single axis, whereas Grid is designed for 2-dimensional grid layouts across rows and columns.",
+        keyPoints: ["CSS Flexbox 1D vs CSS Grid 2D layout systems", "Responsive component structuring"],
+      },
+      {
+        questionId: "s1_q5",
+        section: 1,
+        sectionTitle: "Section 1: Conceptual MCQs",
+        type: "mcq",
+        difficulty: "medium",
+        questionText: "When an element has 'position: absolute;', relative to which element are its 'top', 'right', 'bottom', and 'left' offsets positioned?",
+        options: [
+          "A) The nearest ancestor element with a position other than 'static' (e.g. relative, absolute, fixed, or sticky)",
+          "B) Always strictly relative to the browser window viewport regardless of parent styling",
+          "C) The element immediately preceding it in the DOM tree",
+          "D) The nearest inline <span> tag in the DOM",
+        ],
+        correctAnswer: "A) The nearest ancestor element with a position other than 'static' (e.g. relative, absolute, fixed, or sticky)",
+        explanation: "An absolutely positioned element is positioned relative to its closest non-static ancestor. If no such ancestor exists, it positions relative to the initial containing block (viewport root).",
+        keyPoints: ["CSS Positioning context", "Absolute vs relative containing blocks"],
+      },
+    ];
+  } else if (isJs) {
     s1Questions = [
       {
         questionId: "s1_q1",
@@ -1330,83 +1419,166 @@ function generateSmartQuizQuestions({ skillName = "Software Engineering", subTop
     ];
   }
 
-  // Section 2: 1 Practical Coding Challenge
-  const codingProblem = {
-    questionId: "s2_q1",
-    section: 2,
-    sectionTitle: "Section 2: Coding Challenge",
-    type: "coding",
-    difficulty: "medium",
-    questionText: `Problem Statement:\nImplement an efficient algorithm for ${targetSkill} (${targetSubTopic}) to find two numbers in an array that sum to a specific target integer.\n\nInput Format:\nFirst line contains two space-separated integers: N (size of array) and Target.\nSecond line contains N space-separated integers.\n\nOutput Format:\nPrint the 0-based indices of the two numbers separated by a space (smaller index first).\n\nConstraints:\n2 <= N <= 10^5\n-10^9 <= elements, Target <= 10^9\nExactly one valid solution exists.\n\nExample 1:\nInput:\n4 9\n2 7 11 15\nOutput:\n0 1\nExplanation: nums[0] + nums[1] = 2 + 7 = 9.`,
-    starterCode: prefLang.toLowerCase().includes("python")
-      ? `# Write your Python solution here\nimport sys\n\ndef solve():\n    lines = sys.stdin.read().split()\n    if not lines:\n        return\n    n, target = int(lines[0]), int(lines[1])\n    nums = [int(x) for x in lines[2:2+n]]\n    \n    seen = {}\n    for i, num in enumerate(nums):\n        diff = target - num\n        if diff in seen:\n            print(f"{seen[diff]} {i}")\n            return\n        seen[num] = i\n\nif __name__ == '__main__':\n    solve()\n`
-      : `// Write your JavaScript solution here\nconst fs = require('fs');\nconst input = fs.readFileSync(0, 'utf-8').trim().split(/\\s+/);\nif (input.length >= 2) {\n  const n = parseInt(input[0], 10);\n  const target = parseInt(input[1], 10);\n  const nums = input.slice(2, 2 + n).map(Number);\n  \n  const map = new Map();\n  for (let i = 0; i < nums.length; i++) {\n    const diff = target - nums[i];\n    if (map.has(diff)) {\n      console.log(map.get(diff) + " " + i);\n      break;\n    }\n    map.set(nums[i], i);\n  }\n}\n`,
-    keyPoints: [
-      "Optimal O(N) time complexity using Hash Table lookup",
-      "O(N) space complexity",
-      "Correct index output and edge case handling",
-    ],
-    testCases: [
-      { input: "4 9\n2 7 11 15", expectedOutput: "0 1", description: "Standard basic test case" },
-      { input: "3 6\n3 2 4", expectedOutput: "1 2", description: "Target pair in non-consecutive indices" },
-      { input: "2 6\n3 3", expectedOutput: "0 1", description: "Duplicate values matching target" },
-    ],
-  };
+  // Section 2: 1 Practical Challenge
+  let codingProblem = null;
+  if (isHtmlCss) {
+    codingProblem = {
+      questionId: "s2_q1",
+      section: 2,
+      sectionTitle: "Section 2: HTML & CSS Practical Challenge",
+      type: "coding",
+      difficulty: "medium",
+      questionText: `Problem Statement:\nImplement a modern, responsive Profile Card Component using semantic HTML5 and clean CSS.\n\nComponent Specifications:\n1. Semantic HTML Structure: A container element containing an <article class="profile-card"> with an <h2> title ("Senior Frontend Developer"), a <p class="bio"> description, and an action button <button class="contact-btn">.\n2. Centering & Layout: The container must use CSS Flexbox or CSS Grid to center the card perfectly both horizontally and vertically.\n3. Card Styling: Apply a modern aesthetic with subtle box-shadow, rounded corners (border-radius: 12px to 16px), padding (at least 20px), and responsive max-width (400px) with 100% width.\n4. Box Model: Set 'box-sizing: border-box;' so that padding does not cause layout overflow on mobile viewports.\n\nProvide the complete HTML markup and CSS styling rules in your solution below.`,
+      starterCode: `<!-- HTML Markup -->\n<div class="card-container">\n  <article class="profile-card">\n    <h2 class="title">Senior Frontend Developer</h2>\n    <p class="bio">Building performant, accessible web interfaces with semantic HTML5 and modern CSS.</p>\n    <button class="contact-btn">View Profile</button>\n  </article>\n</div>\n\n<style>\n/* CSS Styling Rules */\n.card-container {\n  display: flex;\n  justify-content: center;\n  align-items: center;\n  min-height: 100vh;\n  box-sizing: border-box;\n  padding: 16px;\n}\n\n.profile-card {\n  width: 100%;\n  max-width: 400px;\n  padding: 24px;\n  border-radius: 16px;\n  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);\n  box-sizing: border-box;\n}\n\n.contact-btn {\n  display: inline-block;\n  padding: 10px 20px;\n  border-radius: 8px;\n  border: none;\n  cursor: pointer;\n}\n</style>\n`,
+      keyPoints: [
+        "Semantic HTML5 structure (<article>, <h2>, <p>, <button>)",
+        "Flexbox or Grid centering (display: flex; justify-content: center; align-items: center)",
+        "CSS Box Model with box-sizing: border-box and max-width responsiveness",
+        "Modern styling with clean typography, padding, and subtle shadow",
+      ],
+      testCases: [
+        {
+          input: "Semantic HTML5 and Flexbox Layout",
+          expectedOutput: "Valid semantic HTML markup and responsive CSS layout",
+          description: "Semantic Structure & Centered Flexbox Verification",
+        },
+      ],
+    };
+  } else {
+    codingProblem = {
+      questionId: "s2_q1",
+      section: 2,
+      sectionTitle: "Section 2: Coding Challenge",
+      type: "coding",
+      difficulty: "medium",
+      questionText: `Problem Statement:\nImplement an efficient algorithm for ${targetSkill} (${targetSubTopic}) to find two numbers in an array that sum to a specific target integer.\n\nInput Format:\nFirst line contains two space-separated integers: N (size of array) and Target.\nSecond line contains N space-separated integers.\n\nOutput Format:\nPrint the 0-based indices of the two numbers separated by a space (smaller index first).\n\nConstraints:\n2 <= N <= 10^5\n-10^9 <= elements, Target <= 10^9\nExactly one valid solution exists.\n\nExample 1:\nInput:\n4 9\n2 7 11 15\nOutput:\n0 1\nExplanation: nums[0] + nums[1] = 2 + 7 = 9.`,
+      starterCode: prefLang.toLowerCase().includes("python")
+        ? `# Write your Python solution here\nimport sys\n\ndef solve():\n    lines = sys.stdin.read().split()\n    if not lines:\n        return\n    n, target = int(lines[0]), int(lines[1])\n    nums = [int(x) for x in lines[2:2+n]]\n    \n    seen = {}\n    for i, num in enumerate(nums):\n        diff = target - num\n        if diff in seen:\n            print(f"{seen[diff]} {i}")\n            return\n        seen[num] = i\n\nif __name__ == '__main__':\n    solve()\n`
+        : `// Write your JavaScript solution here\nconst fs = require('fs');\nconst input = fs.readFileSync(0, 'utf-8').trim().split(/\\s+/);\nif (input.length >= 2) {\n  const n = parseInt(input[0], 10);\n  const target = parseInt(input[1], 10);\n  const nums = input.slice(2, 2 + n).map(Number);\n  \n  const map = new Map();\n  for (let i = 0; i < nums.length; i++) {\n    const diff = target - nums[i];\n    if (map.has(diff)) {\n      console.log(map.get(diff) + " " + i);\n      break;\n    }\n    map.set(nums[i], i);\n  }\n}\n`,
+      keyPoints: [
+        "Optimal O(N) time complexity using Hash Table lookup",
+        "O(N) space complexity",
+        "Correct index output and edge case handling",
+      ],
+      testCases: [
+        { input: "4 9\n2 7 11 15", expectedOutput: "0 1", description: "Standard basic test case" },
+        { input: "3 6\n3 2 4", expectedOutput: "1 2", description: "Target pair in non-consecutive indices" },
+        { input: "2 6\n3 3", expectedOutput: "0 1", description: "Duplicate values matching target" },
+      ],
+    };
+  }
 
   // Section 3: 3 Advanced/Tough MCQs
-  const s3Questions = [
-    {
-      questionId: "s3_q1",
-      section: 3,
-      sectionTitle: "Section 3: Advanced MCQs (Tough)",
-      type: "mcq",
-      difficulty: "hard",
-      questionText: `In high-throughput architectures related to ${targetSkill}, how do Memory Leaks typically manifest and how are they effectively mitigated?`,
-      options: [
-        "A) Through unintended references held in global variables, uncleaned event listeners, or uncleared intervals; mitigated by heap snapshot profiling and lifecycle cleanup",
-        "B) By using too many comments in source code",
-        "C) Automatically cleaned by browser window minimization",
-        "D) Only occurring when running on 32-bit operating systems",
-      ],
-      correctAnswer: "A) Through unintended references held in global variables, uncleaned event listeners, or uncleared intervals; mitigated by heap snapshot profiling and lifecycle cleanup",
-      explanation: "Memory leaks occur when objects are no longer needed by application logic but remain reachable from the GC root due to lingering closures, event listeners, or caches.",
-      keyPoints: ["Garbage collection mechanics", "Memory leak profiling and lifecycle mitigation"],
-    },
-    {
-      questionId: "s3_q2",
-      section: 3,
-      sectionTitle: "Section 3: Advanced MCQs (Tough)",
-      type: "mcq",
-      difficulty: "hard",
-      questionText: `Under high concurrency, what technique prevents the 'Thundering Herd' (Cache Stampede) problem when a hot cache key expires?`,
-      options: [
-        "A) Mutex / Distributed locking with probabilistic early recomputation (XFetch) or background refresh",
-        "B) Setting all cache expiration TTLs to 0 seconds",
-        "C) Disabling the database completely",
-        "D) Increasing CPU voltage dynamically",
-      ],
-      correctAnswer: "A) Mutex / Distributed locking with probabilistic early recomputation (XFetch) or background refresh",
-      explanation: "Cache stampedes are prevented by ensuring only one worker recomputes the expired cache entry while other incoming requests await the result or receive stale data.",
-      keyPoints: ["Cache stampede mitigation", "Distributed locking and probabilistic recomputation"],
-    },
-    {
-      questionId: "s3_q3",
-      section: 3,
-      sectionTitle: "Section 3: Advanced MCQs (Tough)",
-      type: "mcq",
-      difficulty: "hard",
-      questionText: `When designing resilient microservices communicating asynchronously, what is the primary purpose of an Idempotency Key in API requests?`,
-      options: [
-        "A) Ensures that retried requests (e.g. following network timeouts) execute side-effects exactly once without duplicate processing or charging",
-        "B) Encrypts HTTPS traffic using AES-256",
-        "C) Compresses JSON payloads over TCP",
-        "D) Bypasses rate limiting for all admin users",
-      ],
-      correctAnswer: "A) Ensures that retried requests (e.g. following network timeouts) execute side-effects exactly once without duplicate processing or charging",
-      explanation: "Idempotency keys allow clients to safely retry requests across intermittent network disconnects without executing side-effects (like payments or record creations) more than once.",
-      keyPoints: ["Idempotent API design", "Distributed transaction safety"],
-    },
-  ];
+  let s3Questions = [];
+  if (isHtmlCss) {
+    s3Questions = [
+      {
+        questionId: "s3_q1",
+        section: 3,
+        sectionTitle: "Section 3: Advanced MCQs (Tough)",
+        type: "mcq",
+        difficulty: "hard",
+        questionText: "Which of the following CSS property declarations will trigger the creation of a new Stacking Context on an element without requiring 'position: relative/absolute'?",
+        options: [
+          "A) 'opacity: 0.95' or 'transform: scale(1)' or 'isolation: isolate'",
+          "B) 'color: #ffffff'",
+          "C) 'font-weight: 700'",
+          "D) 'margin: 0 auto'",
+        ],
+        correctAnswer: "A) 'opacity: 0.95' or 'transform: scale(1)' or 'isolation: isolate'",
+        explanation: "In CSS, a new stacking context is formed by any element with opacity < 1, transform, filter, perspective, clip-path, or 'isolation: isolate'. Child z-index values become localized to this stacking context.",
+        keyPoints: ["CSS Stacking Context creation conditions", "z-index isolation and rendering hierarchies"],
+      },
+      {
+        questionId: "s3_q2",
+        section: 3,
+        sectionTitle: "Section 3: Advanced MCQs (Tough)",
+        type: "mcq",
+        difficulty: "hard",
+        questionText: "When optimizing animations for 60fps performance in modern browser rendering engines, why are 'transform' and 'opacity' preferred over properties like 'width', 'height', 'top', or 'left'?",
+        options: [
+          "A) 'transform' and 'opacity' can be handled directly by the GPU compositor thread without triggering costly Layout (Reflow) or Paint passes",
+          "B) 'transform' reduces the size of HTML files transferred over the network",
+          "C) Properties like 'top' and 'left' only work in legacy Internet Explorer browsers",
+          "D) 'transform' guarantees zero battery usage on mobile phones",
+        ],
+        correctAnswer: "A) 'transform' and 'opacity' can be handled directly by the GPU compositor thread without triggering costly Layout (Reflow) or Paint passes",
+        explanation: "Changes to geometry (width, height, top) trigger Reflow and Repaint. In contrast, 'transform' and 'opacity' do not affect page geometry and are composited directly on the GPU, avoiding main-thread frame drops.",
+        keyPoints: ["Browser rendering pipeline (Layout/Reflow, Paint, Composite)", "GPU-accelerated CSS animations"],
+      },
+      {
+        questionId: "s3_q3",
+        section: 3,
+        sectionTitle: "Section 3: Advanced MCQs (Tough)",
+        type: "mcq",
+        difficulty: "hard",
+        questionText: "In modern responsive CSS, what is the exact function and evaluation behavior of 'font-size: clamp(1rem, 2.5vw, 2rem);'?",
+        options: [
+          "A) It scales fluidly at 2.5% of the viewport width (2.5vw), but is strictly bounded so it never shrinks below 1rem and never exceeds 2rem",
+          "B) It randomly picks a size between 1rem and 2rem every time the page refreshes",
+          "C) It calculates the mathematical average of 1rem and 2rem into a fixed pixel value",
+          "D) It only applies when the viewport width is exactly equal to 2.5vw",
+        ],
+        correctAnswer: "A) It scales fluidly at 2.5% of the viewport width (2.5vw), but is strictly bounded so it never shrinks below 1rem and never exceeds 2rem",
+        explanation: "The clamp(MIN, VAL, MAX) function takes a minimum value (1rem), a preferred responsive value (2.5vw), and a maximum ceiling (2rem), providing fluid scaling without complex media queries.",
+        keyPoints: ["Modern fluid typography with CSS clamp()", "Viewport-relative scaling with boundary constraints"],
+      },
+    ];
+  } else {
+    s3Questions = [
+      {
+        questionId: "s3_q1",
+        section: 3,
+        sectionTitle: "Section 3: Advanced MCQs (Tough)",
+        type: "mcq",
+        difficulty: "hard",
+        questionText: `In high-throughput architectures related to ${targetSkill}, how do Memory Leaks typically manifest and how are they effectively mitigated?`,
+        options: [
+          "A) Through unintended references held in global variables, uncleaned event listeners, or uncleared intervals; mitigated by heap snapshot profiling and lifecycle cleanup",
+          "B) By using too many comments in source code",
+          "C) Automatically cleaned by browser window minimization",
+          "D) Only occurring when running on 32-bit operating systems",
+        ],
+        correctAnswer: "A) Through unintended references held in global variables, uncleaned event listeners, or uncleared intervals; mitigated by heap snapshot profiling and lifecycle cleanup",
+        explanation: "Memory leaks occur when objects are no longer needed by application logic but remain reachable from the GC root due to lingering closures, event listeners, or caches.",
+        keyPoints: ["Garbage collection mechanics", "Memory leak profiling and lifecycle mitigation"],
+      },
+      {
+        questionId: "s3_q2",
+        section: 3,
+        sectionTitle: "Section 3: Advanced MCQs (Tough)",
+        type: "mcq",
+        difficulty: "hard",
+        questionText: `Under high concurrency, what technique prevents the 'Thundering Herd' (Cache Stampede) problem when a hot cache key expires?`,
+        options: [
+          "A) Mutex / Distributed locking with probabilistic early recomputation (XFetch) or background refresh",
+          "B) Setting all cache expiration TTLs to 0 seconds",
+          "C) Disabling the database completely",
+          "D) Increasing CPU voltage dynamically",
+        ],
+        correctAnswer: "A) Mutex / Distributed locking with probabilistic early recomputation (XFetch) or background refresh",
+        explanation: "Cache stampedes are prevented by ensuring only one worker recomputes the expired cache entry while other incoming requests await the result or receive stale data.",
+        keyPoints: ["Cache stampede mitigation", "Distributed locking and probabilistic recomputation"],
+      },
+      {
+        questionId: "s3_q3",
+        section: 3,
+        sectionTitle: "Section 3: Advanced MCQs (Tough)",
+        type: "mcq",
+        difficulty: "hard",
+        questionText: `When designing resilient microservices communicating asynchronously, what is the primary purpose of an Idempotency Key in API requests?`,
+        options: [
+          "A) Ensures that retried requests (e.g. following network timeouts) execute side-effects exactly once without duplicate processing or charging",
+          "B) Encrypts HTTPS traffic using AES-256",
+          "C) Compresses JSON payloads over TCP",
+          "D) Bypasses rate limiting for all admin users",
+        ],
+        correctAnswer: "A) Ensures that retried requests (e.g. following network timeouts) execute side-effects exactly once without duplicate processing or charging",
+        explanation: "Idempotency keys allow clients to safely retry requests across intermittent network disconnects without executing side-effects (like payments or record creations) more than once.",
+        keyPoints: ["Idempotent API design", "Distributed transaction safety"],
+      },
+    ];
+  }
 
   return [...s1Questions, codingProblem, ...s3Questions];
 }

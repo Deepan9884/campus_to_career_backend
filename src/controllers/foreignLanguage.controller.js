@@ -51,7 +51,9 @@ const uploadMaterial = asyncHandler(async (req, res) => {
     
     // Clean up uploaded file from disk after successful parsing
     fs.unlinkSync(req.file.path);
-    
+
+    LanguageProfile.updateOne({ userId: req.user._id }, { $inc: { "stats.materialsUploaded": 1 } }).exec().catch(() => {});
+
     res.status(201).json(new ApiResponse(201, material, "Material uploaded and parsed successfully"));
   } catch (error) {
     // Clean up uploaded file on failure
@@ -99,7 +101,9 @@ const chatWithMaterials = asyncHandler(async (req, res) => {
   if (!language || !message) throw new ApiError(400, "Language and message are required");
 
   const result = await foreignLanguageService.handleLanguageChat(req.user._id, language, message);
-  
+
+  LanguageProfile.updateOne({ userId: req.user._id }, { $inc: { "stats.chatMessages": 2 } }).exec().catch(() => {});
+
   res.status(200).json(new ApiResponse(200, result, "Chat response generated successfully"));
 });
 
@@ -118,6 +122,8 @@ const generateQuiz = asyncHandler(async (req, res) => {
   if (!language || !targetExam) throw new ApiError(400, "Language and targetExam are required");
 
   const quizQuestions = await foreignLanguageService.generateExamQuiz(req.user._id, language, targetExam);
+
+  LanguageProfile.updateOne({ userId: req.user._id }, { $inc: { "stats.quizzesTaken": 1 } }).exec().catch(() => {});
 
   res.status(200).json(new ApiResponse(200, quizQuestions, "Quiz generated successfully"));
 });

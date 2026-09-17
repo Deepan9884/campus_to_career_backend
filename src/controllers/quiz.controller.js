@@ -12,8 +12,13 @@ const ApiError = require("../utils/ApiError");
 const ApiResponse = require("../utils/ApiResponse");
 
 /**
- * Determine if a skill / subtopic requires coding / hands-on programming challenge
+  * Determine if a skill / subtopic requires coding / hands-on programming challenge
  */
+function isMarkupOrStylingTopic(skillName = "", subTopicName = "") {
+  const combined = `${skillName} ${subTopicName}`.toLowerCase();
+  return /html|css|markup|styling|sass|scss|flexbox|grid|tailwind|bootstrap/i.test(combined);
+}
+
 function checkIfCodingTopic(skillName = "", subTopicName = "") {
   const combined = `${skillName} ${subTopicName}`.toLowerCase();
 
@@ -48,10 +53,13 @@ function checkIfCodingTopic(skillName = "", subTopicName = "") {
 function buildQuizPrompt(subTopicName, skillName, resources, attemptSeed = Date.now(), userPreferences = {}) {
   const { aiDifficulty = "Intermediate", preferredLanguage = "Python" } = userPreferences;
   const resourceList = resources.map((r) => `- ${r.name} (${r.platform}, ${r.type})`).join("\n");
+  const isHtmlCss = isMarkupOrStylingTopic(skillName, subTopicName);
   const requiresCoding = checkIfCodingTopic(skillName, subTopicName);
 
   // Resolve target code language based on skill name and candidate's preferred language
-  const resolvedCodeLanguage = skillName.toLowerCase().includes("sql")
+  const resolvedCodeLanguage = isHtmlCss
+    ? "HTML/CSS"
+    : skillName.toLowerCase().includes("sql")
     ? "SQL"
     : skillName.toLowerCase().includes("java") && !skillName.toLowerCase().includes("javascript")
     ? "Java"
@@ -61,6 +69,14 @@ function buildQuizPrompt(subTopicName, skillName, resources, attemptSeed = Date.
     ? "JavaScript"
     : preferredLanguage || "Python";
 
+  const domainDirectives = isHtmlCss
+    ? `
+⚠️ CRITICAL STRICT MANDATE FOR HTML & CSS:
+- This is strictly an HTML & CSS (Web Markup, Styling, Box Model, and Responsive Design) skill evaluation.
+- DO NOT ask any Data Structures and Algorithms (DSA), time complexity (Big-O), space complexity, sorting, binary trees, dynamic programming, or LeetCode questions. DSA questions are completely unacceptable and inappropriate for HTML & CSS!
+- All questions MUST evaluate HTML5 semantics, CSS layouts (Flexbox, Grid), the Box Model, CSS Specificity, Stacking Contexts, Media Queries, responsive design, accessibility (ARIA), and browser rendering (reflow/repaint).`
+    : "";
+
   return `You are a Principal Software Engineer and Technical Evaluator designing a rigorous 3-section assessment test for a specific learning milestone.
 
 Assessment Context:
@@ -69,6 +85,7 @@ Assessment Context:
 - Candidate Experience Level: ${aiDifficulty}
 - Preferred Code Language: ${resolvedCodeLanguage}
 - Attempt Unique Seed: ${attemptSeed} (Ensure questions generated are completely fresh, unique, and distinctly varied from previous attempts)
+${domainDirectives}
 ${resourceList ? `- Reference Materials:\n${resourceList}` : ""}
 
 EXAM STRUCTURE REQUIREMENTS (YOU MUST GENERATE ALL 3 SECTIONS CALIBRATED FOR ${aiDifficulty.toUpperCase()} LEVEL):
@@ -85,7 +102,16 @@ SECTION 1: CONCEPTUAL MCQs (Exactly 5 Questions)
 SECTION 2: HANDS-ON PRACTICAL / CODING CHALLENGE (1 Problem)
 ═══════════════════════════════════════════════════════════
 ${
-  requiresCoding
+  isHtmlCss
+    ? `- Generate 1 practical Hands-on HTML5 & CSS3 Component Implementation Challenge (e.g. responsive card layout, navigation bar, or centered layout).
+- The questionText MUST be comprehensive and include:
+  1. Component specifications and visual requirements
+  2. Semantic HTML structure requirements
+  3. CSS layout rules (Flexbox/Grid, Box Model, padding, responsive max-width)
+- Provide a clean "starterCode" boilerplate with HTML and CSS.
+- Key points MUST focus on semantic structure, Flexbox/Grid alignment, Box Model, and responsive behavior (NO DSA / time complexity).
+- Mark section: 2, sectionTitle: "Section 2: HTML & CSS Practical Challenge", type: "coding", difficulty: "${aiDifficulty === "Beginner" ? "easy" : aiDifficulty === "Advanced" ? "hard" : "medium"}".`
+    : requiresCoding
     ? `- Generate 1 practical Algorithmic / Coding Challenge problem for ${skillName} (${subTopicName}) calibrated for ${aiDifficulty} difficulty.
 - The questionText MUST be comprehensive and include:
   1. Detailed Problem Statement & Real-world context
@@ -102,11 +128,19 @@ ${
 ═══════════════════════════════════════════════════════════
 SECTION 3: ADVANCED TOUGH MCQs (3 to 4 Questions)
 ═══════════════════════════════════════════════════════════
-- Generate 3 to 4 TOUGH, ADVANCED multiple-choice questions focusing on:
+${
+  isHtmlCss
+    ? `- Generate 3 to 4 TOUGH, ADVANCED multiple-choice questions focusing on:
+  * CSS Specificity calculations and edge cases (e.g. :is(), :where(), !important)
+  * CSS Stacking Context creation conditions and z-index gotchas
+  * Browser rendering pipeline: layout reflow vs repaint vs compositing
+  * Modern CSS functions (clamp(), calc()) and Container Queries`
+    : `- Generate 3 to 4 TOUGH, ADVANCED multiple-choice questions focusing on:
   * Tricky edge cases & rare gotchas
   * Code snippet output prediction & subtle bugs
   * Concurrency, memory management, or performance optimizations
-  * Complex architectural trade-offs
+  * Complex architectural trade-offs`
+}
 - Each question MUST have 4 distinct, well-crafted options with clever distractors labeled "A) ...", "B) ...", "C) ...", "D) ...".
 - Mark section: 3, sectionTitle: "Section 3: Advanced MCQs (Tough)", type: "mcq", difficulty: "hard".
 - Provide the exact correct answer, in-depth explanation, and key points.
@@ -129,12 +163,12 @@ JSON Structure Requirements:
     {
       "questionId": "s2_q1",
       "section": 2,
-      "sectionTitle": "Section 2: Coding Challenge",
+      "sectionTitle": "${isHtmlCss ? "Section 2: HTML & CSS Practical Challenge" : "Section 2: Coding Challenge"}",
       "type": "coding",
       "difficulty": "medium",
-      "questionText": "Problem description with input/output format and examples...",
-      "starterCode": "def solve():\\n    pass",
-      "keyPoints": ["Time complexity O(N)", "Edge cases"],
+      "questionText": "Problem description...",
+      "starterCode": "${isHtmlCss ? "<!-- HTML structure -->\\n<div class=\\\"card\\\"></div>\\n<style>\\n.card { box-sizing: border-box; }\\n</style>" : "def solve():\\n    pass"}",
+      "keyPoints": ["${isHtmlCss ? "Semantic HTML5 structure" : "Time complexity O(N)"}", "${isHtmlCss ? "Flexbox/Grid layout" : "Edge cases"}"],
       "testCases": [
         {
           "input": "sample input",
