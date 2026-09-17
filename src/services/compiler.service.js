@@ -314,15 +314,17 @@ function findProbableSyntaxErrorLine(code = "", reportedLine = null, errorDescri
 }
 
 /**
- * Extract 1-indexed line number and concise error message from compiler or interpreter stderr
+ * Extract 1-indexed line number, concise error message, and exact statement from compiler or interpreter stderr
  */
 function extractErrorDetails(stderr = "", lang = "", code = "") {
-  if (!stderr) return { errorLine: null, errorMessage: "" };
+  if (!stderr) return { errorLine: null, errorMessage: "", statement: "", isRuntimeError: false };
 
   const clean = String(stderr).trim();
   const normalizedLang = String(lang || "").toLowerCase().trim();
   let errorLine = null;
   let errorMessage = "";
+  let statement = "";
+  let isRuntimeError = false;
 
   // Check for missing main function in C/C++/Java
   if (
@@ -333,77 +335,142 @@ function extractErrorDetails(stderr = "", lang = "", code = "") {
     return {
       errorLine: 1,
       errorMessage: "Main method not found. Complete program with main() is required (CodeTantra style).",
+      statement: "Main method not found",
+      isRuntimeError: false,
     };
   }
 
-  // 1. Java (javac): Main.java:5: error: ';' expected
-  const javaMatch = clean.match(/(?:[A-Za-z0-9_.-]+\.java):(\d+)(?::\d+)?:\s*(?:error:)?\s*([^\r\n]+)/i);
+  // 1. Python (Traceback or exception line)
+  if (
+    normalizedLang.includes("python") ||
+    normalizedLang === "py" ||
+    /Traceback \(most recent call last\):/i.test(clean) ||
+    /File\s+"[^"]*",\s*line\s+\d+/i.test(clean)
+  ) {
+    const pyExceptionMatch =
+      clean.match(/^([A-Za-z0-9_]+(?:Error|Exception|Exit|Interrupt)|StopIteration|GeneratorExit):\s*([^\r\n]*)/m) ||
+      clean.match(/((?:ZeroDivisionError|IndexError|KeyError|ValueError|TypeError|AttributeError|NameError|RecursionError|OverflowError|StopIteration|FileNotFoundError|ImportError|ModuleNotFoundError|UnboundLocalError|AssertionError|NotImplementedError|RuntimeError|SyntaxError|IndentationError|TabError):[^\r\n]*)/i);
 
-  // 2. C / C++ (gcc / g++ / clang): solution.cpp:7:5: error: expected ';' before 'return'
-  const cppMatch = clean.match(/(?:[A-Za-z0-9_.-]+\.(?:cpp|c|cc|cxx|h|hpp)):(\d+)(?::\d+)?:\s*(?:error:)?\s*([^\r\n]+)/i);
-
-  // 3. Python: File "solution.py", line 4
-  const pyTraceMatch = clean.match(/File\s+"[^"]*",\s*line\s+(\d+)/i);
-  const pyErrTypeMatch = clean.match(/((?:SyntaxError|IndentationError|TabError|NameError|TypeError|ValueError|IndexError|ZeroDivisionError):[^\r\n]+)/i);
-
-  // 4. JavaScript / Node.js: solution.js:4
-  const jsLineMatch = clean.match(/(?:solution\.js|eval|input):(\d+)/i);
-  const jsErrMatch = clean.match(/((?:SyntaxError|ReferenceError|TypeError):[^\r\n]+)/i);
-
-  if (normalizedLang.includes("java") || javaMatch) {
-    if (javaMatch) {
-      errorLine = parseInt(javaMatch[1], 10);
-      errorMessage = `Line ${errorLine}: ${javaMatch[2]?.trim() || "Compilation error"}`;
-    } else {
-      const lineMatch = clean.match(/(?:line\s*|:)(\d+)/i);
-      if (lineMatch) {
-        errorLine = parseInt(lineMatch[1], 10);
-        errorMessage = `Line ${errorLine}: ${clean.split("\n")[0]}`;
-      } else {
-        errorMessage = clean.split("\n")[0] || "Java Compilation Error";
-      }
-    }
-  } else if (normalizedLang.includes("cpp") || normalizedLang.includes("c++") || normalizedLang === "c" || cppMatch) {
-    if (cppMatch) {
-      errorLine = parseInt(cppMatch[1], 10);
-      errorMessage = `Line ${errorLine}: ${cppMatch[2]?.trim() || "Compilation error"}`;
-    } else {
-      const lineMatch = clean.match(/(?:line\s*|:)(\d+)/i);
-      if (lineMatch) {
-        errorLine = parseInt(lineMatch[1], 10);
-        errorMessage = `Line ${errorLine}: ${clean.split("\n")[0]}`;
-      } else {
-        errorMessage = clean.split("\n")[0] || "C/C++ Compilation Error";
-      }
-    }
-  } else if (normalizedLang.includes("python") || normalizedLang === "py" || pyTraceMatch || pyErrTypeMatch) {
-    // For Python: use the LAST "line X" in the traceback, which is the actual error location.
-    // The first match is often an outer wrapper frame, not the student's code line.
     const allLineMatches = [...clean.matchAll(/File\s+"[^"]*",\s*line\s+(\d+)/gi)];
     if (allLineMatches.length > 0) {
       errorLine = parseInt(allLineMatches[allLineMatches.length - 1][1], 10);
     } else {
-      const simpleLineMatch = clean.match(/line\s+(\d+)/i);
+      const simpleLineMatch = clean.match(/(?:line\s*|:)(\d+)/i);
       if (simpleLineMatch) errorLine = parseInt(simpleLineMatch[1], 10);
     }
-    const desc = pyErrTypeMatch ? pyErrTypeMatch[1].trim() : (clean.split("\n")[0] || "SyntaxError: invalid syntax");
-    errorMessage = errorLine ? `Line ${errorLine}: ${desc}` : desc;
-  } else if (normalizedLang.includes("javascript") || normalizedLang.includes("typescript") || jsLineMatch || jsErrMatch) {
+
+    if (pyExceptionMatch) {
+      statement = pyExceptionMatch[0].trim();
+      const excName = (pyExceptionMatch[1] || "").toLowerCase();
+      if (!excName.includes("syntax") && !excName.includes("indentation") && !excName.includes("taberror")) {
+        isRuntimeError = true;
+      }
+    } else {
+      statement = clean.split("\n").filter(Boolean).pop() || "Python Execution Error";
+    }
+    errorMessage = errorLine ? `Line ${errorLine}: ${statement}` : statement;
+
+  // 2. Java (Runtime exception stack trace or javac error)
+  } else if (normalizedLang.includes("java") || /(?:Exception in thread|\.java:\d+)/i.test(clean)) {
+    const javaRuntimeMatch =
+      clean.match(/Exception in thread "[^"]*"\s+([^\r\n]+)/i) ||
+      clean.match(/((?:java\.[a-zA-Z0-9_.]+(?:Exception|Error)):[^\r\n]*)/i) ||
+      clean.match(/((?:java\.[a-zA-Z0-9_.]+(?:Exception|Error)))/i);
+
+    if (javaRuntimeMatch) {
+      isRuntimeError = true;
+      statement = javaRuntimeMatch[1]?.trim() || javaRuntimeMatch[0]?.trim();
+      const stackLineMatch = clean.match(/\((?:[A-Za-z0-9_$-]+\.java):(\d+)\)/i);
+      if (stackLineMatch) {
+        errorLine = parseInt(stackLineMatch[1], 10);
+      }
+      errorMessage = errorLine ? `Line ${errorLine}: ${statement}` : statement;
+    } else {
+      const javaCompileMatch = clean.match(/(?:[A-Za-z0-9_.-]+\.java):(\d+)(?::\d+)?:\s*(?:error:)?\s*([^\r\n]+)/i);
+      if (javaCompileMatch) {
+        errorLine = parseInt(javaCompileMatch[1], 10);
+        statement = javaCompileMatch[2]?.trim() || "Compilation error";
+        errorMessage = `Line ${errorLine}: ${statement}`;
+      } else {
+        const lineMatch = clean.match(/(?:line\s*|:)(\d+)/i);
+        if (lineMatch) {
+          errorLine = parseInt(lineMatch[1], 10);
+          statement = clean.split("\n")[0];
+          errorMessage = `Line ${errorLine}: ${statement}`;
+        } else {
+          statement = clean.split("\n")[0] || "Java Error";
+          errorMessage = statement;
+        }
+      }
+    }
+
+  // 3. JavaScript / Node.js
+  } else if (
+    normalizedLang.includes("javascript") ||
+    normalizedLang.includes("typescript") ||
+    normalizedLang === "js" ||
+    /(?:node:internal|solution\.js)/i.test(clean)
+  ) {
+    const jsErrMatch = clean.match(/((?:TypeError|ReferenceError|RangeError|SyntaxError|URIError|EvalError|Error):[^\r\n]+)/i);
+    const jsLineMatch = clean.match(/(?:solution\.js|eval|input):(\d+)(?::(\d+))?/i) || clean.match(/at\s+.*\(.*:(\d+):\d+\)/i);
+
     if (jsLineMatch) errorLine = parseInt(jsLineMatch[1], 10);
-    const desc = jsErrMatch ? jsErrMatch[1].trim() : (clean.split("\n")[0] || "JavaScript Error");
-    errorMessage = errorLine ? `Line ${errorLine}: ${desc}` : desc;
+    if (jsErrMatch) {
+      statement = jsErrMatch[1].trim();
+      if (!statement.toLowerCase().startsWith("syntaxerror")) {
+        isRuntimeError = true;
+      }
+    } else {
+      statement = clean.split("\n")[0] || "JavaScript Error";
+    }
+    errorMessage = errorLine ? `Line ${errorLine}: ${statement}` : statement;
+
+  // 4. C / C++
+  } else if (normalizedLang.includes("cpp") || normalizedLang.includes("c++") || normalizedLang === "c") {
+    if (clean.toLowerCase().includes("segmentation fault") || clean.toLowerCase().includes("sigsegv")) {
+      isRuntimeError = true;
+      statement = "Segmentation fault (SIGSEGV) - Invalid memory access (e.g. array out of bounds or null pointer)";
+      errorMessage = statement;
+    } else if (clean.toLowerCase().includes("floating point exception") || clean.toLowerCase().includes("sigfpe")) {
+      isRuntimeError = true;
+      statement = "Floating point exception (SIGFPE) - Division or modulo by zero";
+      errorMessage = statement;
+    } else if (clean.toLowerCase().includes("std::out_of_range")) {
+      isRuntimeError = true;
+      statement = "std::out_of_range exception - Container index out of range";
+      errorMessage = statement;
+    } else {
+      const cppMatch = clean.match(/(?:[A-Za-z0-9_.-]+\.(?:cpp|c|cc|cxx|h|hpp)):(\d+)(?::\d+)?:\s*(?:error:)?\s*([^\r\n]+)/i);
+      if (cppMatch) {
+        errorLine = parseInt(cppMatch[1], 10);
+        statement = cppMatch[2]?.trim() || "Compilation error";
+        errorMessage = `Line ${errorLine}: ${statement}`;
+      } else {
+        const lineMatch = clean.match(/(?:line\s*|:)(\d+)/i);
+        if (lineMatch) {
+          errorLine = parseInt(lineMatch[1], 10);
+          statement = clean.split("\n")[0];
+          errorMessage = `Line ${errorLine}: ${statement}`;
+        } else {
+          statement = clean.split("\n")[0] || "C/C++ Error";
+          errorMessage = statement;
+        }
+      }
+    }
   } else {
     const genericMatch = clean.match(/(?:line\s*|:)(\d+)/i);
     if (genericMatch) {
       errorLine = parseInt(genericMatch[1], 10);
-      errorMessage = `Line ${errorLine}: ${clean.split("\n")[0]}`;
+      statement = clean.split("\n")[0];
+      errorMessage = `Line ${errorLine}: ${statement}`;
     } else {
-      errorMessage = clean.split("\n")[0] || "Compilation / Syntax Error";
+      statement = clean.split("\n")[0] || "Execution Error";
+      errorMessage = statement;
     }
   }
 
-  // Refine error line with source code context if available
-  if (code) {
+  // Refine error line with source code context if available (only for syntax/compile errors)
+  if (code && !isRuntimeError) {
     const refinedLine = findProbableSyntaxErrorLine(code, errorLine, errorMessage || clean);
     if (refinedLine && refinedLine !== errorLine) {
       errorLine = refinedLine;
@@ -411,7 +478,7 @@ function extractErrorDetails(stderr = "", lang = "", code = "") {
     }
   }
 
-  return { errorLine, errorMessage };
+  return { errorLine, errorMessage, statement: statement || errorMessage, isRuntimeError };
 }
 
 /**
@@ -1233,14 +1300,21 @@ STRICT EVALUATION INSTRUCTIONS (CodeTantra Dynamic Input & Full Program Rules):
    - Compare actual stdout against expectedOutput.
    - If output matches expectedOutput exactly (whitespace-trimmed): set "passed": true, "status": "Passed".
    - If output differs or nothing is printed: set "passed": false, "status": "Failed".
-   - If a runtime error occurs: set "passed": false, "status": "Runtime Error", "actualOutput": "Runtime Error: <type>".
+   - If a runtime error occurs (division by zero, index out of range, null pointer, etc.):
+     set "isRuntimeError": true, "passed": false, "status": "Runtime Error",
+     "errorLine": <1-indexed line number in numbered code where runtime exception occurred>,
+     "errorMessage": "Line <line_number>: <exact runtime error statement e.g. ZeroDivisionError: division by zero or IndexError: list index out of range>",
+     "statement": "<exact runtime error statement e.g. ZeroDivisionError: division by zero>",
+     "actualOutput": "Runtime Error: <exact runtime error statement>".
 
 Return valid JSON in this EXACT structure:
 {
   "success": false,
   "isCompilationError": false,
+  "isRuntimeError": false,
   "errorLine": null,
   "errorMessage": "",
+  "statement": "",
   "stdout": "standard output if any",
   "stderr": "error messages if any",
   "passedCount": 0,
@@ -1253,6 +1327,8 @@ Return valid JSON in this EXACT structure:
       "actualOutput": "computed actual output",
       "passed": false,
       "status": "Failed",
+      "statement": "",
+      "errorLine": null,
       "executionTimeMs": 15
     }
   ]
@@ -1270,9 +1346,12 @@ Return ONLY raw valid JSON.`;
     const parsed = parseJsonSafely(raw?.data || raw);
     if (parsed && Array.isArray(parsed.testCaseResults)) {
       const isCompErr = !!parsed.isCompilationError;
-      const extracted = isCompErr ? extractErrorDetails(parsed.stderr || parsed.errorMessage || "", language, code) : { errorLine: null, errorMessage: "" };
+      const isRunErr = !isCompErr && (!!parsed.isRuntimeError || parsed.testCaseResults.some((t) => t.status === "Runtime Error"));
+      const extracted = (isCompErr || isRunErr)
+        ? extractErrorDetails(parsed.stderr || parsed.errorMessage || "", language, code)
+        : { errorLine: null, errorMessage: "", statement: "", isRuntimeError: false };
       let errLine = parsed.errorLine || extracted.errorLine;
-      let errMsg = parsed.errorMessage || extracted.errorMessage || (isCompErr ? "Compilation / Syntax Error" : "");
+      let errMsg = parsed.errorMessage || extracted.errorMessage || (isCompErr ? "Compilation / Syntax Error" : (isRunErr ? (extracted.statement || "Runtime Error") : ""));
 
       let outStderr = parsed.stderr || errMsg || "";
       if (isCompErr) {
@@ -1287,26 +1366,39 @@ Return ONLY raw valid JSON.`;
       const passedCount = isCompErr ? 0 : parsed.testCaseResults.filter((t) => t.passed).length;
       const totalCount = parsed.testCaseResults.length;
       return {
-        success: !isCompErr && (parsed.success ?? (passedCount === totalCount && totalCount > 0)),
+        success: !isCompErr && !isRunErr && (parsed.success ?? (passedCount === totalCount && totalCount > 0)),
         isCompilationError: isCompErr,
         compilationError: isCompErr,
+        isRuntimeError: isRunErr,
         errorLine: errLine,
         errorMessage: errMsg,
+        statement: parsed.statement || extracted.statement || errMsg,
         stdout: parsed.stdout || "",
         stderr: outStderr,
         executionTimeMs: 42,
         passedCount,
         totalCount,
-        testCaseResults: parsed.testCaseResults.map((tc, idx) => ({
-          testCaseId: tc.testCaseId || String(idx + 1),
-          input: tc.input || (testCases[idx] ? testCases[idx].input : ""),
-          expectedOutput: tc.expectedOutput || (testCases[idx] ? testCases[idx].expectedOutput : ""),
-          actualOutput: isCompErr ? `Compilation Error: ${errMsg}` : (tc.actualOutput || (tc.passed ? tc.expectedOutput : "(No output)")),
-          passed: isCompErr ? false : !!tc.passed,
-          status: isCompErr ? "Compilation Error" : (tc.status || (tc.passed ? "Passed" : "Failed")),
-          executionTimeMs: tc.executionTimeMs || 12,
-          isHidden: Boolean(testCases[idx]?.isHidden),
-        })),
+        testCaseResults: parsed.testCaseResults.map((tc, idx) => {
+          const tcIsRuntime = !isCompErr && (tc.status === "Runtime Error" || isRunErr);
+          const tcStatement = tc.statement || parsed.statement || extracted.statement || tc.errorMessage || errMsg || "Runtime Error";
+          return {
+            testCaseId: tc.testCaseId || String(idx + 1),
+            input: tc.input || (testCases[idx] ? testCases[idx].input : ""),
+            expectedOutput: tc.expectedOutput || (testCases[idx] ? testCases[idx].expectedOutput : ""),
+            actualOutput: isCompErr
+              ? `Compilation Error: ${errMsg}`
+              : tcIsRuntime
+              ? (tc.actualOutput && tc.actualOutput.startsWith("Runtime Error:") ? tc.actualOutput : `Runtime Error: ${tcStatement}`)
+              : (tc.actualOutput || (tc.passed ? tc.expectedOutput : "(No output)")),
+            passed: (isCompErr || tcIsRuntime) ? false : !!tc.passed,
+            status: isCompErr ? "Compilation Error" : (tcIsRuntime ? "Runtime Error" : (tc.status || (tc.passed ? "Passed" : "Failed"))),
+            statement: tcIsRuntime ? tcStatement : undefined,
+            errorLine: tcIsRuntime ? (tc.errorLine || errLine || undefined) : undefined,
+            error: tcIsRuntime ? (tc.error || errMsg || tcStatement) : undefined,
+            executionTimeMs: tc.executionTimeMs || 12,
+            isHidden: Boolean(testCases[idx]?.isHidden),
+          };
+        }),
       };
     }
   } catch (err) {
@@ -1656,7 +1748,23 @@ async function executeCode({ code, language = "python", testCases = [], question
         if (res.exitCode !== 0) {
           passed = false;
           status = "Runtime Error";
-          actualOutput = res.stderr ? `Runtime Error: ${res.stderr}` : "Runtime Error (exit code " + res.exitCode + ")";
+          const tcErr = extractErrorDetails(res.stderr, lang, cleanCode);
+          const errorStatement = tcErr.statement || tcErr.errorMessage || (res.stderr ? res.stderr.split("\n")[0] : `Runtime Error (exit code ${res.exitCode})`);
+          actualOutput = `Runtime Error: ${errorStatement}`;
+          results.push({
+            testCaseId: tc.id || String(i + 1),
+            input: tc.input || "",
+            expectedOutput: tc.expectedOutput || "",
+            actualOutput: actualOutput || "(empty)",
+            passed,
+            status,
+            statement: tcErr.statement || errorStatement,
+            errorLine: tcErr.errorLine || undefined,
+            executionTimeMs: res.executionTimeMs || 10,
+            error: tcErr.errorMessage || res.stderr || errorStatement,
+            isHidden: Boolean(tc.isHidden),
+          });
+          continue;
         } else if (expectedTrimmed === "(Custom)" || expectedTrimmed.length === 0) {
           passed = res.exitCode === 0;
           status = passed ? "Passed" : "Failed";
@@ -1700,6 +1808,9 @@ async function executeCode({ code, language = "python", testCases = [], question
           isCompilationError: aiResult.isCompilationError ?? false,
           compilationError: aiResult.compilationError ?? false,
           isRuntimeError: aiResult.isRuntimeError ?? false,
+          errorLine: aiResult.errorLine ?? null,
+          errorMessage: aiResult.errorMessage ?? "",
+          statement: aiResult.statement ?? "",
           language: lang,
           stdout: aiResult.stdout || "",
           stderr: aiResult.stderr || "",
@@ -1734,6 +1845,9 @@ async function executeCode({ code, language = "python", testCases = [], question
             isCompilationError: aiResult.isCompilationError ?? false,
             compilationError: aiResult.compilationError ?? false,
             isRuntimeError: aiResult.isRuntimeError ?? false,
+            errorLine: aiResult.errorLine ?? null,
+            errorMessage: aiResult.errorMessage ?? "",
+            statement: aiResult.statement ?? "",
             language: lang,
             stdout: aiResult.stdout || overallStdout,
             stderr: aiResult.stderr || overallStderr,
@@ -1746,14 +1860,20 @@ async function executeCode({ code, language = "python", testCases = [], question
         }
       }
 
-      const errDetails = hasCompilationError ? extractErrorDetails(overallStderr, lang) : { errorLine: null, errorMessage: "" };
+      const hasRuntimeError = !hasCompilationError && results.some((r) => r.status === "Runtime Error");
+      const firstRuntimeTC = results.find((r) => r.status === "Runtime Error");
+      const errDetails = (hasCompilationError || hasRuntimeError)
+        ? extractErrorDetails(overallStderr || firstRuntimeTC?.error || "", lang, cleanCode)
+        : { errorLine: null, errorMessage: "", statement: "", isRuntimeError: false };
+
       const finalResult = {
-        success: !hasCompilationError && totalCount > 0 && passedCount === totalCount,
+        success: !hasCompilationError && !hasRuntimeError && totalCount > 0 && passedCount === totalCount,
         isCompilationError: hasCompilationError,
         compilationError: hasCompilationError,
-        isRuntimeError: !hasCompilationError && results.some((r) => r.status === "Runtime Error"),
-        errorLine: errDetails.errorLine,
-        errorMessage: errDetails.errorMessage,
+        isRuntimeError: hasRuntimeError,
+        errorLine: errDetails.errorLine || firstRuntimeTC?.errorLine || null,
+        errorMessage: errDetails.errorMessage || firstRuntimeTC?.statement || "",
+        statement: errDetails.statement || firstRuntimeTC?.statement || "",
         language: lang,
         stdout: overallStdout,
         stderr: overallStderr,
@@ -1772,6 +1892,9 @@ async function executeCode({ code, language = "python", testCases = [], question
       isCompilationError: aiResult.isCompilationError ?? false,
       compilationError: aiResult.compilationError ?? false,
       isRuntimeError: aiResult.isRuntimeError ?? false,
+      errorLine: aiResult.errorLine ?? null,
+      errorMessage: aiResult.errorMessage ?? "",
+      statement: aiResult.statement ?? "",
       language: lang,
       stdout: aiResult.stdout || "",
       stderr: aiResult.stderr || "",

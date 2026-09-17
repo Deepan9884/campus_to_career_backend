@@ -2,6 +2,7 @@ const fs = require("fs");
 const LanguageProfile = require("../models/LanguageProfile.model");
 const StudyMaterial = require("../models/StudyMaterial.model");
 const LanguageChat = require("../models/LanguageChat.model");
+const LanguageCertificate = require("../models/LanguageCertificate.model");
 const foreignLanguageService = require("../services/foreignLanguage.service");
 const asyncHandler = require("../utils/asyncHandler");
 const ApiError = require("../utils/ApiError");
@@ -117,8 +118,66 @@ const generateQuiz = asyncHandler(async (req, res) => {
   if (!language || !targetExam) throw new ApiError(400, "Language and targetExam are required");
 
   const quizQuestions = await foreignLanguageService.generateExamQuiz(req.user._id, language, targetExam);
-  
+
   res.status(200).json(new ApiResponse(200, quizQuestions, "Quiz generated successfully"));
+});
+
+const generateListening = asyncHandler(async (req, res) => {
+  const { language, targetExam, topic } = req.body;
+  if (!language || !targetExam) throw new ApiError(400, "Language and targetExam are required");
+
+  const script = await foreignLanguageService.generateListeningScript(
+    req.user._id,
+    language,
+    targetExam,
+    topic
+  );
+
+  res.status(200).json(new ApiResponse(200, script, "Listening script generated successfully"));
+});
+
+// ── Certificates ──
+
+const uploadCertificate = asyncHandler(async (req, res) => {
+  const { language, examLevel, certificateTitle, issuer, status, score, credentialId, issuedDate, notes } = req.body;
+
+  if (!certificateTitle) throw new ApiError(400, "Certificate title is required");
+
+  const cert = await LanguageCertificate.create({
+    userId: req.user._id,
+    language: language || "Japanese",
+    examLevel: examLevel || "N5",
+    certificateTitle,
+    issuer: issuer || "Other",
+    status: status || "Completed",
+    score: score || "",
+    credentialId: credentialId || "",
+    issuedDate: issuedDate || "",
+    notes: notes || "",
+    originalFileName: req.file ? req.file.originalname : "",
+    fileType: req.file ? req.file.originalname.split(".").pop().toLowerCase() : "",
+    fileSize: req.file ? req.file.size : 0,
+  });
+
+  res.status(201).json(new ApiResponse(201, cert, "Certificate saved successfully"));
+});
+
+const getCertificates = asyncHandler(async (req, res) => {
+  const { language } = req.query;
+  const filter = { userId: req.user._id };
+  if (language) filter.language = language;
+
+  const certs = await LanguageCertificate.find(filter).sort({ createdAt: -1 });
+  res.status(200).json(new ApiResponse(200, certs, "Certificates fetched successfully"));
+});
+
+const deleteCertificate = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const cert = await LanguageCertificate.findOneAndDelete({ _id: id, userId: req.user._id });
+
+  if (!cert) throw new ApiError(404, "Certificate not found");
+
+  res.status(200).json(new ApiResponse(200, null, "Certificate deleted successfully"));
 });
 
 module.exports = {
@@ -131,4 +190,8 @@ module.exports = {
   chatWithMaterials,
   getChatHistory,
   generateQuiz,
+  generateListening,
+  uploadCertificate,
+  getCertificates,
+  deleteCertificate,
 };

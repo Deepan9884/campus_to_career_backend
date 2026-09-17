@@ -114,4 +114,43 @@ if (input.length >= 2) {
     expect(result.passedCount).toBe(1);
     expect(result.stdout).toBe("15");
   });
+
+  test("correctly extracts Python runtime error statement and line for ZeroDivisionError", async () => {
+    const code = `x = 10
+y = 0
+print(x // y)`;
+    const result = await executeCode({
+      code,
+      language: "python",
+      testCases: [{ input: "", expectedOutput: "5" }],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.isRuntimeError).toBe(true);
+    expect(result.statement).toContain("ZeroDivisionError: division by zero");
+    expect(result.errorLine).toBe(3);
+    expect(result.errorMessage).toContain("ZeroDivisionError");
+    expect(result.testCaseResults[0].actualOutput).toContain("Runtime Error: ZeroDivisionError");
+  });
+
+  test("correctly extracts Java runtime error statement and line for ArrayIndexOutOfBoundsException", async () => {
+    const code = `public class Solution {
+    public static void main(String[] args) {
+        int[] arr = new int[2];
+        System.out.println(arr[5]);
+    }
+}`;
+    const result = await executeCode({
+      code,
+      language: "java",
+      testCases: [{ input: "", expectedOutput: "0" }],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.isRuntimeError).toBe(true);
+    expect(result.statement).toContain("ArrayIndexOutOfBoundsException");
+    expect(result.errorLine).toBe(4);
+    expect(result.testCaseResults[0].actualOutput).toContain("ArrayIndexOutOfBoundsException");
+  });
 });
+

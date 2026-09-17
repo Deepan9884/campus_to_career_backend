@@ -34,6 +34,18 @@ const upload = multer({
   },
 });
 
+const certUpload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (![".pdf", ".png", ".jpg", ".jpeg", ".webp", ".docx"].includes(ext)) {
+      return cb(new Error("Certificate must be PDF, PNG, JPG, WEBP or DOCX"));
+    }
+    cb(null, true);
+  },
+});
+
 router.use(verifyJWT);
 
 // Profile
@@ -52,5 +64,13 @@ router.get("/chat", foreignLanguageController.getChatHistory);
 
 // Quiz
 router.post("/quiz", foreignLanguageController.generateQuiz);
+
+// Listening (AI exam-style script + questions)
+router.post("/listening", foreignLanguageController.generateListening);
+
+// Certificates
+router.post("/certificates", certUpload.single("file"), foreignLanguageController.uploadCertificate);
+router.get("/certificates", foreignLanguageController.getCertificates);
+router.delete("/certificates/:id", foreignLanguageController.deleteCertificate);
 
 module.exports = router;

@@ -187,8 +187,43 @@ Format the output EXACTLY as a JSON array of objects, with no markdown codeblock
   return jsonResponse;
 }
 
+async function generateListeningScript(userId, language, targetExam, topic) {
+  const activeMaterials = await StudyMaterial.find({ userId, language, isActive: true }).select("+parsedText");
+
+  let contextText = "";
+  if (activeMaterials.length > 0) {
+    const snippet = activeMaterials
+      .map((m) => (m.parsedText || "").slice(0, 1500))
+      .join("\n---\n");
+    contextText = `Draw vocabulary and themes from these study notes where possible:\n${snippet}\n`;
+  }
+
+  const prompt = `You are an expert ${language} (${targetExam} level) listening-exam scriptwriter.
+${contextText}
+Topic: ${topic || "daily conversation"}.
+
+Write a realistic exam-style listening passage in ${language} suitable for ${targetExam} learners.
+Rules:
+- 120 to 220 words in ${language} (with natural exam-style dialogue or monologue).
+- Follow with an English translation line-by-line or paragraph.
+- Then create exactly 3 listening comprehension questions (multiple choice, 4 options each) with correct answer index and short explanation.
+Format the output EXACTLY as JSON with no markdown codeblocks:
+{
+  "title": "short title",
+  "script": "the ${language} passage",
+  "translation": "english translation",
+  "questions": [
+    { "questionText": "...", "options": ["a","b","c","d"], "correctOptionIndex": 0, "explanation": "..." }
+  ]
+}`;
+
+  const jsonResponse = await aiService.generateJson(prompt, {});
+  return jsonResponse;
+}
+
 module.exports = {
   processUploadedMaterial,
   handleLanguageChat,
   generateExamQuiz,
+  generateListeningScript,
 };
