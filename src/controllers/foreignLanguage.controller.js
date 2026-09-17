@@ -142,6 +142,34 @@ const generateListening = asyncHandler(async (req, res) => {
   res.status(200).json(new ApiResponse(200, script, "Listening script generated successfully"));
 });
 
+const streamTtsAudio = asyncHandler(async (req, res) => {
+  const text = req.method === "POST" ? req.body.text : req.query.text;
+  const language = req.method === "POST" ? req.body.language : req.query.language;
+
+  if (!text || typeof text !== "string" || !text.trim()) {
+    throw new ApiError(400, "Text is required for TTS synthesis");
+  }
+
+  const cleanText = text.trim();
+  if (cleanText.length > 3000) {
+    throw new ApiError(400, "Text exceeds maximum TTS length of 3000 characters");
+  }
+
+  try {
+    const audioBuffer = await foreignLanguageService.synthesizeSpeech(cleanText, language || "Japanese");
+
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Length", audioBuffer.length);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+
+    return res.status(200).end(audioBuffer);
+  } catch (err) {
+    console.error("[TTS Synthesis Error]", err?.message);
+    throw new ApiError(502, `Speech synthesis failed: ${err.message}`);
+  }
+});
+
 // ── Certificates ──
 
 const uploadCertificate = asyncHandler(async (req, res) => {
@@ -197,6 +225,7 @@ module.exports = {
   getChatHistory,
   generateQuiz,
   generateListening,
+  streamTtsAudio,
   uploadCertificate,
   getCertificates,
   deleteCertificate,

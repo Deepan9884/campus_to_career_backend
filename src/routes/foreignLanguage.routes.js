@@ -46,6 +46,10 @@ const certUpload = multer({
   },
 });
 
+// Audio TTS Stream (Public / Authenticated educational stream for listening exercises)
+router.post("/tts", foreignLanguageController.streamTtsAudio);
+router.get("/tts", foreignLanguageController.streamTtsAudio);
+
 router.use(verifyJWT);
 
 // Profile

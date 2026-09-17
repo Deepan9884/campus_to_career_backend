@@ -1,5 +1,7 @@
 const fs = require("fs");
 const path = require("path");
+const https = require("https");
+const crypto = require("crypto");
 const PDFParser = require("pdf2json");
 const mammoth = require("mammoth");
 const aiService = require("./ai.service");
@@ -299,9 +301,121 @@ async function generateListeningScript(userId, language, targetExam, topic) {
   return getFallbackListening(language, targetExam, safeTopic);
 }
 
+const GOOGLE_TTS_LANG_MAP = {
+  Japanese: "ja",
+  French: "fr",
+  German: "de",
+  Spanish: "es",
+  English: "en",
+};
+
+// In-memory cache for audio buffers (LRU-style capped Map)
+const ttsCache = new Map();
+const MAX_TTS_CACHE_ITEMS = 80;
+
+function splitTtsText(text, maxLen = 170) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  if (clean.length <= maxLen) return [clean];
+  const sentences = clean.match(/[^。．！？!?;；\n]+[。．！？!?;；\n]?/g) || [clean];
+  const chunks = [];
+  let current = "";
+  for (const s of sentences) {
+    const piece = s.trim();
+    if (!piece) continue;
+    if (piece.length > maxLen) {
+      if (current) {
+        chunks.push(current);
+        current = "";
+      }
+      const subs = piece.match(new RegExp(`.{1,${maxLen}}`, "g")) || [piece];
+      for (const sub of subs) chunks.push(sub.trim());
+      continue;
+    }
+    if ((current + " " + piece).trim().length > maxLen) {
+      chunks.push(current.trim());
+      current = piece;
+    } else {
+      current = (current + " " + piece).trim();
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks.filter(Boolean);
+}
+
+function fetchGoogleTtsChunk(text, langCode) {
+  return new Promise((resolve, reject) => {
+    const encoded = encodeURIComponent(text);
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${langCode}&client=tw-ob&q=${encoded}`;
+    const req = https.get(
+      url,
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "*/*",
+        },
+        timeout: 10000,
+      },
+      (res) => {
+        if (res.statusCode !== 200) {
+          return reject(new Error(`TTS upstream returned HTTP status ${res.statusCode}`));
+        }
+        const data = [];
+        res.on("data", (chunk) => data.push(chunk));
+        res.on("end", () => {
+          const buffer = Buffer.concat(data);
+          if (buffer.length === 0) {
+            return reject(new Error("TTS upstream returned 0 bytes"));
+          }
+          resolve(buffer);
+        });
+      }
+    );
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error("TTS upstream request timeout"));
+    });
+  });
+}
+
+async function synthesizeSpeech(text, language = "Japanese") {
+  const langCode = GOOGLE_TTS_LANG_MAP[language] || "ja";
+  const cleanText = String(text || "").trim();
+  if (!cleanText) throw new Error("Empty text provided for TTS synthesis");
+
+  const cacheKey = `${langCode}:${crypto.createHash("md5").update(cleanText).digest("hex")}`;
+  if (ttsCache.has(cacheKey)) {
+    return ttsCache.get(cacheKey);
+  }
+
+  const chunks = splitTtsText(cleanText);
+  if (chunks.length === 0) throw new Error("Could not parse text into speakable chunks");
+
+  const buffers = [];
+  for (const chunk of chunks) {
+    const buf = await fetchGoogleTtsChunk(chunk, langCode);
+    buffers.push(buf);
+  }
+
+  const combined = Buffer.concat(buffers);
+  if (combined.length === 0) {
+    throw new Error("Synthesized audio buffer is empty");
+  }
+
+  if (ttsCache.size >= MAX_TTS_CACHE_ITEMS) {
+    const firstKey = ttsCache.keys().next().value;
+    if (firstKey) ttsCache.delete(firstKey);
+  }
+  ttsCache.set(cacheKey, combined);
+
+  return combined;
+}
+
 module.exports = {
   processUploadedMaterial,
   handleLanguageChat,
   generateExamQuiz,
   generateListeningScript,
+  synthesizeSpeech,
 };
