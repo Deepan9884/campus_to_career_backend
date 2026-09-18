@@ -556,10 +556,12 @@ Return a JSON array of objects.`;
           });
 
           if (aiGen.success && Array.isArray(aiGen.data) && aiGen.data.length > 0) {
-            return {
-              items: aiGen.data.map((q) => ({
+            const validItems = aiGen.data.filter((q) => q && (q.questionText || q.projectContext));
+            if (validItems.length > 0) return {
+              items: validItems.map((q) => ({
                 questionId: null,
-                questionText: q.questionText,
+                questionText: (q.questionText || "").trim() ||
+                  `Walk me through your experience with ${q.projectContext || "this project"}. What was your role, key technical decisions, and the impact delivered?`,
                 itemType: "open_ended",
                 projectContext: q.projectContext || "Resume Project Experience",
                 idealAnswerPoints: q.idealAnswerPoints || [
@@ -620,10 +622,12 @@ Return a JSON array of objects.`;
         });
 
         if (aiGen.success && Array.isArray(aiGen.data) && aiGen.data.length > 0) {
-          return {
-            items: aiGen.data.map((q) => ({
+          const validItems = aiGen.data.filter((q) => q && (q.questionText || q.projectContext));
+          if (validItems.length > 0) return {
+            items: validItems.map((q) => ({
               questionId: null,
-              questionText: q.questionText,
+              questionText: (q.questionText || "").trim() ||
+                `Describe a challenging scenario in your role as a ${targetRole || "Software Engineer"} — specifically around ${q.projectContext || "technical decision-making"}. How did you approach and resolve it?`,
               itemType: "open_ended",
               projectContext: q.projectContext || "Technical Leadership & Scenarios",
               idealAnswerPoints: q.idealAnswerPoints || [
