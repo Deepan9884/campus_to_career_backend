@@ -198,7 +198,14 @@ async function sendMailPayload(opts) {
     console.log(`[Email via SMTP] Delivered to ${opts.to} (MessageId: ${result.messageId})`);
     return true;
   } catch (err) {
-    const isNetworkError = err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED" || err.code === "ENETUNREACH" || err.message?.includes("timeout");
+    const isNetworkError = 
+      err.code === "ETIMEDOUT" || 
+      err.code === "ECONNREFUSED" || 
+      err.code === "ENETUNREACH" || 
+      err.code === "ESOCKET" ||
+      err.message?.includes("timeout") ||
+      err.message?.includes("ENETUNREACH") ||
+      err.message?.includes("ECONNREFUSED");
     if (isNetworkError) {
       console.warn(`[Email via SMTP] Primary port failed (${err.code || err.message}). Attempting port 587 STARTTLS fallback...`);
       try {
