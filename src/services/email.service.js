@@ -696,32 +696,34 @@ async function sendVerificationEmail(user, verificationToken) {
   const verificationLink = `${env.FRONTEND_URL || "http://localhost:5173"}/verify-email?token=${verificationToken}`;
 
   const html = renderBaseTemplate({
-    title: "Verify Your Email",
-    preheader: "Complete your Campus to Career registration",
-    heroTitle: "Verify Your Email Address",
-    heroSubtitle: `Welcome ${user.name}! Please verify your email to access all features.`,
-    bodyContent: `
-      <p style="margin: 0 0 16px; font-size: 15px; line-height: 24px; color: #374151;">
-        Hi <strong>${user.name}</strong>,
+    badgeText: "EMAIL VERIFICATION",
+    badgeColor: "#4f46e5",
+    badgeBg: "#eef2ff",
+    heading: "Verify Your Email Address",
+    subheading: `Welcome ${user.name || "Student"}! Please verify your email to access all features.`,
+    contentHtml: `
+      <p style="margin: 0 0 16px 0; color: #334155; font-size: 14px; line-height: 1.6;">
+        Hi <strong>${user.name || "Student"}</strong>,
       </p>
-      <p style="margin: 0 0 16px; font-size: 15px; line-height: 24px; color: #374151;">
-        Thank you for registering with Campus to Career! To complete your registration and access all features, 
+      <p style="margin: 0 0 16px 0; color: #334155; font-size: 14px; line-height: 1.6;">
+        Thank you for registering with Campus to Career! To complete your registration and access all features,
         please verify your email address by clicking the button below.
       </p>
-      <p style="margin: 0 0 24px; font-size: 15px; line-height: 24px; color: #374151;">
+      <p style="margin: 0; color: #64748b; font-size: 13px;">
         This verification link will expire in <strong>24 hours</strong> for security reasons.
       </p>
     `,
+    alertHtml: `
+      <div style="background-color: #fef9c3; border-left: 4px solid #ca8a04; padding: 12px 16px; border-radius: 4px;">
+        <p style="margin: 0; color: #713f12; font-size: 13px;">
+          If you didn't create an account with Campus to Career, you can safely ignore this email.
+        </p>
+      </div>
+    `,
+    ctaUrl: verificationLink,
     ctaText: "Verify Email Address",
-    ctaLink: verificationLink,
-    footerText: `
-      <p style="margin: 0 0 8px; font-size: 13px; line-height: 20px; color: #6b7280;">
-        If you didn't create an account with Campus to Career, you can safely ignore this email.
-      </p>
-      <p style="margin: 0; font-size: 13px; line-height: 20px; color: #6b7280;">
-        If the button doesn't work, copy and paste this link into your browser:<br/>
-        <a href="${verificationLink}" style="color: #6366f1; text-decoration: none; word-break: break-all;">${verificationLink}</a>
-      </p>
+    secondaryLinkHtml: `
+      Or copy this link: <a href="${verificationLink}" style="color: #4f46e5; word-break: break-all;">${verificationLink}</a>
     `,
   });
 
