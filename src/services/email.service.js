@@ -29,6 +29,7 @@ function initEmailService() {
       connectionTimeout: 8000,
       greetingTimeout: 8000,
       socketTimeout: 10000,
+      family: 4, // Force IPv4
     });
   } else {
     transporter = nodemailer.createTransport({
@@ -42,6 +43,7 @@ function initEmailService() {
       connectionTimeout: 8000,
       greetingTimeout: 8000,
       socketTimeout: 10000,
+      family: 4, // Force IPv4
     });
   }
 
@@ -196,7 +198,7 @@ async function sendMailPayload(opts) {
     console.log(`[Email via SMTP] Delivered to ${opts.to} (MessageId: ${result.messageId})`);
     return true;
   } catch (err) {
-    const isNetworkError = err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED" || err.message?.includes("timeout");
+    const isNetworkError = err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED" || err.code === "ENETUNREACH" || err.message?.includes("timeout");
     if (isNetworkError) {
       console.warn(`[Email via SMTP] Primary port failed (${err.code || err.message}). Attempting port 587 STARTTLS fallback...`);
       try {
@@ -212,12 +214,13 @@ async function sendMailPayload(opts) {
           connectionTimeout: 8000,
           greetingTimeout: 8000,
           socketTimeout: 10000,
+          family: 4, // Force IPv4 to avoid Render's ENETUNREACH on IPv6
         });
         const altResult = await altTransporter.sendMail(opts);
         console.log(`[Email via SMTP (Port 587 Fallback)] Delivered to ${opts.to} (MessageId: ${altResult.messageId})`);
         return true;
       } catch (altErr) {
-        console.error(`🚨 [Email] Both SMTP ports (465 & 587) timed out on Render. Cloud hosting blocks SMTP ports. Brevo API (port 443) or verified domain is recommended.`);
+        console.error(`🚨 [Email] Both SMTP ports (465 & 587) failed on Render. Brevo API or verified domain is recommended. Error: ${altErr.message}`);
         throw altErr;
       }
     }
