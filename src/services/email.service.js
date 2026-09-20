@@ -1,3 +1,4 @@
+require('dns').setDefaultResultOrder('ipv4first');
 const nodemailer = require("nodemailer");
 const env = require("../config/env");
 
