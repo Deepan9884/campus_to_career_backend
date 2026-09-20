@@ -153,13 +153,20 @@ const createExam = asyncHandler(async (req, res) => {
 
   const isScheduleActive = Boolean(isScheduled && scheduledStartTime);
   const durationMin = Number(durationMinutes) || 60;
+  let computedStartTime = null;
   let computedEndTime = null;
+
   if (isScheduleActive) {
+    computedStartTime = new Date(scheduledStartTime);
     if (scheduledEndTime) {
       computedEndTime = new Date(scheduledEndTime);
     } else {
-      computedEndTime = new Date(new Date(scheduledStartTime).getTime() + durationMin * 60 * 1000);
+      computedEndTime = new Date(computedStartTime.getTime() + durationMin * 60 * 1000);
     }
+  } else {
+    // Immediate launch: window opens now and concludes after durationMinutes
+    computedStartTime = new Date();
+    computedEndTime = new Date(computedStartTime.getTime() + durationMin * 60 * 1000);
   }
 
   const now = new Date();
@@ -227,7 +234,7 @@ const createExam = asyncHandler(async (req, res) => {
     isResultDisclosed: false, // Default: Marks concealed from students
     isPublished: true,
     isScheduled: Boolean(isScheduleActive),
-    scheduledStartTime: isScheduleActive ? new Date(scheduledStartTime) : null,
+    scheduledStartTime: computedStartTime,
     scheduledEndTime: computedEndTime,
     status: initialStatus,
     createdBy: req.user._id,
@@ -325,14 +332,16 @@ const getAdminExams = asyncHandler(async (req, res) => {
       ? new Date(e.scheduledEndTime)
       : e.scheduledStartTime
       ? new Date(new Date(e.scheduledStartTime).getTime() + (Number(e.durationMinutes) || 60) * 60 * 1000)
+      : e.createdAt
+      ? new Date(new Date(e.createdAt).getTime() + (Number(e.durationMinutes) || 60) * 60 * 1000)
       : null;
 
-    if (computedStatus !== "stopped" && e.isScheduled) {
-      if (e.scheduledStartTime && new Date(e.scheduledStartTime) > now) {
+    if (computedStatus !== "stopped") {
+      if (e.isScheduled && e.scheduledStartTime && new Date(e.scheduledStartTime) > now) {
         computedStatus = "scheduled";
       } else if (effectiveEndTime && effectiveEndTime < now) {
         computedStatus = "completed";
-      } else if (e.scheduledStartTime && new Date(e.scheduledStartTime) <= now) {
+      } else {
         computedStatus = "active";
       }
     }
@@ -1329,14 +1338,16 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
       ? new Date(exam.scheduledEndTime)
       : exam.scheduledStartTime
       ? new Date(new Date(exam.scheduledStartTime).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
+      : exam.createdAt
+      ? new Date(new Date(exam.createdAt).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
       : null;
 
-    if (computedStatus !== "stopped" && exam.isScheduled) {
-      if (exam.scheduledStartTime && new Date(exam.scheduledStartTime) > now) {
+    if (computedStatus !== "stopped") {
+      if (exam.isScheduled && exam.scheduledStartTime && new Date(exam.scheduledStartTime) > now) {
         computedStatus = "scheduled";
       } else if (effectiveEndTime && effectiveEndTime < now) {
         computedStatus = "completed";
-      } else if (exam.scheduledStartTime && new Date(exam.scheduledStartTime) <= now) {
+      } else {
         computedStatus = "active";
       }
     }
@@ -1346,7 +1357,7 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
     const isStudentBlocked = Boolean(subInfo?.isBlocked);
     const isStudentInProgress = Boolean(subInfo?.isInProgress);
 
-    const isExamConcluded = Boolean(computedStatus === "stopped" || computedStatus === "completed");
+    const isExamConcluded = Boolean(computedStatus === "stopped" || computedStatus === "completed" || (effectiveEndTime && effectiveEndTime < now));
 
     const canStart =
       !isExamConcluded &&
@@ -1414,24 +1425,29 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
     );
   }
 
-  // Check if exam is scheduled and within window
+  // Check if exam is concluded or scheduled window has elapsed
+  const now = new Date();
+  const effectiveEndTime = exam.scheduledEndTime
+    ? new Date(exam.scheduledEndTime)
+    : exam.scheduledStartTime
+    ? new Date(new Date(exam.scheduledStartTime).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
+    : exam.createdAt
+    ? new Date(new Date(exam.createdAt).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
+    : null;
+
+  if (exam.status === "completed" || (effectiveEndTime && effectiveEndTime < now)) {
+    throw new ApiError(
+      403,
+      "The scheduled window for this examination has concluded."
+    );
+  }
+
+  // Check if exam is scheduled and before start time
   if (exam.isScheduled) {
-    const now = new Date();
     if (exam.scheduledStartTime && new Date(exam.scheduledStartTime) > now) {
       throw new ApiError(
         403,
         `This assessment is scheduled to begin on ${new Date(exam.scheduledStartTime).toLocaleString()}. Please wait until the start time.`
-      );
-    }
-    const effectiveEndTime = exam.scheduledEndTime
-      ? new Date(exam.scheduledEndTime)
-      : exam.scheduledStartTime
-      ? new Date(new Date(exam.scheduledStartTime).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
-      : null;
-    if (effectiveEndTime && effectiveEndTime < now) {
-      throw new ApiError(
-        403,
-        "The scheduled window for this examination has concluded."
       );
     }
   }
