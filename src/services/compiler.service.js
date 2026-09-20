@@ -742,6 +742,68 @@ function checkCodeSecurity(code = "", language = "python") {
   return { safe: true };
 }
 
+const PYTHON_AUTO_HARNESS = `
+if __name__ == '__main__':
+    import sys, json, inspect, re, warnings
+    warnings.filterwarnings('ignore')
+
+    def _parse_val(v):
+        v = v.strip()
+        if not v: return None
+        try: return json.loads(v)
+        except Exception: pass
+        parts = v.split()
+        if len(parts) > 1:
+            try: return [int(p) if p.lstrip('-').isdigit() else float(p) for p in parts]
+            except Exception: pass
+        try:
+            if v.lstrip('-').isdigit(): return int(v)
+            return float(v)
+        except Exception: return v
+
+    def _run():
+        raw = sys.stdin.read().strip()
+        if not raw: return
+        target_fn = None
+        if 'Solution' in globals() and inspect.isclass(globals()['Solution']):
+            inst = globals()['Solution']()
+            methods = [m for m in dir(inst) if not m.startswith('_') and callable(getattr(inst, m))]
+            if methods: target_fn = getattr(inst, methods[0])
+        if not target_fn:
+            user_funcs = [obj for name, obj in list(globals().items()) if inspect.isfunction(obj) and obj.__module__ == '__main__' and not name.startswith('_') and name != 'main']
+            if user_funcs: target_fn = user_funcs[0]
+            elif 'main' in globals() and inspect.isfunction(globals()['main']):
+                target_fn = globals()['main']
+        if not target_fn: return
+
+        sig = inspect.signature(target_fn)
+        param_count = len(sig.parameters)
+        args = []
+        named = re.findall(r"""(?:^|,|\n)\s*([a-zA-Z_]\w*)\s*=\s*(\[[^\]]*\]|'[^']*'|"[^"]*"|[^,\n]+)""", raw)
+        if named:
+            for k, v in named: args.append(_parse_val(v))
+        else:
+            lines = [l.strip() for l in raw.split('\\n') if l.strip()]
+            if len(lines) == param_count:
+                for l in lines: args.append(_parse_val(l))
+            elif len(lines) == 1 and param_count > 1:
+                parts = lines[0].split()
+                if len(parts) == param_count: args = [_parse_val(p) for p in parts]
+                else: args = [_parse_val(' '.join(parts[:-1])), _parse_val(parts[-1])]
+            else:
+                for l in lines: args.append(_parse_val(l))
+        try:
+            res = target_fn(*args[:param_count])
+            if res is not None:
+                if isinstance(res, (list, tuple, dict)): print(json.dumps(res, separators=(',', ' ')))
+                elif isinstance(res, bool): print(str(res).lower())
+                else: print(res)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+
+    _run()
+`;
+
 /**
  * Execute Python 3 code with stdin and timeout in a secure minimal environment
  * Automatically tries multiple Python binary candidates ('python3', 'python', 'py')
@@ -751,9 +813,20 @@ async function runPython(code, input = "") {
     ? [["python3", []], ["py", []], ["python", []]]
     : [["python3", []], ["python", []]];
 
+  let executableCode = code;
+  const needsHarness =
+    (code.includes("def ") || code.includes("class ")) &&
+    !code.includes("input(") &&
+    !code.includes("sys.stdin") &&
+    !code.includes("__name__");
+
+  if (needsHarness) {
+    executableCode = code + "\n\n" + PYTHON_AUTO_HARNESS;
+  }
+
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-py-"));
   const filePath = path.join(tempDir, "solution.py");
-  fs.writeFileSync(filePath, code, { encoding: "utf8", mode: 0o600 });
+  fs.writeFileSync(filePath, executableCode, { encoding: "utf8", mode: 0o600 });
 
   for (const [cmd, extraArgs] of pythonCmds) {
     const res = await new Promise((resolve) => {
@@ -1257,9 +1330,6 @@ async function runWithAiEvaluator(code, language, testCases = [], questionText =
 
   const candidateLines = String(code || "").split("\n");
   const totalCandidateLines = candidateLines.length;
-  const numberedCandidateCode = candidateLines
-    .map((line, idx) => `${String(idx + 1).padStart(3, " ")} | ${line}`)
-    .join("\n");
 
   const prompt = `You are a strict automated code execution engine and compiler judge.
 Evaluate the candidate's ${language} code against the test cases.
@@ -1267,9 +1337,9 @@ Evaluate the candidate's ${language} code against the test cases.
 Problem Context:
 ${questionText || "Write code to solve the challenge according to the specifications."}
 
-Candidate Code (${totalCandidateLines} total lines, 1-indexed line numbers shown):
+Candidate Code:
 \`\`\`${language}
-${numberedCandidateCode}
+${code}
 \`\`\`
 
 Test Cases:
@@ -1529,6 +1599,61 @@ function cleanExpectedOutput(raw) {
 }
 
 /**
+ * Smart output matcher: handles exact match, normalized brackets/spacing,
+ * space-separated vs JSON arrays, booleans, floating-point equivalence, and unordered array outputs.
+ */
+function isOutputMatching(actual, expected) {
+  if (!actual && !expected) return true;
+  if (!actual || !expected) return false;
+
+  const aStr = String(actual).trim().replace(/\r\n/g, "\n");
+  const eStr = String(expected).trim().replace(/\r\n/g, "\n");
+
+  if (aStr === eStr) return true;
+
+  const norm = (s) =>
+    s
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((l) => l.trimEnd())
+      .join("\n")
+      .replace(/\[\s+/g, "[")
+      .replace(/\s+\]/g, "]")
+      .replace(/,\s+/g, ",");
+
+  if (norm(aStr) === norm(eStr)) return true;
+
+  // Case-insensitive boolean match (e.g. true vs True)
+  if (["true", "false"].includes(aStr.toLowerCase()) && ["true", "false"].includes(eStr.toLowerCase())) {
+    return aStr.toLowerCase() === eStr.toLowerCase();
+  }
+
+  // Token-based matching (handles [0, 1] vs 0 1 vs 0,1 vs [0,1] or unordered arrays)
+  const tokenize = (s) => {
+    const cleaned = s.replace(/^[\[\(\{]|[\}\)\]]$/g, "").replace(/,/g, " ").trim();
+    return cleaned.split(/\s+/).filter(Boolean);
+  };
+
+  const aTokens = tokenize(aStr);
+  const eTokens = tokenize(eStr);
+
+  if (aTokens.length > 0 && aTokens.length === eTokens.length) {
+    // Exact token match
+    if (aTokens.every((t, i) => t === eTokens[i])) return true;
+    // Numeric float/int equivalence
+    if (aTokens.every((t, i) => !isNaN(Number(t)) && !isNaN(Number(eTokens[i])) && Math.abs(Number(t) - Number(eTokens[i])) < 1e-4)) return true;
+    // Unordered match (e.g. [0, 1] vs [1, 0] or 1 0 vs 0 1)
+    const sortedA = [...aTokens].sort();
+    const sortedE = [...eTokens].sort();
+    if (sortedA.every((t, i) => t === sortedE[i])) return true;
+    if (sortedA.every((t, i) => !isNaN(Number(t)) && !isNaN(Number(sortedE[i])) && Math.abs(Number(t) - Number(sortedE[i])) < 1e-4)) return true;
+  }
+
+  return false;
+}
+
+
+/**
  * Main Code Execution & Test Case Verification Handler with High-Concurrency Throttling and Result Caching
  */
 async function executeCode({ code, language = "python", testCases = [], questionText = "", userId = null }) {
@@ -1730,17 +1855,6 @@ async function executeCode({ code, language = "python", testCases = [], question
         const cleanExp = cleanExpectedOutput(expectedTrimmed);
         const actualTrimmed = String(res.stdout || "").trim().replace(/\r\n/g, "\n");
 
-        const normalizeForComparison = (str = "") =>
-          String(str)
-            .trim()
-            .replace(/\r\n/g, "\n")
-            .split("\n")
-            .map((l) => l.trimEnd())
-            .join("\n")
-            .replace(/\[\s+/g, "[")
-            .replace(/\s+\]/g, "]")
-            .replace(/,\s+/g, ",");
-
         let passed = false;
         let status = "Failed";
         let actualOutput = res.stdout || (res.stderr ? `Error: ${res.stderr}` : "");
@@ -1770,12 +1884,8 @@ async function executeCode({ code, language = "python", testCases = [], question
           status = passed ? "Passed" : "Failed";
         } else if (expectedTrimmed.length > 0) {
           passed =
-            actualTrimmed === expectedTrimmed ||
-            normalizeForComparison(actualTrimmed) === normalizeForComparison(expectedTrimmed) ||
-            (cleanExp && (
-              actualTrimmed === cleanExp ||
-              normalizeForComparison(actualTrimmed) === normalizeForComparison(cleanExp)
-            ));
+            isOutputMatching(actualTrimmed, expectedTrimmed) ||
+            (cleanExp && isOutputMatching(actualTrimmed, cleanExp));
           status = passed ? "Passed" : "Failed";
         } else if (res.stdout && res.exitCode === 0) {
           passed = true;

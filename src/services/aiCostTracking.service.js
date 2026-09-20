@@ -41,7 +41,7 @@ async function logAIUsage({
     const estimatedCost = calculateCost(model, inputTokens, outputTokens);
 
     const log = await AIUsageLog.create({
-      userId,
+      userId: userId || "000000000000000000000000",
       feature,
       model,
       success,
