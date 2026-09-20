@@ -13,6 +13,7 @@ const {
   toggleExamRetakes,
   stopExam,
   rescheduleExam,
+  makeExamLive,
   getActiveExamsWithLiveTakers,
   getExamResults,
   parseCodingLink,
@@ -88,6 +89,11 @@ router.patch(
   "/admin/:examId/reschedule",
   verifyRole(["admin", "mentor"]),
   rescheduleExam
+);
+router.patch(
+  "/admin/:examId/make-live",
+  verifyRole(["admin", "mentor"]),
+  makeExamLive
 );
 router.patch(
   "/admin/:examId/toggle-disclosure",

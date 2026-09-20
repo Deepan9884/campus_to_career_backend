@@ -332,8 +332,6 @@ const getAdminExams = asyncHandler(async (req, res) => {
       ? new Date(e.scheduledEndTime)
       : e.scheduledStartTime
       ? new Date(new Date(e.scheduledStartTime).getTime() + (Number(e.durationMinutes) || 60) * 60 * 1000)
-      : e.createdAt
-      ? new Date(new Date(e.createdAt).getTime() + (Number(e.durationMinutes) || 60) * 60 * 1000)
       : null;
 
     if (computedStatus !== "stopped") {
@@ -1338,8 +1336,6 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
       ? new Date(exam.scheduledEndTime)
       : exam.scheduledStartTime
       ? new Date(new Date(exam.scheduledStartTime).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
-      : exam.createdAt
-      ? new Date(new Date(exam.createdAt).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
       : null;
 
     if (computedStatus !== "stopped") {
@@ -1431,8 +1427,6 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
     ? new Date(exam.scheduledEndTime)
     : exam.scheduledStartTime
     ? new Date(new Date(exam.scheduledStartTime).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
-    : exam.createdAt
-    ? new Date(new Date(exam.createdAt).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
     : null;
 
   if (exam.status === "completed" || (effectiveEndTime && effectiveEndTime < now)) {
@@ -1508,6 +1502,31 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
     throw new ApiError(
       403,
       "You have already completed this examination. Retakes are not permitted unless explicitly enabled by your administrator."
+    );
+  }
+
+  // If retakes are permitted and student previously submitted, reset the submission to in_progress for a clean attempt
+  if (
+    existingSub &&
+    exam.allowRetakes &&
+    (existingSub.status === "submitted" || existingSub.status === "evaluated")
+  ) {
+    existingSub.status = "in_progress";
+    existingSub.submittedAt = null;
+    existingSub.isBlocked = false;
+    existingSub.violationsCount = 0;
+    existingSub.violationDetails = [];
+    existingSub.sectionScores = [];
+    existingSub.questionScores = [];
+    existingSub.totalScore = 0;
+    existingSub.percentage = 0;
+    existingSub.passed = false;
+    existingSub.durationSeconds = 0;
+    await existingSub.save();
+
+    await ProctoringViolation.updateOne(
+      { userId: studentId, moduleId: examId },
+      { $set: { isBlocked: false, violationCount: 0, events: [], blockedAt: null } }
     );
   }
 
@@ -2503,9 +2522,11 @@ const rescheduleExam = asyncHandler(async (req, res) => {
       exam.status = "active";
     }
   } else {
-    // Immediate active test
-    exam.scheduledStartTime = null;
-    exam.scheduledEndTime = null;
+    // Immediate active test: starts right now, concludes after durationMin
+    const now = new Date();
+    exam.isScheduled = false;
+    exam.scheduledStartTime = now;
+    exam.scheduledEndTime = new Date(now.getTime() + durationMin * 60 * 1000);
     exam.status = "active";
   }
 
@@ -2595,6 +2616,55 @@ const rescheduleExam = asyncHandler(async (req, res) => {
   );
 });
 
+// ── ADMIN: MAKE EXAM LIVE IMMEDIATELY ─────────────────────────────────────────
+const makeExamLive = asyncHandler(async (req, res) => {
+  const { examId } = req.params;
+  const { durationMinutes, resetSubmissions = false } = req.body;
+
+  const exam = await Exam.findById(examId);
+  if (!exam) {
+    throw new ApiError(404, "Exam not found");
+  }
+
+  if (durationMinutes && Number(durationMinutes) > 0) {
+    exam.durationMinutes = Number(durationMinutes);
+  }
+
+  const durationMin = Number(exam.durationMinutes) || 60;
+  const now = new Date();
+
+  exam.isScheduled = false;
+  exam.scheduledStartTime = now;
+  exam.scheduledEndTime = new Date(now.getTime() + durationMin * 60 * 1000);
+  exam.status = "active";
+  exam.isPublished = true;
+  exam.stoppedAt = null;
+  exam.stoppedBy = null;
+
+  await exam.save();
+
+  let resetCount = 0;
+  if (resetSubmissions) {
+    const delResult = await ExamSubmission.deleteMany({ examId });
+    resetCount = delResult.deletedCount || 0;
+    await ProctoringViolation.updateMany(
+      { moduleId: examId },
+      { $set: { isBlocked: false, violationCount: 0, events: [], blockedAt: null } }
+    );
+  }
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        exam,
+        resetSubmissionsCount: resetCount,
+      },
+      `Exam '${exam.title}' is now LIVE! Testing window open for ${durationMin} minutes.`
+    )
+  );
+});
+
 module.exports = {
   createExam,
   getAdminExams,
@@ -2604,6 +2674,7 @@ module.exports = {
   toggleExamRetakes,
   stopExam,
   rescheduleExam,
+  makeExamLive,
   getActiveExamsWithLiveTakers,
   getExamResults,
   parseCodingLink,
