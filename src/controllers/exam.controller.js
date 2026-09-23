@@ -160,23 +160,22 @@ const createExam = asyncHandler(async (req, res) => {
     computedStartTime = new Date(scheduledStartTime);
     if (scheduledEndTime) {
       computedEndTime = new Date(scheduledEndTime);
-    } else {
-      computedEndTime = new Date(computedStartTime.getTime() + durationMin * 60 * 1000);
     }
   } else {
-    // Immediate launch: window opens now and concludes after durationMinutes
-    computedStartTime = new Date();
-    computedEndTime = new Date(computedStartTime.getTime() + durationMin * 60 * 1000);
+    // Immediate unscheduled exam: Always open, no artificial window cutoff
+    computedStartTime = null;
+    computedEndTime = null;
   }
 
   const now = new Date();
   let initialStatus = "active";
-  if (isScheduleActive) {
-    const startTimeDate = new Date(scheduledStartTime);
-    if (startTimeDate > now) {
+  if (isScheduleActive && computedStartTime) {
+    if (computedStartTime > now) {
       initialStatus = "scheduled";
     } else if (computedEndTime && computedEndTime < now) {
       initialStatus = "completed";
+    } else {
+      initialStatus = "active";
     }
   }
 
@@ -328,16 +327,14 @@ const getAdminExams = asyncHandler(async (req, res) => {
 
   const enrichedExams = exams.map((e) => {
     let computedStatus = e.status || "active";
-    const effectiveEndTime = e.scheduledEndTime
+    const effectiveEndTime = e.isScheduled && e.scheduledEndTime
       ? new Date(e.scheduledEndTime)
-      : e.scheduledStartTime
-      ? new Date(new Date(e.scheduledStartTime).getTime() + (Number(e.durationMinutes) || 60) * 60 * 1000)
       : null;
 
     if (computedStatus !== "stopped") {
       if (e.isScheduled && e.scheduledStartTime && new Date(e.scheduledStartTime) > now) {
         computedStatus = "scheduled";
-      } else if (effectiveEndTime && effectiveEndTime < now) {
+      } else if (e.isScheduled && effectiveEndTime && effectiveEndTime < now) {
         computedStatus = "completed";
       } else {
         computedStatus = "active";
@@ -1332,16 +1329,14 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
 
   const studentExams = exams.map((exam) => {
     let computedStatus = exam.status || "active";
-    const effectiveEndTime = exam.scheduledEndTime
+    const effectiveEndTime = exam.isScheduled && exam.scheduledEndTime
       ? new Date(exam.scheduledEndTime)
-      : exam.scheduledStartTime
-      ? new Date(new Date(exam.scheduledStartTime).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
       : null;
 
     if (computedStatus !== "stopped") {
       if (exam.isScheduled && exam.scheduledStartTime && new Date(exam.scheduledStartTime) > now) {
         computedStatus = "scheduled";
-      } else if (effectiveEndTime && effectiveEndTime < now) {
+      } else if (exam.isScheduled && effectiveEndTime && effectiveEndTime < now) {
         computedStatus = "completed";
       } else {
         computedStatus = "active";
@@ -1353,7 +1348,11 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
     const isStudentBlocked = Boolean(subInfo?.isBlocked);
     const isStudentInProgress = Boolean(subInfo?.isInProgress);
 
-    const isExamConcluded = Boolean(computedStatus === "stopped" || computedStatus === "completed" || (effectiveEndTime && effectiveEndTime < now));
+    const isExamConcluded = Boolean(
+      computedStatus === "stopped" ||
+      computedStatus === "completed" ||
+      (exam.isScheduled && effectiveEndTime && effectiveEndTime < now)
+    );
 
     const canStart =
       !isExamConcluded &&
@@ -1376,8 +1375,8 @@ const getStudentAvailableExams = asyncHandler(async (req, res) => {
       isResultDisclosed: exam.isResultDisclosed,
       allowRetakes: Boolean(exam.allowRetakes), // Only true if explicitly enabled by admin
       isScheduled: Boolean(exam.isScheduled),
-      scheduledStartTime: exam.scheduledStartTime,
-      scheduledEndTime: effectiveEndTime ? effectiveEndTime.toISOString() : null,
+      scheduledStartTime: exam.isScheduled && exam.scheduledStartTime ? new Date(exam.scheduledStartTime).toISOString() : null,
+      scheduledEndTime: exam.isScheduled && effectiveEndTime ? effectiveEndTime.toISOString() : null,
       status: computedStatus,
       isLockedBySchedule: Boolean(exam.isScheduled && exam.scheduledStartTime && new Date(exam.scheduledStartTime) > now),
       isExamStopped: isExamConcluded,
@@ -1423,13 +1422,11 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
 
   // Check if exam is concluded or scheduled window has elapsed
   const now = new Date();
-  const effectiveEndTime = exam.scheduledEndTime
+  const effectiveEndTime = exam.isScheduled && exam.scheduledEndTime
     ? new Date(exam.scheduledEndTime)
-    : exam.scheduledStartTime
-    ? new Date(new Date(exam.scheduledStartTime).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
     : null;
 
-  if (exam.status === "completed" || (effectiveEndTime && effectiveEndTime < now)) {
+  if (exam.status === "completed" || (exam.isScheduled && effectiveEndTime && effectiveEndTime < now)) {
     throw new ApiError(
       403,
       "The scheduled window for this examination has concluded."
@@ -1544,6 +1541,7 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
       const sessionUser = await User.findById(studentId)
         .select("name email avatar profile registerNumber")
         .lean();
+      const nowTake = new Date();
       await ExamSubmission.updateOne(
         { examId, userId: studentId },
         {
@@ -1557,6 +1555,7 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
               sessionUser?.profile?.registerNumber ||
               sessionUser?.registerNumber ||
               "N/A",
+            startedAt: nowTake,
             sectionScores: [],
             questionScores: [],
             totalScore: 0,
@@ -1571,13 +1570,26 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
             status: "in_progress",
             submittedAt: null,
           },
-          $set: { updatedAt: new Date() },
+          $set: { updatedAt: nowTake },
         },
         { upsert: true }
       );
     } catch (sessErr) {
       console.warn("[Exam] Failed to track live exam session:", sessErr.message);
     }
+  }
+
+  // Calculate accurate candidate remaining duration
+  const activeSub = await ExamSubmission.findOne({ examId, userId: studentId }).lean();
+  const candidateStartedAt = activeSub?.startedAt || activeSub?.createdAt || new Date();
+  const elapsedSeconds = Math.max(0, Math.floor((now.getTime() - new Date(candidateStartedAt).getTime()) / 1000));
+  const totalDurationSeconds = (Number(exam.durationMinutes) || 60) * 60;
+  let sessionRemainingSeconds = Math.max(0, totalDurationSeconds - elapsedSeconds);
+
+  // If there is an explicit scheduled window close, cap remaining time if the window ends before candidate duration
+  if (exam.isScheduled && effectiveEndTime) {
+    const windowRemainingSec = Math.max(0, Math.floor((effectiveEndTime.getTime() - now.getTime()) / 1000));
+    sessionRemainingSeconds = Math.min(sessionRemainingSeconds, windowRemainingSec);
   }
 
   // Sanitize MCQ questions so correct answers are not leaked to client!
@@ -1630,13 +1642,16 @@ const getStudentExamForTaking = asyncHandler(async (req, res) => {
         category: exam.category,
         difficulty: exam.difficulty,
         durationMinutes: exam.durationMinutes,
+        totalDurationSeconds,
+        sessionRemainingSeconds,
+        sessionStartedAt: candidateStartedAt,
         totalMarks: exam.totalMarks,
         passingScorePercentage: exam.passingScorePercentage,
         proctoringConfig: exam.proctoringConfig,
         allowRetakes: Boolean(exam.allowRetakes),
         isScheduled: Boolean(exam.isScheduled),
-        scheduledStartTime: exam.scheduledStartTime ? new Date(exam.scheduledStartTime).toISOString() : null,
-        scheduledEndTime: exam.scheduledEndTime ? new Date(exam.scheduledEndTime).toISOString() : null,
+        scheduledStartTime: exam.isScheduled && exam.scheduledStartTime ? new Date(exam.scheduledStartTime).toISOString() : null,
+        scheduledEndTime: exam.isScheduled && effectiveEndTime ? effectiveEndTime.toISOString() : null,
         sections: sanitizedSections,
         alreadySubmitted: Boolean(existingSub),
       },
@@ -1672,15 +1687,11 @@ const submitStudentExam = asyncHandler(async (req, res) => {
   }
 
   // Check scheduled window expiration
-  if (exam.isScheduled) {
+  if (exam.isScheduled && exam.scheduledEndTime) {
     const now = new Date();
-    const effectiveEndTime = exam.scheduledEndTime
-      ? new Date(exam.scheduledEndTime)
-      : exam.scheduledStartTime
-      ? new Date(new Date(exam.scheduledStartTime).getTime() + (Number(exam.durationMinutes) || 60) * 60 * 1000)
-      : null;
+    const effectiveEndTime = new Date(exam.scheduledEndTime);
     // Allow a 5-minute network tolerance window
-    if (effectiveEndTime && now.getTime() > effectiveEndTime.getTime() + 5 * 60 * 1000) {
+    if (now.getTime() > effectiveEndTime.getTime() + 5 * 60 * 1000) {
       throw new ApiError(
         403,
         "The submission window for this scheduled examination has expired."
@@ -1968,13 +1979,11 @@ const postExamHeartbeat = asyncHandler(async (req, res) => {
         if (hbExam.scheduledStartTime && new Date(hbExam.scheduledStartTime) > nowHb) {
           windowOpen = false;
         }
-        const effEnd = hbExam.scheduledEndTime
-          ? new Date(hbExam.scheduledEndTime)
-          : hbExam.scheduledStartTime
-          ? new Date(new Date(hbExam.scheduledStartTime).getTime() + (Number(hbExam.durationMinutes) || 60) * 60 * 1000)
-          : null;
-        if (effEnd && nowHb.getTime() > effEnd.getTime() + 5 * 60 * 1000) {
-          windowOpen = false;
+        if (hbExam.scheduledEndTime) {
+          const effEnd = new Date(hbExam.scheduledEndTime);
+          if (nowHb.getTime() > effEnd.getTime() + 5 * 60 * 1000) {
+            windowOpen = false;
+          }
         }
       }
       const canCreate =
@@ -2506,9 +2515,7 @@ const rescheduleExam = asyncHandler(async (req, res) => {
 
   if (exam.isScheduled && scheduledStartTime) {
     const start = new Date(scheduledStartTime);
-    const end = scheduledEndTime
-      ? new Date(scheduledEndTime)
-      : new Date(start.getTime() + durationMin * 60 * 1000);
+    const end = scheduledEndTime ? new Date(scheduledEndTime) : null;
 
     exam.scheduledStartTime = start;
     exam.scheduledEndTime = end;
@@ -2516,17 +2523,16 @@ const rescheduleExam = asyncHandler(async (req, res) => {
     const now = new Date();
     if (start > now) {
       exam.status = "scheduled";
-    } else if (end < now) {
+    } else if (end && end < now) {
       exam.status = "completed";
     } else {
       exam.status = "active";
     }
   } else {
-    // Immediate active test: starts right now, concludes after durationMin
-    const now = new Date();
+    // Immediate active test: always open, no artificial expiration window
     exam.isScheduled = false;
-    exam.scheduledStartTime = now;
-    exam.scheduledEndTime = new Date(now.getTime() + durationMin * 60 * 1000);
+    exam.scheduledStartTime = null;
+    exam.scheduledEndTime = null;
     exam.status = "active";
   }
 
@@ -2634,8 +2640,8 @@ const makeExamLive = asyncHandler(async (req, res) => {
   const now = new Date();
 
   exam.isScheduled = false;
-  exam.scheduledStartTime = now;
-  exam.scheduledEndTime = new Date(now.getTime() + durationMin * 60 * 1000);
+  exam.scheduledStartTime = null;
+  exam.scheduledEndTime = null;
   exam.status = "active";
   exam.isPublished = true;
   exam.stoppedAt = null;

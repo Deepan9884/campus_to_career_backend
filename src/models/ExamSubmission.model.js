@@ -134,6 +134,10 @@ const examSubmissionSchema = new mongoose.Schema(
       enum: ["submitted", "evaluated", "disqualified", "blocked", "in_progress"],
       default: "submitted",
     },
+    startedAt: {
+      type: Date,
+      default: null,
+    },
     submittedAt: {
       type: Date,
       default: Date.now,
