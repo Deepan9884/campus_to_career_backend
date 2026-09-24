@@ -152,5 +152,71 @@ print(x // y)`;
     expect(result.errorLine).toBe(4);
     expect(result.testCaseResults[0].actualOutput).toContain("ArrayIndexOutOfBoundsException");
   });
+
+  test("correctly compiles and runs SQL queries with relational tables", async () => {
+    const code = `SELECT
+  Person.firstName,
+  Person.lastName,
+  Address.city,
+  Address.state
+FROM Person
+LEFT JOIN Address ON Person.personId = Address.personId;`;
+
+    const input = `Person table:
++----------+----------+-----------+
+| personId | lastName | firstName |
++----------+----------+-----------+
+| 1        | Wang     | Allen     |
+| 2        | Alice    | Bob       |
++----------+----------+-----------+
+Address table:
++-----------+----------+---------------+----------+
+| addressId | personId | city          | state    |
++-----------+----------+---------------+----------+
+| 1         | 2        | New York City | New York |
+| 2         | 3        | Leetcode      | California |
++-----------+----------+---------------+----------+`;
+
+    const expectedOutput = `+-----------+----------+---------------+----------+
+| firstName | lastName | city          | state    |
++-----------+----------+---------------+----------+
+| Allen     | Wang     | Null          | Null     |
+| Bob       | Alice    | New York City | New York |
++-----------+----------+---------------+----------+`;
+
+    const result = await executeCode({
+      code,
+      language: "sql",
+      testCases: [{ input, expectedOutput }],
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.isCompilationError).toBe(false);
+    expect(result.passedCount).toBe(1);
+    expect(result.testCaseResults[0].passed).toBe(true);
+    expect(result.testCaseResults[0].status).toBe("Passed");
+  });
+
+  test("correctly reports SQL syntax compilation errors", async () => {
+    const code = `SELECT * FORM Person;`;
+    const input = `Person table:
++----------+----------+-----------+
+| personId | lastName | firstName |
++----------+----------+-----------+
+| 1        | Wang     | Allen     |
++----------+----------+-----------+`;
+
+    const result = await executeCode({
+      code,
+      language: "sql",
+      testCases: [{ input, expectedOutput: "" }],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.isCompilationError).toBe(true);
+    expect(result.compilationError).toBe(true);
+    expect(result.errorMessage).toContain("syntax error");
+    expect(result.testCaseResults[0].status).toBe("Compilation Error");
+  });
 });
 

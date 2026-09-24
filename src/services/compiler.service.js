@@ -1313,14 +1313,313 @@ async function runCpp(code, input = "") {
 }
 
 /**
+ * Format database rows as a clean ASCII table matching LeetCode / HackerRank convention.
+ */
+function formatSqlRowsAsTable(rows) {
+  if (!rows || rows.length === 0) return "(No rows returned)";
+  const columns = Object.keys(rows[0]);
+  if (columns.length === 0) return "(Empty rows)";
+
+  const colWidths = {};
+  for (const col of columns) {
+    colWidths[col] = col.length;
+  }
+  for (const row of rows) {
+    for (const col of columns) {
+      const valStr = row[col] === null || row[col] === undefined ? "Null" : String(row[col]);
+      if (valStr.length > colWidths[col]) {
+        colWidths[col] = valStr.length;
+      }
+    }
+  }
+
+  const sep = "+" + columns.map((c) => "-".repeat(colWidths[c] + 2)).join("+") + "+";
+  const header = "|" + columns.map((c) => " " + c.padEnd(colWidths[c]) + " ").join("|") + "|";
+  const dataLines = rows.map((row) => {
+    return (
+      "|" +
+      columns
+        .map((c) => {
+          const val = row[c] === null || row[c] === undefined ? "Null" : String(row[c]);
+          return " " + val.padEnd(colWidths[c]) + " ";
+        })
+        .join("|") +
+      "|"
+    );
+  });
+
+  return [sep, header, sep, ...dataLines, sep].join("\n");
+}
+
+/**
+ * Normalizes SQL ASCII table strings for comparison, ignoring border differences,
+ * column padding, and NULL representations.
+ */
+function normalizeSqlTable(str) {
+  if (!str) return "";
+  const lines = String(str)
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !/^\+[-+]+\+$/.test(l));
+
+  if (lines.length === 0) return String(str).trim().toLowerCase();
+
+  return lines
+    .map((line) => {
+      if (line.includes("|")) {
+        const cells = line
+          .split("|")
+          .map((c) => c.trim().toLowerCase())
+          .filter((_, idx, arr) => (idx > 0 && idx < arr.length - 1) || arr.length <= 2);
+        return cells
+          .map((c) => (c === "null" || c === "none" || c === "<null>" || c === "" ? "<null>" : c))
+          .join(" | ");
+      }
+      return line.toLowerCase();
+    })
+    .join("\n");
+}
+
+/**
+ * Parse SQL test case inputs from JSON, DDL/DML, or LeetCode Markdown/ASCII tables
+ * and insert into in-memory SQLite database.
+ */
+function parseSqlInputString(db, text) {
+  if (!text || typeof text !== "string" || !text.trim()) return false;
+  const trimmed = text.trim();
+  let hasParsedAny = false;
+
+  // 1. JSON Format
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed.headers && parsed.rows) {
+        if (!Array.isArray(parsed.headers) && typeof parsed.headers === "object") {
+          for (const tableName of Object.keys(parsed.headers)) {
+            const cols = parsed.headers[tableName];
+            if (Array.isArray(cols) && cols.length > 0) {
+              const colDefs = cols.map((c) => `"${c}" TEXT`).join(", ");
+              db.exec(`CREATE TABLE IF NOT EXISTS "${tableName}" (${colDefs});`);
+              const rows = (parsed.rows && parsed.rows[tableName]) || [];
+              if (Array.isArray(rows) && rows.length > 0) {
+                const placeholders = cols.map(() => "?").join(", ");
+                const insertStmt = db.prepare(`INSERT INTO "${tableName}" VALUES (${placeholders});`);
+                for (const r of rows) {
+                  insertStmt.run(...r.map((v) => ((v === null || v === undefined) ? null : String(v))));
+                }
+              }
+              hasParsedAny = true;
+            }
+          }
+          return hasParsedAny;
+        } else if (Array.isArray(parsed.headers)) {
+          const tableName = parsed.tableName || "InputTable";
+          const cols = parsed.headers;
+          const colDefs = cols.map((c) => `"${c}" TEXT`).join(", ");
+          db.exec(`CREATE TABLE IF NOT EXISTS "${tableName}" (${colDefs});`);
+          const rows = parsed.rows || [];
+          if (Array.isArray(rows) && rows.length > 0) {
+            const placeholders = cols.map(() => "?").join(", ");
+            const insertStmt = db.prepare(`INSERT INTO "${tableName}" VALUES (${placeholders});`);
+            for (const r of rows) {
+              insertStmt.run(...r.map((v) => ((v === null || v === undefined) ? null : String(v))));
+            }
+          }
+          return true;
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Direct SQL DDL/DML
+  if (/CREATE\s+TABLE/i.test(trimmed) || /INSERT\s+INTO/i.test(trimmed)) {
+    try {
+      db.exec(trimmed);
+      return true;
+    } catch {}
+  }
+
+  // 3. ASCII / Markdown Tables (e.g. Person table: +---+ | col | ...)
+  const lines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
+  let currentTableName = "";
+  let currentColumns = [];
+  let readingRows = false;
+  let isSchemaDefTable = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Detect Table name header: e.g. "Table: Person", "Person table:", "Table Person:", "Person ="
+    const tableHeaderMatch = line.match(/^(?:(?:input:?\s*)?(?:table:?\s*)?([a-zA-Z_]\w*)(?:\s*table)?\s*[:=]?)$/i);
+    if (tableHeaderMatch && !line.includes("|") && !line.includes("+")) {
+      currentTableName = tableHeaderMatch[1];
+      currentColumns = [];
+      readingRows = false;
+      isSchemaDefTable = false;
+      continue;
+    }
+
+    // Border line: +---+---+
+    if (/^\+[-+]+\+$/.test(line)) {
+      if (currentColumns.length > 0 && !readingRows) {
+        readingRows = true;
+      }
+      continue;
+    }
+
+    // Pipe row: | col1 | col2 |
+    if (line.startsWith("|") && line.endsWith("|")) {
+      const cells = line.slice(1, -1).split("|").map((c) => c.trim());
+
+      if (!readingRows && currentColumns.length === 0) {
+        const lowerCells = cells.map((c) => c.toLowerCase().replace(/\s+/g, ""));
+        if (
+          lowerCells.length === 2 &&
+          (lowerCells[0] === "columnname" || lowerCells[0] === "column") &&
+          (lowerCells[1] === "type" || lowerCells[1] === "datatype")
+        ) {
+          isSchemaDefTable = true;
+          currentColumns = ["column", "type"];
+        } else {
+          isSchemaDefTable = false;
+          currentColumns = cells;
+          if (!currentTableName) {
+            currentTableName = `Table_${i}`;
+          }
+          const colDefs = currentColumns.map((c) => `"${c}" TEXT`).join(", ");
+          try {
+            db.exec(`CREATE TABLE IF NOT EXISTS "${currentTableName}" (${colDefs});`);
+            hasParsedAny = true;
+          } catch {}
+        }
+      } else if (readingRows) {
+        if (isSchemaDefTable && currentTableName) {
+          const colName = cells[0];
+          if (colName && !colName.includes("+") && !colName.includes("-")) {
+            try {
+              db.exec(`CREATE TABLE IF NOT EXISTS "${currentTableName}" ("${colName}" TEXT);`);
+              try {
+                db.exec(`ALTER TABLE "${currentTableName}" ADD COLUMN "${colName}" TEXT;`);
+              } catch {}
+              hasParsedAny = true;
+            } catch {}
+          }
+        } else if (currentColumns.length > 0 && currentTableName) {
+          try {
+            const placeholders = currentColumns.map(() => "?").join(", ");
+            const insertStmt = db.prepare(`INSERT INTO "${currentTableName}" VALUES (${placeholders});`);
+            const values = currentColumns.map((_, colIdx) => {
+              const cell = cells[colIdx];
+              if (cell === undefined || cell.toLowerCase() === "null") return null;
+              return cell;
+            });
+            insertStmt.run(...values);
+            hasParsedAny = true;
+          } catch {}
+        }
+      }
+    }
+  }
+
+  return hasParsedAny;
+}
+
+function parseAndLoadSqlInput(db, inputStr, questionText = "") {
+  let loaded = false;
+  if (inputStr && typeof inputStr === "string" && inputStr.trim()) {
+    loaded = parseSqlInputString(db, inputStr.trim());
+  }
+  if (!loaded && questionText && typeof questionText === "string" && questionText.trim()) {
+    parseSqlInputString(db, questionText.trim());
+  }
+}
+
+/**
+ * Fast, isolated native SQLite execution engine using Node.js built-in `node:sqlite`.
+ * Executes candidate queries against ephemeral in-memory databases with sub-millisecond latency.
+ */
+async function runSql(code, input = "", questionText = "") {
+  const startTime = Date.now();
+  let DatabaseSync;
+  try {
+    DatabaseSync = require("node:sqlite").DatabaseSync;
+  } catch {
+    return {
+      stdout: "",
+      stderr: "node:sqlite native module not available on this host environment",
+      exitCode: 1,
+      executionTimeMs: Date.now() - startTime,
+      hostCompilerMissing: true,
+    };
+  }
+
+  try {
+    const db = new DatabaseSync(":memory:");
+    parseAndLoadSqlInput(db, input, questionText);
+
+    const cleanQuery = String(code || "")
+      .replace(/--.*$/gm, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .trim();
+
+    if (!cleanQuery) {
+      return {
+        stdout: "",
+        stderr: "No SQL query provided in editor.",
+        exitCode: 1,
+        executionTimeMs: Date.now() - startTime,
+      };
+    }
+
+    // Split multiple statements if any (e.g. SET or multi-query)
+    const statements = cleanQuery
+      .split(/;(?=(?:[^']*'[^']*')*[^']*$)/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    let lastRows = null;
+    for (let i = 0; i < statements.length; i++) {
+      const stmtStr = statements[i];
+      if (/^\s*(?:SELECT|WITH)\b/i.test(stmtStr)) {
+        const stmt = db.prepare(stmtStr);
+        lastRows = stmt.all();
+      } else {
+        db.exec(stmtStr);
+      }
+    }
+
+    const outputTable = formatSqlRowsAsTable(lastRows || []);
+    return {
+      stdout: outputTable,
+      stderr: "",
+      exitCode: 0,
+      executionTimeMs: Math.max(1, Date.now() - startTime),
+    };
+  } catch (sqlErr) {
+    const msg = sqlErr.message || "SQL Execution Error";
+    const isSyntax = /syntax error|no such (?:table|column)|near\s+/i.test(msg);
+    return {
+      stdout: "",
+      stderr: msg,
+      exitCode: 1,
+      executionTimeMs: Math.max(1, Date.now() - startTime),
+      isCompileError: isSyntax,
+      compileError: isSyntax,
+    };
+  }
+}
+
+/**
  * Intelligent Code Evaluator fallback powered by Gemini with deterministic temperature (0.0)
  */
 async function runWithAiEvaluator(code, language, testCases = [], questionText = "", userId = null) {
+  const isSql = String(language || "").toLowerCase().includes("sql");
   const sanitizedTestCases = testCases.map((tc) => {
     const rawInput = String(tc.input || "");
     const rawExpected = String(tc.expectedOutput || "");
-    const adapted = adaptLeetCodeInput(rawInput, false);
-    const cleanedExp = cleanExpectedOutput(rawExpected);
+    const adapted = isSql ? rawInput : adaptLeetCodeInput(rawInput, false);
+    const cleanedExp = isSql ? rawExpected : cleanExpectedOutput(rawExpected);
     return {
       ...tc,
       input: adapted && adapted !== rawInput ? adapted : rawInput,
@@ -1345,7 +1644,31 @@ ${code}
 Test Cases:
 ${JSON.stringify(sanitizedTestCases, null, 2)}
 
-STRICT EVALUATION INSTRUCTIONS (CodeTantra Dynamic Input & Full Program Rules):
+${isSql ? `STRICT SQL EVALUATION INSTRUCTIONS:
+1. MANDATORY PROGRAM STRUCTURE:
+   - In SQL, the candidate writes a SQL query (SELECT, WITH, INSERT, etc.).
+   - There is NO main() function, NO classes, and NO stdin reading. Do NOT fail compilation for lacking main().
+   - Evaluate the candidate query against the database tables provided in the test case inputs.
+
+2. SYNTAX AND COMPILATION ERRORS:
+   - Check if the query has genuine SQL syntax errors (misspelled keywords like FORM instead of FROM, unmatched parentheses, invalid column/table references).
+   - If there is a syntax error:
+     set "isCompilationError": true, "success": false, "errorLine": <1-indexed line number in query>, "errorMessage": "Line <line_number>: <concise syntax error>", "stderr": "<syntax error description>", and mark all test cases "status": "Compilation Error", "passed": false.
+
+3. UNEDITED BOILERPLATE:
+   - If the code contains no actual query or is just default comments:
+     set "success": false, "stderr": "No SQL query provided in editor.", and set every test case "passed": false, "status": "Failed", "actualOutput": "(No output produced — empty solution)".
+
+4. EXECUTION ON TEST CASES (When No Syntax Errors):
+   - Simulate running the SQL query on each test case input table.
+   - Format actualOutput as an ASCII table with column headers and rows matching LeetCode format (+---+ and |).
+   - If output matches expectedOutput (ignoring border spacing differences, case of column names, and NULL casing): set "passed": true, "status": "Passed".
+   - If output differs or nothing is produced: set "passed": false, "status": "Failed".
+   - If a runtime error occurs:
+     set "isRuntimeError": true, "passed": false, "status": "Runtime Error",
+     "errorMessage": "<exact runtime error description>",
+     "statement": "<exact runtime error statement>",
+     "actualOutput": "Runtime Error: <exact runtime error statement>".` : `STRICT EVALUATION INSTRUCTIONS (CodeTantra Dynamic Input & Full Program Rules):
 1. MANDATORY PROGRAM STRUCTURE & STANDARD LIBRARIES:
    - In Java, the code MUST have a class and 'public static void main(String[] args)' that reads dynamic input from stdin (e.g. Scanner).
    - Standard Java Collections (java.util.List, ArrayList, Map, HashMap, Set, HashSet, Queue, LinkedList, PriorityQueue, Stack, Deque, Arrays, Collections, Scanner) and I/O (BufferedReader, InputStreamReader) are fully supported. Do NOT fail compilation solely for omitted 'import java.util.*' if standard Java collection classes are used.
@@ -1375,7 +1698,7 @@ STRICT EVALUATION INSTRUCTIONS (CodeTantra Dynamic Input & Full Program Rules):
      "errorLine": <1-indexed line number in numbered code where runtime exception occurred>,
      "errorMessage": "Line <line_number>: <exact runtime error statement e.g. ZeroDivisionError: division by zero or IndexError: list index out of range>",
      "statement": "<exact runtime error statement e.g. ZeroDivisionError: division by zero>",
-     "actualOutput": "Runtime Error: <exact runtime error statement>".
+     "actualOutput": "Runtime Error: <exact runtime error statement>".`}
 
 Return valid JSON in this EXACT structure:
 {
@@ -1409,7 +1732,7 @@ Return ONLY raw valid JSON.`;
   try {
     const raw = await aiService.generateContent({
       prompt,
-      feature: "quiz-grading",
+      feature: "compiler-code-eval",
       temperature: 0.0,
       userId,
     });
@@ -1475,6 +1798,44 @@ Return ONLY raw valid JSON.`;
     console.error("[CompilerService] AI evaluation error:", err);
   }
 
+  // If AI evaluation failed and this is SQL, run via local SQLite runner as resilient fallback
+  if (isSql) {
+    try {
+      const sqlFallbacks = [];
+      let allSqlPass = true;
+      for (let i = 0; i < testCases.length; i++) {
+        const tc = testCases[i];
+        const sqlRes = await runSql(code, tc.input || "", questionText);
+        const exp = String(tc.expectedOutput || "").trim();
+        const passed = sqlRes.exitCode === 0 && (exp === "(Custom)" || !exp || isOutputMatching(sqlRes.stdout, exp));
+        if (!passed) allSqlPass = false;
+        sqlFallbacks.push({
+          testCaseId: tc.id || String(i + 1),
+          input: tc.input || "",
+          expectedOutput: tc.expectedOutput || "",
+          actualOutput: sqlRes.stdout || (sqlRes.stderr ? `Error: ${sqlRes.stderr}` : "(No output)"),
+          passed,
+          status: sqlRes.exitCode !== 0 ? (sqlRes.isCompileError ? "Compilation Error" : "Runtime Error") : (passed ? "Passed" : "Failed"),
+          statement: sqlRes.stderr || undefined,
+          error: sqlRes.stderr || undefined,
+          executionTimeMs: sqlRes.executionTimeMs || 10,
+          isHidden: Boolean(tc.isHidden),
+        });
+      }
+      return {
+        success: allSqlPass && sqlFallbacks.length > 0,
+        isCompilationError: sqlFallbacks.some((t) => t.status === "Compilation Error"),
+        compilationError: sqlFallbacks.some((t) => t.status === "Compilation Error"),
+        isRuntimeError: sqlFallbacks.some((t) => t.status === "Runtime Error"),
+        stdout: sqlFallbacks[0]?.actualOutput || "",
+        stderr: sqlFallbacks.find((t) => t.error)?.error || "",
+        passedCount: sqlFallbacks.filter((t) => t.passed).length,
+        totalCount: sqlFallbacks.length,
+        testCaseResults: sqlFallbacks,
+      };
+    } catch {}
+  }
+
   return {
     success: false,
     isCompilationError: false,
@@ -1487,7 +1848,7 @@ Return ONLY raw valid JSON.`;
       testCaseId: String(idx + 1),
       input: tc.input || "",
       expectedOutput: tc.expectedOutput || "",
-      actualOutput: "Execution Error",
+      actualOutput: isSql ? "SQL execution could not produce table output" : "Execution Error",
       passed: false,
       status: "Runtime Error",
       executionTimeMs: 0,
@@ -1524,6 +1885,9 @@ function isCodeEmptyOrBoilerplateOnly(code = "", language = "") {
     "return {};",
     "return [];",
     "write your code here",
+    "write your query here",
+    "select 1;",
+    "select 1",
     // CodeTantra empty boilerplate templates
     "import java.util.scanner; public class main { public static void main(string[] args) { scanner sc = new scanner(system.in); } }",
     "#include <iostream> using namespace std; int main() { return 0; }",
@@ -1545,6 +1909,11 @@ function adaptLeetCodeInput(raw, includeCount = false) {
   let str = String(raw).trim();
   // Strip leading "Input:" or "Input :" prefixes
   str = str.replace(/^(?:Input\s*:\s*)+/i, "").trim();
+
+  // If input contains SQL or markdown tables, return directly without mangling
+  if (str.includes("|") || (str.includes("+") && str.includes("-")) || str.toLowerCase().includes("table:")) {
+    return str;
+  }
 
   const varRegex = /(?:^|,|\n)\s*([a-zA-Z_]\w*)\s*=\s*(\[[^\]]*\]|'[^']*'|"[^"]*"|[^,\n]+)/g;
   const matches = [...str.matchAll(varRegex)];
@@ -1591,6 +1960,10 @@ function adaptLeetCodeInput(raw, includeCount = false) {
 function cleanExpectedOutput(raw) {
   if (!raw) return "";
   let str = String(raw).trim();
+  // If output is a SQL table with ASCII border or pipes, preserve verbatim
+  if ((str.includes("+") && str.includes("-")) || str.includes("|")) {
+    return str;
+  }
   str = str.replace(/^(?:Output\s*:\s*)+/i, "").trim();
   str = str.replace(/,\s*[a-zA-Z_]\w*\s*=\s*\[[^\]]*\]/gi, "").trim();
   str = str.replace(/,\s*[a-zA-Z_]\w*\s*=\s*[^,\n\r]+/gi, "").trim();
@@ -1626,6 +1999,25 @@ function isOutputMatching(actual, expected) {
   // Case-insensitive boolean match (e.g. true vs True)
   if (["true", "false"].includes(aStr.toLowerCase()) && ["true", "false"].includes(eStr.toLowerCase())) {
     return aStr.toLowerCase() === eStr.toLowerCase();
+  }
+
+  // Table-based matching (handles SQL ASCII tables with different column widths, border padding, or null casing)
+  if (
+    (aStr.includes("|") || aStr.includes("+---")) &&
+    (eStr.includes("|") || eStr.includes("+---"))
+  ) {
+    const normA = normalizeSqlTable(aStr);
+    const normE = normalizeSqlTable(eStr);
+    if (normA && normE && normA === normE) return true;
+
+    // Unordered row matching (if rows have same header, but rows returned in different order when order by was not specified)
+    const linesA = normA.split("\n");
+    const linesE = normE.split("\n");
+    if (linesA.length === linesE.length && linesA.length >= 2 && linesA[0] === linesE[0]) {
+      const sortedA = linesA.slice(1).sort().join("\n");
+      const sortedE = linesE.slice(1).sort().join("\n");
+      if (sortedA === sortedE) return true;
+    }
   }
 
   // Token-based matching (handles [0, 1] vs 0 1 vs 0,1 vs [0,1] or unordered arrays)
@@ -1685,7 +2077,7 @@ async function executeCode({ code, language = "python", testCases = [], question
     };
   }
 
-  const cleanCode = rawCode.replace(/^(#|\/\/|--)\s*write your code here\s*$/gmi, "").replace(/\s+$/, "");
+  const cleanCode = rawCode.replace(/^(#|\/\/|--)\s*write your (?:code|query) here\s*$/gmi, "").replace(/\s+$/, "");
 
   const defaultTestCases = (testCases && testCases.length > 0)
     ? testCases
@@ -1731,6 +2123,9 @@ async function executeCode({ code, language = "python", testCases = [], question
     } else if (lang.includes("javascript") || lang.includes("node") || lang === "js" || lang.includes("typescript")) {
       hasNativeRunner = true;
       runner = runJavaScript;
+    } else if (lang.includes("sql") || lang.includes("sqlite") || lang.includes("mysql") || lang.includes("postgres")) {
+      hasNativeRunner = true;
+      runner = (codeToRun, inputToRun) => runSql(codeToRun, inputToRun, questionText);
     } else if (lang.includes("java")) {
       const javacOk = await isJavacAvailable();
       if (javacOk) {
@@ -1785,7 +2180,7 @@ async function executeCode({ code, language = "python", testCases = [], question
           .replace(/\\n/g, "\n");
         // Proactively adapt LeetCode parameter inputs (e.g. nums = [1, 1, 2] or Input: nums = [1, 1, 2])
         // into clean stdin format (e.g. 1 1 2) so standard console code (input().split()) executes cleanly.
-        const proactiveAdapted = adaptLeetCodeInput(normalizedInput, false);
+        const proactiveAdapted = lang.includes("sql") ? normalizedInput : adaptLeetCodeInput(normalizedInput, false);
         const inputToRun = (proactiveAdapted && proactiveAdapted !== normalizedInput) ? proactiveAdapted : normalizedInput;
 
         let res = await runner(cleanCode, inputToRun);
@@ -1943,6 +2338,7 @@ async function executeCode({ code, language = "python", testCases = [], question
 
       // Only delegate to AI sandbox if native runner produced zero stdout AND zero stderr AND code has NO main entry point
       const isFunctionOnlyCode =
+        !lang.includes("sql") &&
         /(?:def\s+[a-zA-Z0-9_]+|function\s+[a-zA-Z0-9_]+|const\s+[a-zA-Z0-9_]+\s*=\s*\([^)]*\)\s*=>)/.test(cleanCode) &&
         !hasExecutableEntryPoint;
 
@@ -2024,5 +2420,9 @@ module.exports = {
   checkCodeSecurity,
   adaptLeetCodeInput,
   cleanExpectedOutput,
+  runSql,
+  formatSqlRowsAsTable,
+  parseAndLoadSqlInput,
+  isOutputMatching,
 };
 
